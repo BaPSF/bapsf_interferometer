@@ -50,7 +50,15 @@ def create_sourcefile_dataset(file_name, neA, neB, t_ms, saved_time):
 		fds.attrs['modified'] = time.ctime(saved_time)
 
 	print("Saved interferometer shot at", time.ctime(saved_time))
-	
+
+def delete_file(file_path):
+    try:
+        os.remove(file_path)
+        print(f"File {file_path} has been deleted.")
+    except FileNotFoundError:
+        print(f"File {file_path} does not exist.")
+    except Exception as e:
+        print(f"Error deleting file {file_path}: {e}")
 #===============================================================================================================================================
 def main(temp_path):
 	# Create an HDF5 file to store the data
@@ -116,7 +124,8 @@ def main_plot(temp_path):
 			update_plot(ax, line_A, line_B, t_ms, neA, neB)
 			dur = time.time() - st
 			print("Time taken: ", dur)
-
+			
+			delete_file(ifn)
 			shot_number += 1
 
 		except KeyboardInterrupt:
