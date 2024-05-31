@@ -3,16 +3,12 @@ import numpy as np
 import time
 import os
 
-from read_scope_data import read_trc_data_simplified
+from read_scope_data import read_trc_data_simplified, read_trc_data_no_header
 
 
 #===============================================================================================================================================
 #<o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o>
 #===============================================================================================================================================
-
-def read_shot(shot_number):
-	save_data = np.load(f"{temp_path}/shot{shot_number:05d}.npy", allow_pickle=True)
-	return save_data.item()
 
 def write_to_temp(file_path, temp_path):
 	shot_number = 0
@@ -20,25 +16,32 @@ def write_to_temp(file_path, temp_path):
 		try:
 			st = time.time()
 
-			ifn = f"{file_path}/C1-topo-22-12-05-shot{shot_number:05d}.trc"
+			ifn = f"{file_path}/C1-interf-shot{shot_number:05d}.trc"			
 			
 			if not os.path.exists(ifn):
 				print(f"Shot {shot_number:05d} does not exist")
 				break
 			
-			refchA, tarr = read_trc_data_simplified(ifn)
+			saved_time=os.path.getmtime(ifn)
+			if st - saved_time > 5:
+				print("Operation too slow; Skip shot to catch up")
+				shot_number += 1
+				continue
+			
+			refchA, tarr, vertical_gain, vertical_offset = read_trc_data_simplified(ifn)
+			data_size = len(tarr)
 
-			ifn = f"{file_path}/C2-topo-22-12-05-shot{shot_number:05d}.trc"
-			plachA, tarr = read_trc_data_simplified(ifn)
+			ifn = f"{file_path}/C2-interf-shot{shot_number:05d}.trc"
+			plachA = read_trc_data_no_header(ifn, data_size, vertical_gain, vertical_offset)
 
-			ifn = f"{file_path}/C1-topo-22-12-05-shot{shot_number:05d}.trc"
-			refchB, tarr = read_trc_data_simplified(ifn)
+			ifn = f"{file_path}/C3-interf-shot{shot_number:05d}.trc"
+			refchB = read_trc_data_no_header(ifn, data_size, vertical_gain, vertical_offset)
 
-			ifn = f"{file_path}/C2-topo-22-12-05-shot{shot_number:05d}.trc"
-			plachB, tarr = read_trc_data_simplified(ifn)
-
-			save_data = {"refchA": refchA, "plachA": plachA, "refchB": refchB, "plachB": plachB, "tarr": tarr, "saved_time": os.path.getmtime(ifn)}
-			np.save(f"{temp_path}/shot{shot_number:05d}.npy", save_data)
+			ifn = f"{file_path}/C4-interf-shot{shot_number:05d}.trc"
+			plachB = read_trc_data_no_header(ifn, data_size, vertical_gain, vertical_offset)
+			
+			
+			np.savez(f"{temp_path}/shot{shot_number:05d}.npz", refchA=refchA, plachA=plachA, refchB=refchB, plachB=plachB, tarr=tarr, saved_time=saved_time)
 			print(f"Saved shot {shot_number:05d} to temp folder")
 			print(f"Time taken: {time.time() - st:.2f} s")
 
@@ -58,7 +61,7 @@ def write_to_temp(file_path, temp_path):
 if __name__ == '__main__':
 	
 	if True:
-		file_path = "/home/interfpi"
+		file_path = "/home/smbshare"
 		temp_path = "/mnt/ramdisk"
 		write_to_temp(file_path, temp_path)
 	
