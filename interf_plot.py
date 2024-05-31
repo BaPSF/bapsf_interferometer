@@ -1,4 +1,7 @@
-
+# coding: utf-8
+'''
+Module used for showing plots on the screen
+'''
 from tkinter import ttk
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 import os
@@ -6,24 +9,40 @@ import time
 
 import matplotlib.pyplot as plt
 import matplotlib.animation as animation
-#======================================================================================
+
 def init_plot():
-	# Initialize matplotlib plot
-	plt.ion()  # Enable interactive mode
-	fig, ax = plt.subplots(2, 1, figsize=(10, 8))
+    """
+    This function creates a new matplotlib figure and axes, and initializes line objects for the plot.
+    """
+    plt.ion()  # Enable interactive mode
+    fig, ax = plt.subplots(2, 1, figsize=(10, 8))
 
-	# Initialize line objects
-	line_neA, = ax[0].plot([], [], 'r-')
-	line_neB, = ax[1].plot([], [], 'b-')
+    # Initialize line objects
+    line_neA, = ax[0].plot([], [], 'r-')
+    line_neB, = ax[1].plot([], [], 'b-')
 
-	# Set plot titles and labels
-	ax[0].set_xlabel('Time (ms)')
-	ax[0].set_ylabel('ne P20 (m^-3)')
+    # Set plot titles and labels
+    ax[0].set_xlabel('Time (ms)')
+    ax[0].set_ylabel('ne P20 (m^-3)')
 
-	ax[1].set_xlabel('Time (ms)')
-	ax[1].set_ylabel('ne P29 (m^-3)')
-	
+    ax[1].set_xlabel('Time (ms)')
+    ax[1].set_ylabel('ne P29 (m^-3)')
+
 def update_plot(ax, lineA, lineB, t_ms, neA, neB):
+    """
+    This function updates the data for the line objects in the plot and adjusts the plot limits dynamically.
+
+    Args:
+        ax (matplotlib.axes.Axes): The axes object of the plot.
+        lineA (matplotlib.lines.Line2D): The line object for neA.
+        lineB (matplotlib.lines.Line2D): The line object for neB.
+        t_ms (list): The time values in milliseconds.
+        neA (list): The neA values.
+        neB (list): The neB values.
+
+    Returns:
+        None
+    """
     # Update data for plotting
     lineA.set_data(t_ms, neA)
     lineB.set_data(t_ms, neB)
@@ -41,5 +60,5 @@ def update_plot(ax, lineA, lineB, t_ms, neA, neB):
     plt.pause(0.001)  # Pause to allow the plot to update
 
 def end_plot():
-    plt.ioff()
-    plt.show()
+    plt.ioff() # Turn off interactive mode
+    plt.show() # Display the plot
