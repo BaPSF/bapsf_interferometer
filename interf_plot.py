@@ -28,6 +28,8 @@ def init_plot():
     ax[1].set_xlabel('Time (ms)')
     ax[1].set_ylabel('ne P29 (m^-3)')
 
+    return ax, line_neA, line_neB
+
 def update_plot(ax, lineA, lineB, t_ms, neA, neB):
     """
     This function updates the data for the line objects in the plot and adjusts the plot limits dynamically.

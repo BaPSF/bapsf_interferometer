@@ -14,6 +14,12 @@ from read_scope_data import read_trc_data_simplified, read_trc_data_no_header
 #===============================================================================================================================================
 #<o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o>
 #===============================================================================================================================================
+def find_latest_shot_number(file_path):
+	file_list = os.listdir(file_path)
+	newest_file = max(file_list, key=os.path.getctime)
+	shot_number = int(newest_file.split('-')[1].split('.')[0])
+	return shot_number
+
 
 def write_to_temp(file_path, temp_path):
 	'''
@@ -26,9 +32,7 @@ def write_to_temp(file_path, temp_path):
 	- temp_path (str): The path to the temporary folder where the data will be saved.
 	'''
 
-	file_list = os.listdir(file_path)
-	newest_file = max(file_list, key=os.path.getctime)
-	shot_number = int(newest_file.split('-')[1].split('.')[0])
+	shot_number = find_latest_shot_number(file_path)
 
 	while True:
 		try:

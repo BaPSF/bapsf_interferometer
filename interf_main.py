@@ -8,6 +8,7 @@ import os
 
 from interf_raw import density_from_phase
 from interf_plot import init_plot, update_plot, end_plot
+from interf_save import find_latest_shot_number
 
 #===============================================================================================================================================
 def load_shot_data(temp_path, shot_number):
@@ -57,7 +58,7 @@ def main(temp_path):
 	hdf5_file_name = f"interf_data_{today}.hdf5"
 	init_hdf5_file(hdf5_file_name)
 
-	shot_number = 0
+	shot_number = find_latest_shot_number(temp_path)
 	while True:
 		
 		ifn = f"{temp_path}/shot{shot_number:05d}.npz"
@@ -67,7 +68,7 @@ def main(temp_path):
 
 		try:
 			st = time.time()
-			
+
 			print("Reading shot", shot_number)
 			refchA, plachA, refchB, plachB, tarr, saved_time = load_shot_data(temp_path, shot_number)
 			print("Data loaded")
@@ -89,11 +90,48 @@ def main(temp_path):
 		except Exception as e:
 			print("Error: ", e)
 			break
+#===============================================================================================================================================
+def main_plot(temp_path):
 
+	ax, line_A, line_B = init_plot()
+
+	shot_number = find_latest_shot_number(temp_path)
+
+	while True:
+
+		ifn = f"{temp_path}/shot{shot_number:05d}.npz"
+		if not os.path.exists(ifn): # Check if the file exists
+			print("File not found. Exiting...")
+			continue
+
+		try:
+			st = time.time()
+
+			print("Reading shot", shot_number)
+			refchA, plachA, refchB, plachB, tarr, saved_time = load_shot_data(temp_path, shot_number)
+			print("Data loaded")
+
+			t_ms, neA = density_from_phase(tarr, refchA, plachA)
+			t_ms, neB = density_from_phase(tarr, refchB, plachB)
+			update_plot(ax, line_A, line_B, t_ms, neA, neB)
+			dur = time.time() - st
+			print("Time taken: ", dur)
+
+			shot_number += 1
+
+		except KeyboardInterrupt:
+			print("Keyboard interrupt detected. Exiting...")
+			break
+
+		except Exception as e:
+			print("Error: ", e)
+			break
+
+	end_plot()
 #===============================================================================================================================================
 #<o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o>
 #===============================================================================================================================================
 # sudo mount.cifs //192.168.7.61/interf /home/smbshare -o username=LECROYUSER_2
 
 if __name__ == '__main__':
-	main()
+	main_plot()
