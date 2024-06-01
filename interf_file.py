@@ -2,12 +2,14 @@
 
 '''
 This module reads interferometer data acquired from the scope and saves them to a temporary npz file. (Binary format)
+NOT USED
 '''
 
 import sys
 import numpy as np
 import time
 import os
+import h5py
 
 from read_scope_data import read_trc_data_simplified, read_trc_data_no_header
 
@@ -20,7 +22,6 @@ def find_latest_shot_number(dir_path):
 	newest_file = max(full_path_file_list, key=os.path.getctime)
 	shot_number = int(newest_file[-9:-4])
 	return shot_number
-
 
 def write_to_temp(file_path, temp_path):
 	'''
@@ -82,6 +83,55 @@ def write_to_temp(file_path, temp_path):
 			print(f"Error: {e}")
 			break
 
+def load_shot_data(file_path):
+    # Load the .npz file
+    with np.load(file_path) as data:
+        refchA = data['refchA']
+        plachA = data['plachA']
+        refchB = data['refchB']
+        plachB = data['plachB']
+        tarr = data['tarr']
+        saved_time = data['saved_time']
+    return refchA, plachA, refchB, plachB, tarr, saved_time
+    
+#===============================================================================================================================================
+#===============================================================================================================================================
+
+def init_hdf5_file(file_name):
+	if os.path.exists(file_name):
+		print("HDF5 file exist")
+		return None
+	
+	with h5py.File(file_name, "w") as f:
+		ct = time.localtime()
+		f.attrs['created'] = ct
+		print("HDF5 file created ", time.strftime("%Y-%m-%d %H:%M:%S", ct))
+
+
+def create_sourcefile_dataset(file_path, neA, neB, t_ms, saved_time):
+	with h5py.File(file_path, "a") as f:
+		grp = f.require_group("ne_p20")
+		fds = grp.create_dataset(str(saved_time), data=neA)
+		fds.attrs['modified'] = time.ctime(saved_time)
+
+		grp = f.require_group("ne_p29")
+		fds = grp.create_dataset(str(saved_time), data=neB)
+		fds.attrs['modified'] = time.ctime(saved_time)
+
+		grp = f.require_group("time_array")
+		fds = grp.create_dataset(str(saved_time), data=t_ms)
+		fds.attrs['modified'] = time.ctime(saved_time)
+
+	print("Saved interferometer shot at", time.ctime(saved_time))
+
+def delete_file(file_path):
+    try:
+        os.remove(file_path)
+        print(f"File {file_path} has been deleted.")
+    except FileNotFoundError:
+        print(f"File {file_path} does not exist.")
+    except Exception as e:
+        print(f"Error deleting file {file_path}: {e}")
 #===============================================================================================================================================
 #<o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o>
 #===============================================================================================================================================
