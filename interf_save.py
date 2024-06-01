@@ -14,10 +14,11 @@ from read_scope_data import read_trc_data_simplified, read_trc_data_no_header
 #===============================================================================================================================================
 #<o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o>
 #===============================================================================================================================================
-def find_latest_shot_number(file_path):
-	file_list = os.listdir(file_path)
-	newest_file = max(file_list, key=os.path.getctime)
-	shot_number = int(newest_file.split('-')[1].split('.')[0])
+def find_latest_shot_number(dir_path):
+	file_list = os.listdir(dir_path)
+	full_path_file_list = [os.path.join(dir_path, file) for file in file_list]
+	newest_file = max(full_path_file_list, key=os.path.getctime)
+	shot_number = int(newest_file[-9:-4])
 	return shot_number
 
 
@@ -38,10 +39,10 @@ def write_to_temp(file_path, temp_path):
 		try:
 			st = time.time()
 
-			ifn = f"{file_path}/C1-interf-shot{shot_number:05d}.trc"            
+			ifn = f"{file_path}/C1-interf-shot{shot_number:05d}.trc"
 			
 			if not os.path.exists(ifn):
-				print(f"Shot {shot_number:05d} does not exist")
+				time.sleep(0.05)
 				continue
 			
 			saved_time=os.path.getmtime(ifn)
@@ -68,6 +69,11 @@ def write_to_temp(file_path, temp_path):
 			print(f"Time taken: {time.time() - st:.2f} s")
 
 			shot_number += 1
+		
+		except OSError as e:
+			print(e)
+			time.sleep(0.05)
+			continue
 
 		except KeyboardInterrupt:
 			print("Keyboard interrupt")
@@ -88,5 +94,4 @@ if __name__ == '__main__':
 		write_to_temp(file_path, temp_path)
 	
 	if False:
-		data = read_shot(0)
-		print(data.keys())
+		refchA, plachA, refchB, plachB, tarr, saved_time = load_shot_data(ifn)
