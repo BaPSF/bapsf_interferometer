@@ -15,18 +15,16 @@ def init_plot():
     This function creates a new matplotlib figure and axes, and initializes line objects for the plot.
     """
     plt.ion()  # Enable interactive mode
-    fig, ax = plt.subplots(2, 1, figsize=(10, 8))
+    fig, ax = plt.subplots(figsize=(10, 8))
 
     # Initialize line objects
-    line_neA, = ax[0].plot([], [], 'r-')
-    line_neB, = ax[1].plot([], [], 'b-')
+    line_neA, = ax.plot([], [], 'r-', label='ne P20')
+    line_neB, = ax.plot([], [], 'b-', label='ne P29')
 
     # Set plot titles and labels
-    ax[0].set_xlabel('Time (ms)')
-    ax[0].set_ylabel('ne P20 (m^-3)')
-
-    ax[1].set_xlabel('Time (ms)')
-    ax[1].set_ylabel('ne P29 (m^-3)')
+    ax.set_xlabel('Time (ms)')
+    ax.set_ylabel('ne (m^-3)')
+    ax.legend()
 
     return ax, line_neA, line_neB
 
@@ -51,12 +49,9 @@ def update_plot(ax, lineA, lineB, t_ms, neA, neB):
 
     # Adjust plot limits dynamically
     if len(t_ms) > 0:
-        ax[0].set_xlim(0, max(t_ms))
-        ax[1].set_xlim(0, max(t_ms))
-    if len(neA) > 0:
-        ax[0].set_ylim(min(neA), max(neA))
-    if len(neB) > 0:
-        ax[1].set_ylim(min(neB), max(neB))
+        ax.set_xlim(0, max(t_ms))
+    if len(neA) > 0 and len(neB) > 0:
+        ax.set_ylim( min(min(neA),min(neB)), max(max(neA),max(neB)) )
 
     plt.draw()
     plt.pause(0.001)  # Pause to allow the plot to update

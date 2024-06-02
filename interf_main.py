@@ -31,49 +31,35 @@ def get_current_day(timestamp):
 
 #===============================================================================================================================================
 # Multiprocessing functions
-def read_and_analyze_A(file_path, shot_number, queue):
+def read_and_analyze(file_path, shot_number, queue, refch_i, plach_i):
 	'''
 	read the data from scope network drive
-	To save time, only one set of headers are read for C1 and C2
+	To save time, only one set of headers are read
 	Analyze the data and put the result into the queue
 	''' 
-	ifn = f"{file_path}/C1-interf-shot{shot_number:05d}.trc"
+	ifn = f"{file_path}/C{refch_i}-interf-shot{shot_number:05d}.trc"
 	refch, tarr, vertical_gain, vertical_offset = read_trc_data_simplified(ifn)
 	data_size = len(tarr)
+	
 	# important note: the vertical gain and offset are assumed to be the same for C1 and C2
-	ifn = f"{file_path}/C2-interf-shot{shot_number:05d}.trc"
+	ifn = f"{file_path}/C{plach_i}-interf-shot{shot_number:05d}.trc"
 	plach = read_trc_data_no_header(ifn, data_size, vertical_gain, vertical_offset)
+#	plach, tarr, vertical_gain, vertical_offset = read_trc_data_simplified(ifn)
 	
 	# calculate the density from interferometer raw data
 	t_ms, ne = density_from_phase(tarr, refch, plach)
 	
 	# put the data into the queue for further processing
 	queue.put((t_ms, ne))
-	
-def read_and_analyze_B(file_path, shot_number, queue):
-	'''
-	same as read_and_analyze_A, but for C3 and C4
-	'''
-	ifn = f"{file_path}/C3-interf-shot{shot_number:05d}.trc"
-	refch, tarr, vertical_gain, vertical_offset = read_trc_data_simplified(ifn)
-	data_size = len(tarr)
-
-	ifn = f"{file_path}/C4-interf-shot{shot_number:05d}.trc"
-	plach = read_trc_data_no_header(ifn, data_size, vertical_gain, vertical_offset)
-	
-	t_ms, ne = density_from_phase(tarr, refch, plach)
-	
-	queue.put((t_ms, ne))
 
 def multiprocess_analyze(file_path, shot_number):
 	'''
 	creates two processes to read and analyze the interferometer data from the scope network drive
 	'''
-	queue_A = multiprocessing.Queue()
-	queue_B = multiprocessing.Queue()
+	queue = multiprocessing.Queue()
 	
-	process1 = multiprocessing.Process(target=read_and_analyze_A, args=(file_path, shot_number, queue_A))
-	process2 = multiprocessing.Process(target=read_and_analyze_B, args=(file_path, shot_number, queue_B))
+	process1 = multiprocessing.Process(target=read_and_analyze, args=(file_path, shot_number, queue, 1, 2))
+	process2 = multiprocessing.Process(target=read_and_analyze, args=(file_path, shot_number, queue, 3, 4))
 	
 	process1.start()
 	process2.start()
@@ -81,8 +67,8 @@ def multiprocess_analyze(file_path, shot_number):
 	process1.join()
 	process2.join()
 	
-	t_ms, neA = queue_A.get()
-	t_ms, neB = queue_B.get()
+	t_ms, neA = queue.get()
+	t_ms, neB = queue.get()
 	
 	return t_ms, neA, neB
 	
@@ -135,11 +121,15 @@ def main(hdf5_path="/media/interfpi/5C87-20CD", file_path ="/mnt/smbshare"):
 
 			print("Reading shot", shot_number)
 			t_ms, neA, neB = multiprocess_analyze(file_path, shot_number)
+#			print( np.array_equal(neA, neB) )
+
+			# save data to HDF5 file as new datasets
+			create_sourcefile_dataset(hdf5_ifn, neA, neB, t_ms, saved_time)
 			
-			create_sourcefile_dataset(hdf5_ifn, neA, neB, t_ms, saved_time) # save data to HDF5 file as new datasets
-			update_plot(ax, line_A, line_B, t_ms, neA, neA) # update the plot with the new data
+			# update the plot with the new data
+			update_plot(ax, line_A, line_B, t_ms, neA, neB)
+			
 #			print("Time taken: ", time.time() - st)
-			
 			if shot_number == 99999: # reset shot number to 0 after reaching the maximum
 				shot_number = 0
 				continue
