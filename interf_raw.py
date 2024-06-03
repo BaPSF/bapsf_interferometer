@@ -125,7 +125,6 @@ def correlation_spectrogram(tarr, refch, plach, FT_len):
 
 		csd_ang[m] = csd_angle
 		csd_mag[m] = mag
-
 	return ttt+tarr[0], csd_ang, csd_mag
 
 def auto_find_fixups(t_ms, csd_ang, threshold=5.):
@@ -144,13 +143,14 @@ def do_fixups(t_ms, csd_ang):
 	dt = t_ms[1]-t_ms[0]
 	for t,s in fixups:
 		n = int(t/dt)
-		cum_phase[n+1:] += s*2*np.pi   # every time there is a 2pi jump, add or subtract 2pi to the entire rest of the time series
+		# every time there is a 2pi jump, add or subtract 2pi to the entire rest of the time series
+		cum_phase[n+1:] += s*2*np.pi
 	return cum_phase
 
 def density_from_phase(tarr, refch, plach):
 	''' compute the electron density from the phase of the cross-spectral density
 	'''
-	FT_len = 4096
+	FT_len = 512
 	offset_range = range(5)
 
 	ttt, csd_ang, csd_mag = correlation_spectrogram(tarr, refch, plach, FT_len)

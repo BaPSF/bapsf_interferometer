@@ -92,18 +92,18 @@ def main(hdf5_path="/media/interfpi/5C87-20CD", file_path ="/mnt/smbshare"):
 	ax, line_A, line_B = init_plot()
 	# Find the most recent shot in LeCroy Network drive 
 	shot_number = find_latest_shot_number(file_path)
+	print("st: ", shot_number)
 	
 	while True:
-
-		# Check if the day has changed; if so, create a new HDF5 file
-		st = time.time() # current time
-		if get_current_day(st) != get_current_day(os.path.getmtime(hdf5_ifn)):
-			date = datetime.date.today()
-			hdf5_ifn = f"{hdf5_path}/interferometer_data_{date}.hdf5"
-			init_hdf5_file(hdf5_ifn)
-		
-		time.sleep(0) # sleep for CPU
 		try:
+			# Check if the day has changed; if so, create a new HDF5 file
+			st = time.time() # current time
+			print("Shot ", shot_number)
+#		if get_current_day(st) != get_current_day(os.path.getmtime(hdf5_ifn)):
+#			date = datetime.date.today()
+#			hdf5_ifn = f"{hdf5_path}/interferometer_data_{date}.hdf5"
+#			init_hdf5_file(hdf5_ifn)
+
 			# Check if the interferometer data files are available on leCroy scope drive
 			# C4 is the last channel to be saved
 			ifn = f"{file_path}/C4-interf-shot{shot_number:05d}.trc"
@@ -111,15 +111,16 @@ def main(hdf5_path="/media/interfpi/5C87-20CD", file_path ="/mnt/smbshare"):
 				time.sleep(0.05)
 				continue
 			saved_time=os.path.getmtime(ifn) # time when the shot data was saved
-
+			td = st - saved_time
+			print(td)
+			
 			# If the operation is too slow, skip the shot to catch up
-			if st - saved_time > 1.5:
-				print("Skip one shot to catch up in time")
+			if td > 3:
+				print("Skip one shot")
 				shot_number += 1
 				time.sleep(0.01)
 				continue
 
-			print("Reading shot", shot_number)
 			t_ms, neA, neB = multiprocess_analyze(file_path, shot_number)
 #			print( np.array_equal(neA, neB) )
 
@@ -151,4 +152,4 @@ def main(hdf5_path="/media/interfpi/5C87-20CD", file_path ="/mnt/smbshare"):
 #===============================================================================================================================================
 
 if __name__ == '__main__':
-	main()
+	main('/home/interfpi')

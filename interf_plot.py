@@ -49,7 +49,7 @@ def update_plot(ax, lineA, lineB, t_ms, neA, neB):
 
     # Adjust plot limits dynamically
     if len(t_ms) > 0:
-        ax.set_xlim(0, max(t_ms))
+        ax.set_xlim(min(t_ms), max(t_ms))
     if len(neA) > 0 and len(neB) > 0:
         ax.set_ylim( min(min(neA),min(neB)), max(max(neA),max(neB)) )
 
