@@ -84,17 +84,29 @@ def write_to_temp(file_path, temp_path):
 			break
 
 def load_shot_data(file_path):
-    # Load the .npz file
-    with np.load(file_path) as data:
-        refchA = data['refchA']
-        plachA = data['plachA']
-        refchB = data['refchB']
-        plachB = data['plachB']
-        tarr = data['tarr']
-        saved_time = data['saved_time']
-    return refchA, plachA, refchB, plachB, tarr, saved_time
-    
+	# Load the .npz file
+	with np.load(file_path) as data:
+		refchA = data['refchA']
+		plachA = data['plachA']
+		refchB = data['refchB']
+		plachB = data['plachB']
+		tarr = data['tarr']
+		saved_time = data['saved_time']
+	return refchA, plachA, refchB, plachB, tarr, saved_time
+	
 #===============================================================================================================================================
+def remove_file(ifn):
+	if not os.path.exists(ifn):
+		print(f"File does not exist.")
+		return
+
+	try:
+		if os.path.isfile(ifn) or os.path.islink(ifn):
+			os.unlink(ifn)
+			print(f"Removed file: {ifn}")
+	except Exception as e:
+		print(f"Failed to remove {ifn}. Reason: {e}")
+
 #===============================================================================================================================================
 
 def init_hdf5_file(file_name):
@@ -125,13 +137,13 @@ def create_sourcefile_dataset(file_path, neA, neB, t_ms, saved_time):
 	print("Saved interferometer shot at", time.ctime(saved_time))
 
 def delete_file(file_path):
-    try:
-        os.remove(file_path)
-        print(f"File {file_path} has been deleted.")
-    except FileNotFoundError:
-        print(f"File {file_path} does not exist.")
-    except Exception as e:
-        print(f"Error deleting file {file_path}: {e}")
+	try:
+		os.remove(file_path)
+		print(f"File {file_path} has been deleted.")
+	except FileNotFoundError:
+		print(f"File {file_path} does not exist.")
+	except Exception as e:
+		print(f"Error deleting file {file_path}: {e}")
 #===============================================================================================================================================
 #<o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o>
 #===============================================================================================================================================

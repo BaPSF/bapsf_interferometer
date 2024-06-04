@@ -18,7 +18,7 @@ import os
 
 from interf_raw import density_from_phase
 from interf_plot import init_plot, update_plot, end_plot
-from interf_file import find_latest_shot_number, init_hdf5_file, create_sourcefile_dataset
+from interf_file import find_latest_shot_number, init_hdf5_file, create_sourcefile_dataset, remove_file
 from read_scope_data import read_trc_data_simplified, read_trc_data_no_header
 
 #===============================================================================================================================================
@@ -74,7 +74,7 @@ def multiprocess_analyze(file_path, shot_number):
 	
 #===============================================================================================================================================
 		
-def main(hdf5_path="/media/interfpi/5C87-20CD", file_path ="/mnt/smbshare"):
+def main(hdf5_path="/media/interfpi/5C87-20CD", file_path ="/mnt/smbshare", ram_path="/mnt/ramdisk"):
 	"""
 	Main function for the interferometer program.
 
@@ -87,6 +87,12 @@ def main(hdf5_path="/media/interfpi/5C87-20CD", file_path ="/mnt/smbshare"):
 	date = datetime.date.today()
 	hdf5_ifn = f"{hdf5_path}/interferometer_data_{date}.hdf5"
 	init_hdf5_file(hdf5_ifn)
+
+	# Create log file to record the shot number
+	log_ifn = f"{ram_path}/interferometer_log.bin"
+	if not os.path.exists(log_ifn):
+		open(log_ifn, 'w').close()
+		print("Log file created", date)
 
 	# Initialize the plot
 	ax, line_A, line_B = init_plot()
@@ -133,7 +139,11 @@ def main(hdf5_path="/media/interfpi/5C87-20CD", file_path ="/mnt/smbshare"):
 			if shot_number == 99999: # reset shot number to 0 after reaching the maximum
 				shot_number = 0
 				continue
-				
+			
+			# Record shot number and saved_time in log file
+			with open(log_ifn, 'a') as log_file:
+				log_file.write(f"{shot_number},{saved_time}\n")
+
 			shot_number += 1
 			
 		except KeyboardInterrupt:
