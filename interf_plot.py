@@ -14,6 +14,7 @@ def init_plot():
     """
     This function creates a new matplotlib figure and axes, and initializes line objects for the plot.
     """
+    plt.rcParams.update({'font.size': 30})
     plt.ion()  # Enable interactive mode
     fig, ax = plt.subplots(figsize=(10, 8))
 
