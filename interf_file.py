@@ -17,10 +17,14 @@ from read_scope_data import read_trc_data_simplified, read_trc_data_no_header
 #<o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o>
 #===============================================================================================================================================
 def find_latest_shot_number(dir_path):
-	file_list = os.listdir(dir_path)
-	full_path_file_list = [os.path.join(dir_path, file) for file in file_list]
-	newest_file = max(full_path_file_list, key=os.path.getctime)
-	shot_number = int(newest_file[-9:-4])
+	try:
+		file_list = os.listdir(dir_path)
+		full_path_file_list = [os.path.join(dir_path, file) for file in file_list]
+		newest_file = max(full_path_file_list, key=os.path.getctime)
+		shot_number = int(newest_file[-9:-4])
+	except ValueError:
+		print('No file exist in directory; start iteration at shot 0')
+		return 0
 	return shot_number
 
 def write_to_temp(file_path, temp_path):
@@ -95,18 +99,6 @@ def load_shot_data(file_path):
 	return refchA, plachA, refchB, plachB, tarr, saved_time
 	
 #===============================================================================================================================================
-def remove_file(ifn):
-	if not os.path.exists(ifn):
-		print(f"File does not exist.")
-		return
-
-	try:
-		if os.path.isfile(ifn) or os.path.islink(ifn):
-			os.unlink(ifn)
-			print(f"Removed file: {ifn}")
-	except Exception as e:
-		print(f"Failed to remove {ifn}. Reason: {e}")
-
 #===============================================================================================================================================
 
 def init_hdf5_file(file_name):

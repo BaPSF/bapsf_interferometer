@@ -18,7 +18,7 @@ import os
 
 from interf_raw import density_from_phase
 from interf_plot import init_plot, update_plot, end_plot
-from interf_file import find_latest_shot_number, init_hdf5_file, create_sourcefile_dataset, remove_file
+from interf_file import find_latest_shot_number, init_hdf5_file, create_sourcefile_dataset
 from read_scope_data import read_trc_data_simplified, read_trc_data_no_header
 
 #===============================================================================================================================================
@@ -74,7 +74,7 @@ def multiprocess_analyze(file_path, shot_number):
 	
 #===============================================================================================================================================
 		
-def main(hdf5_path="/media/interfpi/5C87-20CD", file_path ="/mnt/smbshare", ram_path="/mnt/ramdisk"):
+def main(hdf5_path, file_path ="/mnt/smbshare", ram_path="/mnt/ramdisk"):
 	"""
 	Main function for the interferometer program.
 
@@ -93,6 +93,9 @@ def main(hdf5_path="/media/interfpi/5C87-20CD", file_path ="/mnt/smbshare", ram_
 	if not os.path.exists(log_ifn):
 		open(log_ifn, 'w').close()
 		print("Log file created", date)
+	else:
+		with open(log_ifn, 'w') as log_file:
+			log_file.write(" ")
 
 	# Initialize the plot
 	ax, line_A, line_B = init_plot()
@@ -161,4 +164,4 @@ def main(hdf5_path="/media/interfpi/5C87-20CD", file_path ="/mnt/smbshare", ram_
 #===============================================================================================================================================
 
 if __name__ == '__main__':
-	main('/home/interfpi')
+	main("/media/interfpi/5381-58FC")

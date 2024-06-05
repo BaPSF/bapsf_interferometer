@@ -16,7 +16,7 @@ def init_plot():
     """
     plt.rcParams.update({'font.size': 30})
     plt.ion()  # Enable interactive mode
-    fig, ax = plt.subplots(figsize=(10, 8))
+    fig, ax = plt.subplots(figsize=(14, 9))
 
     # Initialize line objects
     line_neA, = ax.plot([], [], 'r-', label='ne P20')
