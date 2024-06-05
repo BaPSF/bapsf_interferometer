@@ -112,14 +112,14 @@ def init_hdf5_file(file_name):
 		print("HDF5 file created ", time.strftime("%Y-%m-%d %H:%M:%S", ct))
 
 
-def create_sourcefile_dataset(file_path, neA, neB, t_ms, saved_time):
+def create_sourcefile_dataset(file_path, dataA, dataB, t_ms, saved_time):
 	with h5py.File(file_path, "a") as f:
-		grp = f.require_group("ne_p20")
-		fds = grp.create_dataset(str(saved_time), data=neA)
+		grp = f.require_group("phase_p20")
+		fds = grp.create_dataset(str(saved_time), data=dataA)
 		fds.attrs['modified'] = time.ctime(saved_time)
 
-		grp = f.require_group("ne_p29")
-		fds = grp.create_dataset(str(saved_time), data=neB)
+		grp = f.require_group("phase_p29")
+		fds = grp.create_dataset(str(saved_time), data=dataB)
 		fds.attrs['modified'] = time.ctime(saved_time)
 
 		grp = f.require_group("time_array")

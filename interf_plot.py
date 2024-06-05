@@ -14,9 +14,9 @@ def init_plot():
     """
     This function creates a new matplotlib figure and axes, and initializes line objects for the plot.
     """
-    plt.rcParams.update({'font.size': 30})
+    plt.rcParams.update({'font.size': 14})
     plt.ion()  # Enable interactive mode
-    fig, ax = plt.subplots(figsize=(14, 9))
+    fig, ax = plt.subplots(figsize=(8, 5))
 
     # Initialize line objects
     line_neA, = ax.plot([], [], 'r-', label='ne P20')
@@ -25,6 +25,7 @@ def init_plot():
     # Set plot titles and labels
     ax.set_xlabel('Time (ms)')
     ax.set_ylabel('ne (m^-3)')
+    ax.set_title('Density assuming 40cm plasma length')
     ax.legend()
 
     return ax, line_neA, line_neB

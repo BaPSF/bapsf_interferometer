@@ -16,7 +16,7 @@ import time
 import datetime
 import os
 
-from interf_raw import density_from_phase
+from interf_raw import phase_from_raw, get_calibration_factor
 from interf_plot import init_plot, update_plot, end_plot
 from interf_file import find_latest_shot_number, init_hdf5_file, create_sourcefile_dataset
 from read_scope_data import read_trc_data_simplified, read_trc_data_no_header
@@ -46,11 +46,13 @@ def read_and_analyze(file_path, shot_number, queue, refch_i, plach_i):
 	plach = read_trc_data_no_header(ifn, data_size, vertical_gain, vertical_offset)
 #	plach, tarr, vertical_gain, vertical_offset = read_trc_data_simplified(ifn)
 	
-	# calculate the density from interferometer raw data
-	t_ms, ne = density_from_phase(tarr, refch, plach)
+	# calculate the phase from interferometer raw data
 	
+	t_ms, phase = phase_from_raw(tarr, refch, plach)
+
 	# put the data into the queue for further processing
-	queue.put((t_ms, ne))
+	queue.put((t_ms, phase))
+
 
 def multiprocess_analyze(file_path, shot_number):
 	'''
@@ -67,10 +69,10 @@ def multiprocess_analyze(file_path, shot_number):
 	process1.join()
 	process2.join()
 	
-	t_ms, neA = queue.get()
-	t_ms, neB = queue.get()
+	t_ms, phaseA = queue.get()
+	t_ms, phaseB = queue.get()
 	
-	return t_ms, neA, neB
+	return t_ms, phaseA, phaseB
 	
 #===============================================================================================================================================
 		
@@ -129,12 +131,14 @@ def main(hdf5_path, file_path ="/mnt/smbshare", ram_path="/mnt/ramdisk"):
 				continue
 
 			print("Shot ", shot_number)
-			t_ms, neA, neB = multiprocess_analyze(file_path, shot_number)
+			t_ms, phaseA, phaseB = multiprocess_analyze(file_path, shot_number)
 #			print( np.array_equal(neA, neB) )
 
 			# save data to HDF5 file as new datasets
-			create_sourcefile_dataset(hdf5_ifn, neA, neB, t_ms, saved_time)
+			create_sourcefile_dataset(hdf5_ifn, phaseA, phaseB, t_ms, saved_time)
 			
+			neA = phaseA * get_calibration_factor(288e9)
+			neB = phaseB * get_calibration_factor(282e9)
 			# update the plot with the new data
 			update_plot(ax, line_A, line_B, t_ms, neA, neB)
 			

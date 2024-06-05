@@ -40,18 +40,20 @@ from read_scope_data import read_trc_data, read_trc_data_simplified
 import time
 
 #============================================================================
-f_uwave = 288e9 # Microwave frequency (Hz)
-# Note: SI units for physical constants
-e = const.elementary_charge
-m_e = const.electron_mass
-eps0 = const.epsilon_0
-c = const.speed_of_light
-carrier_frequency = 760e3
-Npass = 2.0 # Number of passes of uwave through plasma
-# diameter = 0.35 # Plasma diameter if it were flat (m)
-# Note: a decent guess for the diameter is the FWHM
+def get_calibration_factor(f_uwave = 288e9, plasma_length = 0.4):
+#	f_uwave = 288e9 # Microwave frequency (Hz)
+	# Note: SI units for physical constants
+	e = const.elementary_charge
+	m_e = const.electron_mass
+	eps0 = const.epsilon_0
+	c = const.speed_of_light
+	carrier_frequency = 760e3
+	Npass = 2.0 # Number of passes of uwave through plasma
+	# diameter = 0.35 # Plasma diameter if it were flat (m)
+	# Note: a decent guess for the diameter is the FWHM
 
-calibration = 1./((Npass/4./np.pi/f_uwave)*(e**2/m_e/c/eps0))
+	calibration = 1./((Npass/4./np.pi/f_uwave)*(e**2/m_e/c/eps0)*plasma_length)
+	return calibration
 
 #============================================================================
 # The following functions are from Pat
@@ -129,8 +131,8 @@ def correlation_spectrogram(tarr, refch, plach, FT_len):
 
 def auto_find_fixups(t_ms, csd_ang, threshold=5.):
 	d = np.diff(csd_ang)
-	p = t_ms[0:-1][d > threshold]
-	n = t_ms[0:-1][d < -threshold]
+	p = t_ms[:-1][d > threshold] # len(diff) is one less than len(csd_ang)
+	n = t_ms[:-1][d < -threshold]
 	f = np.ones((p.size+n.size, 2))
 	f[:p.size, 0] = p
 	f[:p.size, 1] = -1
@@ -147,8 +149,9 @@ def do_fixups(t_ms, csd_ang):
 		cum_phase[n+1:] += s*2*np.pi
 	return cum_phase
 
-def density_from_phase(tarr, refch, plach):
-	''' compute the electron density from the phase of the cross-spectral density
+def phase_from_raw(tarr, refch, plach):
+	'''
+	compute phase of the cross-spectral density
 	'''
 	FT_len = 512
 	offset_range = range(5)
@@ -160,9 +163,7 @@ def density_from_phase(tarr, refch, plach):
 	cum_phase = do_fixups(t_ms, csd_ang)
 	offset = np.average(cum_phase[offset_range])
 
-	ne = (cum_phase-offset)*calibration
-
-	return t_ms, ne
+	return t_ms, cum_phase-offset
 
 
 #============================================================================
@@ -233,23 +234,24 @@ def density_from_phase_steve(tarr, refch, plach):
 
 if __name__ == '__main__':
 
-	# modify testing for Linux
-	st1 = time.time()
-
-	ifn = "/home/interfpi/C1-topo-22-12-05-00000.trc"
-	refch, tarr = read_trc_data_simplified(ifn)
-
-	ifn = "/home/interfpi/C2-topo-22-12-05-00000.trc"
-	plach, tarr = read_trc_data_simplified(ifn)
-	st2 = time.time()
-
-	t_ms, ne = density_from_phase(tarr, refch, plach)
-	st3 = time.time()
-
-	print('Reading time: ', st2-st1)
-	print('Analyzing time: ', st3-st2)
-	print('Total time: ', st3-st1)
-	
-	plt.figure()
-	plt.plot(t_ms, ne)
-	plt.show()
+	print (calibration)
+# 	# modify testing for Linux
+# 	st1 = time.time()
+# 
+# 	ifn = "/home/interfpi/C1-topo-22-12-05-00000.trc"
+# 	refch, tarr = read_trc_data_simplified(ifn)
+# 
+# 	ifn = "/home/interfpi/C2-topo-22-12-05-00000.trc"
+# 	plach, tarr = read_trc_data_simplified(ifn)
+# 	st2 = time.time()
+# 
+# 	t_ms, ne = density_from_phase(tarr, refch, plach)
+# 	st3 = time.time()
+# 
+# 	print('Reading time: ', st2-st1)
+# 	print('Analyzing time: ', st3-st2)
+# 	print('Total time: ', st3-st1)
+# 	
+# 	plt.figure()
+# 	plt.plot(t_ms, ne)
+# 	plt.show()
