@@ -20,7 +20,7 @@ def remove_file(ifn):
 			os.unlink(ifn)
 			print(f"Removed file: {ifn}")
 			return True
-            
+			
 	except Exception as e:
 		print(f"Failed to remove {ifn}. Reason: {e}")
 		return False
@@ -38,18 +38,18 @@ def main():
 		time.sleep(0.1)
 		try:
 			# Read the log file to get the recorded shot numbers
-			with open(log_ifn, 'r') as log_file:
-				recorded_shot_numbers = log_file.readlines()
-				if recorded_shot_numbers == []:
-					time.sleep(0.5)
+			with open(log_ifn, 'r+') as log_file:
+				log_data = log_file.readlines()
+				# skip iteration if log file is empty
+				if len(log_data) == 0:
+					print('Log file is empty.')
 					continue
 
 			# Remove the newline characters from the shot numbers
-			recorded_shot_numbers = [int(shot_number.split(',')[0].strip()) for shot_number in recorded_shot_numbers]
+			recorded_shot_numbers = [int(shot_number.split(',')[0].strip()) for shot_number in log_data]
 
 			# Delete the corresponding interferometer files
 			for shot_number in recorded_shot_numbers:
-				print(shot_number)
 				ifn = f"{file_path}/C1-interf-shot{int(shot_number):05d}.trc"
 				is_removed = remove_file(ifn)
 				ifn = f"{file_path}/C2-interf-shot{int(shot_number):05d}.trc"
@@ -59,18 +59,26 @@ def main():
 				ifn = f"{file_path}/C4-interf-shot{int(shot_number):05d}.trc"
 				is_removed = remove_file(ifn)
 
-			# Remove the line of shot number from the log file
-			with open(log_ifn, 'w') as log_file:
-				for line in recorded_shot_numbers:
-					if not any(shot_number in line for shot_number in recorded_shot_numbers):
-						log_file.write(line)
+				if is_removed:
+					# Remove entire line with the shot number from the log file
+					with open(log_ifn, 'r+') as log_file:
+						log_file.seek(0)
+						for line in log_data:
+							if int(line.split(',')[0].strip()) != shot_number:
+								log_file.write(line)
+						log_file.truncate()
+					
+					# Remove shot
+					recorded_shot_numbers.remove(shot_number)
+					print(f"Removed shot {shot_number}")
+
 
 		except KeyboardInterrupt:
 			print("Keyboard interrupt")
 			break
 		except Exception as e:
 			if 'Permission denied' in str(e):
-#				print('waiting for log file to be written')
+				# print('waiting for log file to be written')
 				time.sleep(0.5)
 				continue
 			else:
