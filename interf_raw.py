@@ -116,7 +116,8 @@ def correlation_spectrogram(tarr, refch, plach, FT_len):
 
 		npts_to_ignore = 10                 # skip 10 initial points to avoid DC offset being the largest value
 
-		adx, mag = fit_peak_index(np.abs(csd[npts_to_ignore:]))
+		adx = np.argmax(np.abs(csd[npts_to_ignore:]))
+		mag = adx # not used need to be removed
 		adx += npts_to_ignore
 		data = np.angle(csd)
 		i = int(adx)
