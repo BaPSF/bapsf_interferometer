@@ -109,7 +109,7 @@ def main(hdf5_path, file_path ="/mnt/smbshare", ram_path="/mnt/ramdisk"):
 			# Check if the day has changed; if so, create a new HDF5 file
 			st = time.time() # current time
 			
-			h5_cdate = os.path.getctime(hdf5_ifn)[:10]
+			h5_cdate = time.ctime(os.path.getctime(hdf5_ifn))[:10]
 			if time.ctime(st)[:10] != h5_cdate:
 				date = datetime.date.today()
 				hdf5_ifn = f"{hdf5_path}/interferometer_data_{date}.hdf5"

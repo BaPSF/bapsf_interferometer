@@ -12,6 +12,7 @@ import os
 import h5py
 
 from read_scope_data import read_trc_data_simplified, read_trc_data_no_header
+from interf_raw import get_calibration_factor
 
 #===============================================================================================================================================
 #<o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o>
@@ -27,7 +28,7 @@ def find_latest_shot_number(dir_path):
 		return 0
 	return shot_number
 
-def write_to_temp(file_path, temp_path):
+def write_to_temp(file_path, temp_path): # not used Jun-2024
 	'''
 	Saves interferometer data to a temporary folder.
 	Loops continuously to save the latest interferometer data files to the temporary folder.
@@ -87,7 +88,7 @@ def write_to_temp(file_path, temp_path):
 			print(f"Error: {e}")
 			break
 
-def load_shot_data(file_path):
+def load_shot_data(file_path): # not used Jun-2024
 	# Load the .npz file
 	with np.load(file_path) as data:
 		refchA = data['refchA']
@@ -110,6 +111,23 @@ def init_hdf5_file(file_name):
 		ct = time.localtime()
 		f.attrs['created'] = ct
 		print("HDF5 file created ", time.strftime("%Y-%m-%d %H:%M:%S", ct))
+		f.attrs['description'] = "Interferometer data. See group description and attribute for more info."
+
+		grp = f.require_group("phase_p20")
+		grp.attrs['description'] = "Phase data for interferometer at port 20. Attribute calibration factor assumes 40cm plasma length."
+		grp.attrs['unit'] = "rad"
+		grp.attrs['Microwave frequency (Hz)'] = 288e9
+		grp.attrs['calibration factor (m^-3/rad)'] = get_calibration_factor(grp.attrs['Microwave frequency (Hz)'])
+
+		grp = f.require_group("phase_p29")
+		grp.attrs['description'] = "Phase data for interferometer at port 29. Attribute calibration factor assumes 40cm plasma length."
+		grp.attrs['unit'] = "rad"
+		grp.attrs['Microwave frequency (Hz)'] = 282e9
+		grp.attrs['calibration factor (m^-3/rad)'] = get_calibration_factor(grp.attrs['Microwave frequency (Hz)'])
+
+		grp = f.require_group("time_array")
+		grp.attrs['description'] = "Time array for interferometer data in milliseconds."
+		grp.attrs['unit'] = "ms"
 
 
 def create_sourcefile_dataset(file_path, dataA, dataB, t_ms, saved_time):
@@ -142,10 +160,15 @@ def delete_file(file_path):
 
 if __name__ == '__main__':
 	
-	if True:
+	if False:
 		file_path = "/home/smbshare" # Network drive located on LeCroy scope, mounted on RP 
 		temp_path = "/mnt/ramdisk" 	 # Temporary ramdisk on RP, see readme on desktop
 		write_to_temp(file_path, temp_path)
 	
 	if False:
-		refchA, plachA, refchB, plachB, tarr, saved_time = load_shot_data(ifn)
+		ifn = r"C:\data\LAPD\interferometer_data_2024-06-01.hdf5"
+		f = h5py.File(ifn, "r")
+		groups = list(f.keys())
+		sets = list(f[groups[0]].keys())
+		
+		time_list = os.path.getctime(ifn), os.path.getmtime(ifn)
