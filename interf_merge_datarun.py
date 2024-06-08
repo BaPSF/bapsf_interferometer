@@ -9,6 +9,8 @@ import numpy as np
 import time
 import datetime
 
+from read_hdf5 import unpack_datarun_sequence
+
 #===============================================================================================================================================
 
 def get_start_timestamp(datarun_path):
@@ -27,6 +29,27 @@ def get_start_timestamp(datarun_path):
     print(start_datetime)
     return start_timestamp
 
+def get_shot_timestamps(datarun_path):
+    # Extract the sequence of shots from the datarun file
+    f = h5py.File(datarun_path, "r")
+    message_array, status_array, all_timestamp_array = unpack_datarun_sequence(f)
+    f.close()
+
+    # Correct timestamps
+    timestamp_array = np.array([])
+    for i, timestamp in enumerate(all_timestamp_array):
+        
+        # Check if the saved message correspond to an actual completed shot
+        if ('Shot number' in message_array[i]) and (status_array[i] == 'Completed'):
+
+            t_corrected = timestamp - 2082844800
+            timestamp_array = np.append(timestamp_array, t_corrected)
+
+#            t = time.gmtime(timestamp)
+#            t_corrected = time.struct_time((2024, t.tm_mon, t.tm_mday, t.tm_hour, t.tm_min, t.tm_sec, t.tm_wday, t.tm_yday, t.tm_isdst))
+
+    return timestamp_array
+#===============================================================================================================================================
 
 def init_datarun_groups(f_datarun, f_interf):
     # Create interferometer groups in datarun file
@@ -51,19 +74,15 @@ def init_datarun_groups(f_datarun, f_interf):
     print('Interferometer groups created/loaded in datarun file')
 
 
-def merge_interferometer_data(f_interf, f_datarun, start_timestamp):
-    n = 10  # number of iterations
-    duration = 30*60  # duration in seconds
+def merge_interferometer_data(f_interf, f_datarun, timestamp_array):
     
     # get the groups and sets from the interferometer data
     groups = list(f_interf.keys())
     sets = list(f_interf[groups[0]].keys())
 
-    # Iterate over the sets for n times over duration seconds
     # Copy data from interferometer hdf5 file into datarun file
-    for i in range(n):
+    for i, timestamp in enumerate(timestamp_array):
 
-        timestamp = start_timestamp + (i * duration)
         closest_set = min(sets, key=lambda x: abs(float(x) - timestamp))
 
         # get the data from the closest set
@@ -72,14 +91,13 @@ def merge_interferometer_data(f_interf, f_datarun, start_timestamp):
         time_array = f_interf['time_array'][closest_set][:]
 
         # create datasets in datarun file if they don't already exist
+        # Naming convention goes with shot number (starts from index 1)
         if closest_set not in f_datarun['interferometer/phase_p20']:
-            f_datarun['interferometer/phase_p20'].create_dataset(closest_set, data=p20)
+            f_datarun['interferometer/phase_p20'].create_dataset(str(i+1), data=p20)
         if closest_set not in f_datarun['interferometer/phase_p29']:
-            f_datarun['interferometer/phase_p29'].create_dataset(closest_set, data=p29)
+            f_datarun['interferometer/phase_p29'].create_dataset(str(i+1), data=p29)
         if closest_set not in f_datarun['interferometer/time_array']:
-            f_datarun['interferometer/time_array'].create_dataset(closest_set, data=time_array)
-
-        print('Data copied for set:', closest_set)
+            f_datarun['interferometer/time_array'].create_dataset(str(i+1), data=time_array)
 
         if closest_set == sets[-1]:
             print('End of interferometer data reached. Exiting.')
@@ -92,19 +110,19 @@ def merge_interferometer_data(f_interf, f_datarun, start_timestamp):
 if __name__ == '__main__':
       
     interf_path = r"C:\data\LAPD\interferometer_data_2024-06-05.hdf5"
-    datarun_path = r"C:\data\LAPD\JAN2024_diverging_B\00_test-sequential-motion_2024-01-25_18.56.30.hdf5"
+    datarun_path = r"C:\data\LAPD\JAN2024_diverging_B\02_2cmXYline_M1P24_M3P27_2024-01-26_15.16.39.hdf5"
     
     # open hdf5 files
     f_interf = h5py.File(interf_path, "r")
-    f_datarun = h5py.File(datarun_path, "a")
+    f_datarun = h5py.File(datarun_path, "r")
     
-    init_datarun_groups(f_datarun, f_interf)
+#    init_datarun_groups(f_datarun, f_interf)
 
     # set name in sets are timestamps in seconds since epoch
     # find the closest set to the start_timestamp
-    start_timestamp = get_start_timestamp(datarun_path)
+    timestamp_array = get_shot_timestamps(datarun_path)
     
-    merge_interferometer_data(f_interf, f_datarun, start_timestamp)
+#    merge_interferometer_data(f_interf, f_datarun, start_timestamp)
 
     f_interf.close()
     f_datarun.close()
