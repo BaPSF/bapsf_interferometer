@@ -10,6 +10,7 @@ import time
 import datetime
 
 from read_hdf5 import unpack_datarun_sequence
+from interf_raw import get_calibration_factor
 
 #===============================================================================================================================================
 
@@ -49,59 +50,112 @@ def get_shot_timestamps(datarun_path):
 #            t_corrected = time.struct_time((2024, t.tm_mon, t.tm_mday, t.tm_hour, t.tm_min, t.tm_sec, t.tm_wday, t.tm_yday, t.tm_isdst))
 
     return timestamp_array
+
 #===============================================================================================================================================
 
-def init_datarun_groups(f_datarun, f_interf):
-    # Create interferometer groups in datarun file
-    grp = f_datarun.require_group("interferometer")
-    # grp.attrs['description'] = f_interf.attrs['description']
+def init_datarun_groups(datarun_path, interf_path):
 
-    grp_p20 = f_datarun.require_group("interferometer/phase_p20")
-    for attr_name, attr_value in f_interf['phase_p20'].attrs.items():
-        if attr_name not in grp.attrs:
-            grp.attrs[attr_name] = attr_value
+    with h5py.File(datarun_path, "a") as f_datarun:
+        with h5py.File(interf_path, "r") as f_interf:
 
-    grp_p29 = f_datarun.require_group("interferometer/phase_p29")
-    for attr_name, attr_value in f_interf['phase_p29'].attrs.items():
-        if attr_name not in grp.attrs:
-            grp.attrs[attr_name] = attr_value
-    
-    grp_tarr = f_datarun.require_group("interferometer/time_array")
-    for attr_name, attr_value in f_interf['time_array'].attrs.items():
-        if attr_name not in grp.attrs:
-            grp.attrs[attr_name] = attr_value
+            # Create interferometer groups in datarun file
+            grp = f_datarun.require_group("interferometer")
+            if 'description' in f_interf.attrs:
+                grp.attrs['description'] = f_interf.attrs['description']
+
+            grp_p20 = f_datarun.require_group("diagnostics/interferometer/phase_p20")
+            for attr_name, attr_value in f_interf['phase_p20'].attrs.items():
+                if attr_name not in grp.attrs:
+                    grp.attrs[attr_name] = attr_value
+
+            grp_p29 = f_datarun.require_group("diagnostics/interferometer/phase_p29")
+            for attr_name, attr_value in f_interf['phase_p29'].attrs.items():
+                if attr_name not in grp.attrs:
+                    grp.attrs[attr_name] = attr_value
+            
+            grp_tarr = f_datarun.require_group("diagnostics/interferometer/time_array")
+            for attr_name, attr_value in f_interf['time_array'].attrs.items():
+                if attr_name not in grp.attrs:
+                    grp.attrs[attr_name] = attr_value
 
     print('Interferometer groups created/loaded in datarun file')
 
+def write_attribute(ifn):
+    # used for interferometer data writen before 2024.06.xx while attributes and descriptions were not included
+    with h5py.File(ifn, "a") as f:
 
-def merge_interferometer_data(f_interf, f_datarun, timestamp_array):
-    
+        grp = f.require_group("diagnostics/interferometer/phase_p20")
+        if len(grp.attrs) == 0:
+            grp.attrs['description'] = "Phase data for interferometer at port 20. Attribute calibration factor assumes 40cm plasma length."
+            grp.attrs['unit'] = "rad"
+            grp.attrs['Microwave frequency (Hz)'] = 288e9
+            grp.attrs['calibration factor (m^-3/rad)'] = get_calibration_factor(grp.attrs['Microwave frequency (Hz)'])
+
+        grp = f.require_group("diagnostics/interferometer/phase_p29")
+        if len(grp.attrs) == 0:
+            grp.attrs['description'] = "Phase data for interferometer at port 29. Attribute calibration factor assumes 40cm plasma length."
+            grp.attrs['unit'] = "rad"
+            grp.attrs['Microwave frequency (Hz)'] = 282e9
+            grp.attrs['calibration factor (m^-3/rad)'] = get_calibration_factor(grp.attrs['Microwave frequency (Hz)'])
+
+        grp = f.require_group("diagnostics/interferometer/time_array")
+        if len(grp.attrs) == 0:
+            grp.attrs['description'] = "Time array for interferometer data in milliseconds."
+            grp.attrs['unit'] = "ms"
+
+#===============================================================================================================================================
+
+def find_interf_file(datarun_path, interf_path):
+
+    date = datarun_path[-24:-14]
+
+    interf_files = os.listdir(interf_path)
+    date_files = [file for file in interf_files if date in file]
+    if date_files == []:
+        next_date = datetime.datetime.strptime(date, "%Y-%m-%d") + datetime.timedelta(days=1)
+        next_date_str = next_date.strftime("%Y-%m-%d")
+        ifn = os.path.join(interf_path, f"interferometer_data_{next_date_str}.hdf5")
+    else:
+        ifn = os.path.join(interf_path, date_files[0])
+
+    return ifn
+
+def merge_interferometer_data(datarun_path, interf_path):
+
+    timestamp_array = get_shot_timestamps(datarun_path)
+
     # get the groups and sets from the interferometer data
+    f_interf = h5py.File(interf_path, "r")
     groups = list(f_interf.keys())
-    sets = list(f_interf[groups[0]].keys())
+    sets = set(f_interf[groups[0]].keys())
 
     # Copy data from interferometer hdf5 file into datarun file
     for i, timestamp in enumerate(timestamp_array):
+        shot_n = str(i+1) # Naming convention goes with shot number (starts from index 1)
+        matching_set = next((x for x in sets if abs(float(x) - timestamp) < 1), None)
+        if matching_set is None:
+            print(f"Shot {i+1} has no matching interferometer data")
+        else:
+            # get the data from the closest set
+            p20 = f_interf['phase_p20'][matching_set][:]
+            p29 = f_interf['phase_p29'][matching_set][:]
+            time_array = f_interf['time_array'][matching_set][:]
 
-        closest_set = min(sets, key=lambda x: abs(float(x) - timestamp))
+            with h5py.File(datarun_path, "a") as f_datarun:
+                # create datasets in datarun file if they don't already exist
+                if shot_n not in f_datarun['diagnostics/interferometer/phase_p20']:
+                    f_datarun['diagnostics/interferometer/phase_p20'].create_dataset(shot_n, data=p20)
+                if shot_n not in f_datarun['diagnostics/interferometer/phase_p29']:
+                    f_datarun['diagnostics/interferometer/phase_p29'].create_dataset(shot_n, data=p29)
+                if shot_n not in f_datarun['diagnostics/interferometer/time_array']:
+                    f_datarun['diagnostics/interferometer/time_array'].create_dataset(shot_n, data=time_array)
 
-        # get the data from the closest set
-        p20 = f_interf['phase_p20'][closest_set][:]
-        p29 = f_interf['phase_p29'][closest_set][:]
-        time_array = f_interf['time_array'][closest_set][:]
+            print(f"Shot {i+1} wrote into datarun file")
+            pass
 
-        # create datasets in datarun file if they don't already exist
-        # Naming convention goes with shot number (starts from index 1)
-        if closest_set not in f_datarun['interferometer/phase_p20']:
-            f_datarun['interferometer/phase_p20'].create_dataset(str(i+1), data=p20)
-        if closest_set not in f_datarun['interferometer/phase_p29']:
-            f_datarun['interferometer/phase_p29'].create_dataset(str(i+1), data=p29)
-        if closest_set not in f_datarun['interferometer/time_array']:
-            f_datarun['interferometer/time_array'].create_dataset(str(i+1), data=time_array)
+    f_interf.close()
+    print('Interferometer data merged into datarun file. File closed.')
 
-        if closest_set == sets[-1]:
-            print('End of interferometer data reached. Exiting.')
-            break
 
 #===============================================================================================================================================
 #<o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o>
@@ -109,22 +163,14 @@ def merge_interferometer_data(f_interf, f_datarun, timestamp_array):
 
 if __name__ == '__main__':
       
-    interf_path = r"C:\data\LAPD\interferometer_data_2024-06-05.hdf5"
-    datarun_path = r"C:\data\LAPD\JAN2024_diverging_B\02_2cmXYline_M1P24_M3P27_2024-01-26_15.16.39.hdf5"
-    
-    # open hdf5 files
-    f_interf = h5py.File(interf_path, "r")
-    f_datarun = h5py.File(datarun_path, "r")
-    
-#    init_datarun_groups(f_datarun, f_interf)
+    datarun_path = r"C:\data\LAPD\11_51x1line_L2sweep_173kHz_820G_LH_2024-06-06_19.59.36.hdf5"
+    interf_path = r"C:\data\LAPD\interferometer_samples"
 
-    # set name in sets are timestamps in seconds since epoch
-    # find the closest set to the start_timestamp
-    timestamp_array = get_shot_timestamps(datarun_path)
-    
-#    merge_interferometer_data(f_interf, f_datarun, start_timestamp)
+    ifn = find_interf_file(datarun_path, interf_path)
+    print("Checking interferometer data at", ifn)
 
-    f_interf.close()
-    f_datarun.close()
+    init_datarun_groups(datarun_path, ifn)
 
-    print('Interferometer data merged into datarun file. File closed.')
+    merge_interferometer_data(datarun_path, ifn)
+
+    write_attribute(datarun_path)
