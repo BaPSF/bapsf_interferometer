@@ -26,6 +26,10 @@ Feb.2024 update:
 2. Directly converted the unpacked data to a NumPy array and performed data manipulation in NumPy for efficiency.
 3. Ensured consistent use of string formatting.
 
+Jun. 2024 update: (optimization for speed)
+1. Added a simplified version of the read_trc_data function that only returns the data and time array.
+2. Added a function to read the data without the header information.
+3. Updated the read_trc_data function to use the simplified version.
 '''
 
 import numpy as np
