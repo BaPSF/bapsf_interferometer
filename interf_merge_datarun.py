@@ -1,6 +1,34 @@
 # coding utf-8
 '''
-Merge the interferometer data from the two channels to datarun hdf5 file
+Merge the interferometer data from the two channels to datarun hdf5 file.
+Author: Jia Han
+Last update: 2024-07-02
+
+Functions used in this script:
+
+init_datarun_groups(datarun_path, interf_path)
+    - Creates the interferometer groups in the datarun file.
+merge_interferometer_data(datarun_path, interf_path)
+    - Finds the interferometer data for each shot in datarun file by matching the timestamps.
+    - Copies interferometer data into the datarun file.
+write_attribute(datarun_path)
+    - Copies attributes for interferometer data into the datarun file.
+    - Attributes includes description, unit, microwave frequency, and calibration factor.
+
+    
+How to access interferometer data in datarun file:
+- Data groups are under "diagnostics/interferometer/"
+- As of July 2024, the groups are "phase_p20", "phase_p29", and "time_array".
+- Datasets under each group are named by shot number (starting from 1).
+- If shot number doesn't exist, it means interferometer data is missing for that shot
+
+How to use this script:
+- Change the datarun_path and interf_path to the correct paths.
+- Run the script in the terminal or in an IDE.
+- The script will try to match the timestamps of the shots in the datarun file with the interferometer data.
+- Sometimes you might need to use the interferometer data from the previous or next day.
+- Data will only be copy over if a matching timestamp is found.
+
 '''
 
 import os
@@ -11,10 +39,12 @@ import datetime
 
 from read_hdf5 import unpack_datarun_sequence
 from interf_raw import get_calibration_factor
-
+# interf_raw is the script used to analyze raw interferometer data and computes the phase
+# Future todo: save raw data as well
 #===============================================================================================================================================
 
-def get_start_timestamp(datarun_path):
+def get_start_timestamp(datarun_path): # NOT USED
+
     # Extract date and time from datarun hdf5 file using path name
     datarun_name = os.path.basename(datarun_path)
     datarun_name_parts = datarun_name.split("_")
@@ -31,6 +61,15 @@ def get_start_timestamp(datarun_path):
     return start_timestamp
 
 def get_shot_timestamps(datarun_path):
+    '''
+    Get the timestamps of the completed shots in the datarun file.
+
+    Parameters:
+    datarun_path (str): The path to the datarun hdf5 file.
+
+    Returns:
+    numpy.ndarray: An array of timestamps in seconds since epoch.
+    '''
     # Extract the sequence of shots from the datarun file
     f = h5py.File(datarun_path, "r")
     message_array, status_array, all_timestamp_array = unpack_datarun_sequence(f)
@@ -46,15 +85,18 @@ def get_shot_timestamps(datarun_path):
             t_corrected = timestamp - 2082844800
             timestamp_array = np.append(timestamp_array, t_corrected)
 
-#            t = time.gmtime(timestamp)
-#            t_corrected = time.struct_time((2024, t.tm_mon, t.tm_mday, t.tm_hour, t.tm_min, t.tm_sec, t.tm_wday, t.tm_yday, t.tm_isdst))
-
     return timestamp_array
 
 #===============================================================================================================================================
 
 def init_datarun_groups(datarun_path, interf_path):
+    '''
+    Initialize the interferometer groups in the datarun file.
 
+    Parameters:
+    datarun_path (str): The path to the datarun hdf5 file.
+    interf_path (str): The path to the interferometer hdf5 file.
+    '''
     with h5py.File(datarun_path, "a") as f_datarun:
         with h5py.File(interf_path, "r") as f_interf:
 
@@ -81,7 +123,13 @@ def init_datarun_groups(datarun_path, interf_path):
     print('Interferometer groups created/loaded in datarun file')
 
 def write_attribute(ifn):
-    # used for interferometer data writen before 2024.06.xx while attributes and descriptions were not included
+    '''
+    Write attributes for interferometer data.
+    (interferometer data before 2024-06-07 does not have attributes, so should skip this function)
+
+    Parameters:
+    ifn (str): The path to the interferometer hdf5 file.
+    '''
     with h5py.File(ifn, "a") as f:
 
         grp = f.require_group("diagnostics/interferometer/phase_p20")
@@ -105,23 +153,38 @@ def write_attribute(ifn):
 
 #===============================================================================================================================================
 
-def find_interf_file(datarun_path, interf_path):
+def find_interf_file(datarun_path, interf_path): # NOT USED
+
+    ifn_ls = []
 
     date = datarun_path[-24:-14]
 
-    interf_files = os.listdir(interf_path)
-    date_files = [file for file in interf_files if date in file]
-    if date_files == []:
-        next_date = datetime.datetime.strptime(date, "%Y-%m-%d") + datetime.timedelta(days=1)
-        next_date_str = next_date.strftime("%Y-%m-%d")
-        ifn = os.path.join(interf_path, f"interferometer_data_{next_date_str}.hdf5")
-    else:
-        ifn = os.path.join(interf_path, date_files[0])
+    prev_date = datetime.datetime.strptime(date, "%Y-%m-%d") - datetime.timedelta(days=1)
+    prev_date_str = prev_date.strftime("%Y-%m-%d")
+    ifn = os.path.join(interf_path, f"interferometer_data_{prev_date_str}.hdf5")
+    ifn_ls.append(ifn)
 
-    return ifn
+    interf_files = os.listdir(interf_path)
+    for file in interf_files:
+        if date in file:
+            ifn = os.path.join(interf_path, file)
+            ifn_ls.append(ifn)
+    
+    next_date = datetime.datetime.strptime(date, "%Y-%m-%d") + datetime.timedelta(days=1)
+    next_date_str = next_date.strftime("%Y-%m-%d")
+    ifn = os.path.join(interf_path, f"interferometer_data_{next_date_str}.hdf5")
+    ifn_ls.append(ifn)
+
+    return ifn_ls
 
 def merge_interferometer_data(datarun_path, interf_path):
+    '''
+    Merge the interferometer data into the datarun file.
 
+    Parameters:
+    datarun_path (str): The path to the datarun hdf5 file.
+    interf_path (str): The path to the interferometer hdf5 file.
+    '''
     timestamp_array = get_shot_timestamps(datarun_path)
 
     # get the groups and sets from the interferometer data
@@ -163,14 +226,11 @@ def merge_interferometer_data(datarun_path, interf_path):
 
 if __name__ == '__main__':
       
-    datarun_path = r"C:\data\LAPD\11_51x1line_L2sweep_173kHz_820G_LH_2024-06-06_19.59.36.hdf5"
-    interf_path = r"C:\data\LAPD\interferometer_samples"
+    datarun_path = r"C:\data\LAPD\07_Dipole_plane_p32_Diris7cm_MaskBiasing.hdf5"
+    interf_path = r"C:\data\LAPD\interferometer_samples\interferometer_data_2024-07-02.hdf5"
 
-    ifn = find_interf_file(datarun_path, interf_path)
-    print("Checking interferometer data at", ifn)
+    init_datarun_groups(datarun_path, interf_path)
 
-    init_datarun_groups(datarun_path, ifn)
-
-    merge_interferometer_data(datarun_path, ifn)
+    merge_interferometer_data(datarun_path, interf_path)
 
     write_attribute(datarun_path)
