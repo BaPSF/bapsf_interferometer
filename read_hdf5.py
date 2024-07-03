@@ -68,7 +68,8 @@ def data_time(f, board_num, chan_num, adc='SIS 3302'):
 
 #===============================================================================================================================================
 def unpack_datarun_sequence(f):
-
+    
+    print("reading data run sequence")
     sequence_list = f['Raw data + config/Data run sequence/Data run sequence']
     message_array = np.array([])
     status_array = np.array([])
