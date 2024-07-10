@@ -101,6 +101,10 @@ def main(hdf5_path, file_path ="/mnt/smbshare", ram_path="/mnt/ramdisk"):
 
 	# Initialize the plot
 	ax, line_A, line_B = init_plot()
+	lineA_ls = []
+	lineB_ls = []
+	t_ls = []
+	
 	# Find the most recent shot in LeCroy Network drive 
 	shot_number = find_latest_shot_number(file_path)
 	
@@ -141,7 +145,7 @@ def main(hdf5_path, file_path ="/mnt/smbshare", ram_path="/mnt/ramdisk"):
 			neA = phaseA * get_calibration_factor(288e9)
 			neB = phaseB * get_calibration_factor(282e9)
 			# update the plot with the new data
-			update_plot(ax, line_A, line_B, t_ms, neA, neB)
+			lineA_ls, lineB_ls, t_ls = update_plot(ax, line_A, line_B, t_ms, neA, neB, lineA_ls, lineB_ls, t_ls)
 			
 #			print("Time taken: ", time.time() - st)
 			if shot_number == 99999: # reset shot number to 0 after reaching the maximum
@@ -169,4 +173,4 @@ def main(hdf5_path, file_path ="/mnt/smbshare", ram_path="/mnt/ramdisk"):
 #===============================================================================================================================================
 
 if __name__ == '__main__':
-	main("/media/interfpi/5381-58FC")
+	main("/home/interfpi/data")

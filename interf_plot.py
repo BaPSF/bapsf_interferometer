@@ -14,9 +14,9 @@ def init_plot():
     """
     This function creates a new matplotlib figure and axes, and initializes line objects for the plot.
     """
-    plt.rcParams.update({'font.size': 14})
+    plt.rcParams.update({'font.size': 26})
     plt.ion()  # Enable interactive mode
-    fig, ax = plt.subplots(figsize=(8, 5))
+    fig, ax = plt.subplots(figsize=(14, 10))
 
     # Initialize line objects
     line_neA, = ax.plot([], [], 'r-', label='ne P20')
@@ -25,12 +25,12 @@ def init_plot():
     # Set plot titles and labels
     ax.set_xlabel('Time (ms)')
     ax.set_ylabel('ne (m^-3)')
-    ax.set_title('Density assuming 40cm plasma length')
+    ax.set_title('Density assuming 40cm plasma Dia')
     ax.legend()
 
     return ax, line_neA, line_neB
 
-def update_plot(ax, lineA, lineB, t_ms, neA, neB):
+def update_plot(ax, lineA, lineB, t_ms, neA, neB, Als, Bls, tls):
     """
     This function updates the data for the line objects in the plot and adjusts the plot limits dynamically.
 
@@ -45,18 +45,35 @@ def update_plot(ax, lineA, lineB, t_ms, neA, neB):
     Returns:
         None
     """
+#    if Als and Bls:
+#        for i,data in enumerate(Als):
+#            ax.cla()
+#            ax.plot(tls[i], Als[i], 'r-', alpha=0.5)
+#            ax.plot(tls[i], Bls[i], 'b-', alpha=0.5)
+        
+    
     # Update data for plotting
     lineA.set_data(t_ms, neA)
     lineB.set_data(t_ms, neB)
-
+    
+    Als.append(neA)
+    Bls.append(neB)
+    
+    Als = Als[-10:]
+    Bls = Bls[-10:]
+    
     # Adjust plot limits dynamically
     if len(t_ms) > 0:
         ax.set_xlim(min(t_ms), max(t_ms))
+#        ax.set_xlim(10,40)
     if len(neA) > 0 and len(neB) > 0:
         ax.set_ylim( min(min(neA),min(neB)), max(max(neA),max(neB)) )
-
+#        ax.set_ylim(min(min(neA),min(neB)), 0.5e19)
+        
     plt.draw()
     plt.pause(0.001)  # Pause to allow the plot to update
+    
+    return Als, Bls, tls
 
 def end_plot():
     plt.ioff() # Turn off interactive mode

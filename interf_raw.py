@@ -47,7 +47,7 @@ def get_calibration_factor(f_uwave = 288e9, plasma_length = 0.4):
 	m_e = const.electron_mass
 	eps0 = const.epsilon_0
 	c = const.speed_of_light
-	
+	carrier_frequency = 760e3
 	Npass = 2.0 # Number of passes of uwave through plasma
 	# diameter = 0.35 # Plasma diameter if it were flat (m)
 	# Note: a decent guess for the diameter is the FWHM
@@ -59,9 +59,6 @@ def get_calibration_factor(f_uwave = 288e9, plasma_length = 0.4):
 # The following functions are from Pat
 #============================================================================
 def parinterp(x1, x2, x3, y1, y2, y3):
-	'''
-	Not used see fit_peak_index() Jun-2024
-	'''
 	d = - (x1-x2) * (x2-x3) * (x3-x1)
 	if d == 0:
 		raise ValueError('parinterp:() two abscissae are the same')
@@ -82,10 +79,6 @@ def parinterp(x1, x2, x3, y1, y2, y3):
 
 
 def fit_peak_index(data):
-	'''
-	not used because it was creating gliches in results
-	replaced by np.argmax() Jun-2024; see adx below
-	'''
 	i = np.argmax(data)
 	if i == 0:
 		return 0, data[0]
@@ -98,10 +91,9 @@ def fit_peak_index(data):
 #============================================================================
 
 def correlation_spectrogram(tarr, refch, plach, FT_len):
-	''' 
-	compute a spectrogram-like array of the correlation spectral density
-	track the peak as a function of time
-	return the phase and magnitude of the peak, along with the times they are computed for
+	''' compute a spectrogram-like array of the correlation spectral density
+		track the peak as a function of time
+		return the phase and magnitude of the peak, along with the times they are computed for
 	'''
 	NS = len(refch)
 	num_FTs = int(NS/FT_len)
@@ -124,7 +116,7 @@ def correlation_spectrogram(tarr, refch, plach, FT_len):
 
 		npts_to_ignore = 10                 # skip 10 initial points to avoid DC offset being the largest value
 
-		adx = np.argmax(np.abs(csd[npts_to_ignore:])) # find the peak of the cross spectral density
+		adx = np.argmax(np.abs(csd[npts_to_ignore:]))
 		mag = adx # not used need to be removed
 		adx += npts_to_ignore
 		data = np.angle(csd)
@@ -139,9 +131,6 @@ def correlation_spectrogram(tarr, refch, plach, FT_len):
 	return ttt+tarr[0], csd_ang, csd_mag
 
 def auto_find_fixups(t_ms, csd_ang, threshold=5.):
-	'''
-	Find phase jumps of 2pi
-	'''
 	d = np.diff(csd_ang)
 	p = t_ms[:-1][d > threshold] # len(diff) is one less than len(csd_ang)
 	n = t_ms[:-1][d < -threshold]
@@ -152,9 +141,6 @@ def auto_find_fixups(t_ms, csd_ang, threshold=5.):
 	return f
 
 def do_fixups(t_ms, csd_ang):
-	'''
-	Correct 2pi phase jumps 
-	'''
 	cum_phase = csd_ang.copy()
 	fixups = auto_find_fixups(t_ms-t_ms[0], cum_phase)
 	dt = t_ms[1]-t_ms[0]
@@ -175,7 +161,9 @@ def phase_from_raw(tarr, refch, plach):
 
 	t_ms = ttt * 1000
 
-	cum_phase = do_fixups(t_ms, csd_ang)
+
+	cum_phase = np.unwrap(csd_ang)
+#	cum_phase = do_fixups(t_ms, csd_ang)
 	offset = np.average(cum_phase[offset_range])
 
 	return t_ms, cum_phase-offset
@@ -189,7 +177,6 @@ def density_from_phase_steve(tarr, refch, plach):
 
 	# Decimate data as we are only interested in the slowly varying phase,
 	# not the carrier wave phase variations
-	carrier_frequency = 760e3
 	decimate_factor = 10
 	dt = tarr[1]-tarr[0]
 	carrier_period_nt = int((1./carrier_frequency)/dt)
@@ -238,7 +225,7 @@ def density_from_phase_steve(tarr, refch, plach):
 	# Note: This assumes the diameter is not a function of time,
 	# which of course it is. You need a probe measurement here.
 
-	density = dphi*get_calibration_factor()
+	density = dphi*calibration
 
 	return t_ms, density
 
@@ -250,23 +237,24 @@ def density_from_phase_steve(tarr, refch, plach):
 
 if __name__ == '__main__':
 
- 	# modify testing for Linux
-	st1 = time.time()
- 
-	ifn = "/home/interfpi/C1-topo-22-12-05-00000.trc"
-	refch, tarr = read_trc_data_simplified(ifn)
-
-	ifn = "/home/interfpi/C2-topo-22-12-05-00000.trc"
-	plach, tarr = read_trc_data_simplified(ifn)
-	st2 = time.time()
-
-	t_ms, ne = phase_from_raw(tarr, refch, plach)
-	st3 = time.time()
-
-	print('Reading time: ', st2-st1)
-	print('Analyzing time: ', st3-st2)
-	print('Total time: ', st3-st1)
-
-	plt.figure()
-	plt.plot(t_ms, ne)
-	plt.show()
+	print (calibration)
+# 	# modify testing for Linux
+# 	st1 = time.time()
+# 
+# 	ifn = "/home/interfpi/C1-topo-22-12-05-00000.trc"
+# 	refch, tarr = read_trc_data_simplified(ifn)
+# 
+# 	ifn = "/home/interfpi/C2-topo-22-12-05-00000.trc"
+# 	plach, tarr = read_trc_data_simplified(ifn)
+# 	st2 = time.time()
+# 
+# 	t_ms, ne = density_from_phase(tarr, refch, plach)
+# 	st3 = time.time()
+# 
+# 	print('Reading time: ', st2-st1)
+# 	print('Analyzing time: ', st3-st2)
+# 	print('Total time: ', st3-st1)
+# 	
+# 	plt.figure()
+# 	plt.plot(t_ms, ne)
+# 	plt.show()
