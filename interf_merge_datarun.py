@@ -226,8 +226,8 @@ def merge_interferometer_data(datarun_path, interf_path):
 
 if __name__ == '__main__':
       
-    datarun_path = r"C:\data\LAPD\07_Dipole_plane_p32_Diris7cm_MaskBiasing.hdf5"
-    interf_path = r"C:\data\LAPD\interferometer_samples\interferometer_data_2024-07-02.hdf5"
+    datarun_path = "/data/BAPSF_Data/Chen/July2024/01_31x31planes_C101C15_M1isats_A41xy_2024-07-10_00.22.46.hdf5"
+    interf_path = "/data/BAPSF_Data/Chen/July2024/interferometer/interferometer_data_2024-07-09.hdf5"
 
     init_datarun_groups(datarun_path, interf_path)
 
