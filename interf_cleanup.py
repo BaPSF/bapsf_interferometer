@@ -1,6 +1,10 @@
 # coding utf-8
+'''
+This module removes interferometer raw data saved on the scope after they have been analyzed and saved to a HDF5 file.
 
-# This module removes interferometer raw data saved on the scope after they have been analyzed and saved to a HDF5 file.
+Author: Jia Han
+Ver1.0 created on: 2021-06-01
+'''
 
 import time
 import os
@@ -11,14 +15,15 @@ file_path ="/mnt/smbshare"
 ram_path="/mnt/ramdisk"
 log_ifn = f"{ram_path}/interferometer_log.bin"
 
-def remove_file(ifn):
+def remove_file(ifn, verbose=False):
 	if not os.path.exists(ifn):
 		return False
 
 	try:
 		if os.path.isfile(ifn) or os.path.islink(ifn):
 			os.unlink(ifn)
-			print(f"Removed file: {ifn}")
+			if verbose:
+				print(f"Removed file: {ifn}")
 			return True
 			
 	except Exception as e:
@@ -26,7 +31,7 @@ def remove_file(ifn):
 		return False
 
 
-def main():
+def main(verbose=False):
 	# Check if the log file exists
 	if os.path.exists(log_ifn):
 		log_file_exists = True
@@ -42,7 +47,8 @@ def main():
 				log_data = log_file.readlines()
 				# skip iteration if log file is empty
 				if len(log_data) == 0:
-					print('Log file is empty.')
+					if verbose:
+						print('Log file is empty.')
 					continue
 
 			# Remove the newline characters from the shot numbers
@@ -51,13 +57,13 @@ def main():
 			# Delete the corresponding interferometer files
 			for shot_number in recorded_shot_numbers:
 				ifn = f"{file_path}/C1-interf-shot{int(shot_number):05d}.trc"
-				is_removed = remove_file(ifn)
+				is_removed = remove_file(ifn, verbose=verbose)
 				ifn = f"{file_path}/C2-interf-shot{int(shot_number):05d}.trc"
-				is_removed = remove_file(ifn)
+				is_removed = remove_file(ifn, verbose=verbose)
 				ifn = f"{file_path}/C3-interf-shot{int(shot_number):05d}.trc"
-				is_removed = remove_file(ifn)
+				is_removed = remove_file(ifn, verbose=verbose)
 				ifn = f"{file_path}/C4-interf-shot{int(shot_number):05d}.trc"
-				is_removed = remove_file(ifn)
+				is_removed = remove_file(ifn, verbose=verbose)
 
 				if is_removed:
 					# Remove entire line with the shot number from the log file

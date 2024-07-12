@@ -40,9 +40,17 @@ from read_scope_data import read_trc_data, read_trc_data_simplified
 import time
 
 #============================================================================
+# Parameters for analyzing raw signal of interferometer
+FT_len = 512
+#============================================================================
+
 def get_calibration_factor(f_uwave = 288e9, plasma_length = 0.4):
-#	f_uwave = 288e9 # Microwave frequency (Hz)
-	# Note: SI units for physical constants
+	'''
+	Convert phase to density with:
+	f_uwave --> Microwave frequency (Hz)
+	plasma_length --> Plasma length (m)
+	Note: SI units for physical constants
+	'''
 	e = const.elementary_charge
 	m_e = const.electron_mass
 	eps0 = const.epsilon_0
@@ -59,6 +67,9 @@ def get_calibration_factor(f_uwave = 288e9, plasma_length = 0.4):
 # The following functions are from Pat
 #============================================================================
 def parinterp(x1, x2, x3, y1, y2, y3):
+	'''
+	Parabolic interpolation of the peak of a function
+	'''
 	d = - (x1-x2) * (x2-x3) * (x3-x1)
 	if d == 0:
 		raise ValueError('parinterp:() two abscissae are the same')
@@ -79,6 +90,9 @@ def parinterp(x1, x2, x3, y1, y2, y3):
 
 
 def fit_peak_index(data):
+	'''
+	Find the peak of a function
+	'''
 	i = np.argmax(data)
 	if i == 0:
 		return 0, data[0]
@@ -154,7 +168,6 @@ def phase_from_raw(tarr, refch, plach):
 	'''
 	compute phase of the cross-spectral density
 	'''
-	FT_len = 512
 	offset_range = range(5)
 
 	ttt, csd_ang, csd_mag = correlation_spectrogram(tarr, refch, plach, FT_len)

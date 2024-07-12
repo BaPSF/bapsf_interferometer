@@ -7,6 +7,11 @@ The data are plotted using the interf_plot module
 
 Author: Jia Han
 Ver1.0 created on: 2021-06-01
+
+Ver1.1 updated on: 2021-07-11
+- Fix create new hdf5 at beginning of each day
+- interf_main.py will now run on PC, where the hdf5 file is stored
+- interf_plot.py will run on Raspberry Pi, which reads from hdf5 on PC and plots on screen 
 '''
 import sys
 import multiprocessing
@@ -17,17 +22,16 @@ import datetime
 import os
 
 from interf_raw import phase_from_raw, get_calibration_factor
-from interf_plot import init_plot, update_plot, end_plot
 from interf_file import find_latest_shot_number, init_hdf5_file, create_sourcefile_dataset
 from read_scope_data import read_trc_data_simplified, read_trc_data_no_header
 
 #===============================================================================================================================================
 def get_current_day(timestamp):
 	'''
-	gets current day in year,month,day format from the timestamp
+	gets current day from the timestamp
 	'''
 	ct = time.localtime(timestamp)
-	return (ct.tm_year, ct.tm_mon, ct.tm_mday)
+	return ct.tm_yday
 
 #===============================================================================================================================================
 # Multiprocessing functions
@@ -98,27 +102,15 @@ def main(hdf5_path, file_path ="/mnt/smbshare", ram_path="/mnt/ramdisk"):
 	else:
 		with open(log_ifn, 'w') as log_file:
 			log_file.write(" ")
-
-	# Initialize the plot
-	ax, line_A, line_B = init_plot()
-	lineA_ls = []
-	lineB_ls = []
-	t_ls = []
 	
 	# Find the most recent shot in LeCroy Network drive 
 	shot_number = find_latest_shot_number(file_path)
 	
 	while True:
 		try:
-			# Check if the day has changed; if so, create a new HDF5 file
+
 			st = time.time() # current time
 			
-			h5_cdate = time.ctime(os.path.getctime(hdf5_ifn))[:10]
-			if time.ctime(st)[:10] != h5_cdate:
-				date = datetime.date.today()
-				hdf5_ifn = f"{hdf5_path}/interferometer_data_{date}.hdf5"
-				init_hdf5_file(hdf5_ifn)
-
 			# Check if the interferometer data files are available on leCroy scope drive
 			# C4 is the last channel to be saved
 			ifn = f"{file_path}/C4-interf-shot{shot_number:05d}.trc"
@@ -137,15 +129,23 @@ def main(hdf5_path, file_path ="/mnt/smbshare", ram_path="/mnt/ramdisk"):
 
 			print("Shot ", shot_number)
 			t_ms, phaseA, phaseB = multiprocess_analyze(file_path, shot_number)
-#			print( np.array_equal(neA, neB) )
+
+
+			# Open the HDF5 file
+			f = h5py.File(hdf5_ifn, 'a', libver='latest')
+			# Check if the day has changed; if so, create a new HDF5 file
+			fc_day = f.attrs['created'][-2]
+			cd = get_current_day(st)
+			if fc_day != cd:
+				f.close()
+				date = datetime.date.today()
+				hdf5_ifn = f"{hdf5_path}/interferometer_data_{date}.hdf5"
+				init_hdf5_file(hdf5_ifn)
+				f = h5py.File(hdf5_ifn, 'a', libver='latest')
 
 			# save data to HDF5 file as new datasets
-			create_sourcefile_dataset(hdf5_ifn, phaseA, phaseB, t_ms, saved_time)
-			
-			neA = phaseA * get_calibration_factor(288e9)
-			neB = phaseB * get_calibration_factor(282e9)
-			# update the plot with the new data
-			lineA_ls, lineB_ls, t_ls = update_plot(ax, line_A, line_B, t_ms, neA, neB, lineA_ls, lineB_ls, t_ls)
+			create_sourcefile_dataset(f, phaseA, phaseB, t_ms, saved_time)
+			f.close()
 			
 #			print("Time taken: ", time.time() - st)
 			if shot_number == 99999: # reset shot number to 0 after reaching the maximum
@@ -157,6 +157,7 @@ def main(hdf5_path, file_path ="/mnt/smbshare", ram_path="/mnt/ramdisk"):
 				log_file.write(f"{shot_number},{saved_time}\n")
 
 			shot_number += 1
+
 			
 		except KeyboardInterrupt:
 			print("Keyboard interrupt detected. Exit program.")
@@ -166,7 +167,6 @@ def main(hdf5_path, file_path ="/mnt/smbshare", ram_path="/mnt/ramdisk"):
 			print("Error not specified: ", e)
 			break
 
-	end_plot() # plot persist on screen after the program ends
 
 #===============================================================================================================================================
 #<o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o>

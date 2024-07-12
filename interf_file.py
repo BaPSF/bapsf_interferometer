@@ -1,8 +1,10 @@
 # coding: utf-8
 
 '''
-This module reads interferometer data acquired from the scope and saves them to a temporary npz file. (Binary format)
-NOT USED
+This module contains functions for hdf5 handeling
+
+Author: Jia Han
+Ver1.0 created on: 2021-06-01
 '''
 
 import sys
@@ -28,7 +30,7 @@ def find_latest_shot_number(dir_path):
 		return 0
 	return shot_number
 
-def write_to_temp(file_path, temp_path): # not used Jun-2024
+def write_to_temp(file_path, temp_path): # NOT USED
 	'''
 	Saves interferometer data to a temporary folder.
 	Loops continuously to save the latest interferometer data files to the temporary folder.
@@ -107,7 +109,7 @@ def init_hdf5_file(file_name):
 		print("HDF5 file exist")
 		return None
 	
-	with h5py.File(file_name, "w") as f:
+	with h5py.File(file_name, "w",  libver='latest') as f:
 		ct = time.localtime()
 		f.attrs['created'] = ct
 		print("HDF5 file created ", time.strftime("%Y-%m-%d %H:%M:%S", ct))
@@ -130,19 +132,19 @@ def init_hdf5_file(file_name):
 		grp.attrs['unit'] = "ms"
 
 
-def create_sourcefile_dataset(file_path, dataA, dataB, t_ms, saved_time):
-	with h5py.File(file_path, "a") as f:
-		grp = f.require_group("phase_p20")
-		fds = grp.create_dataset(str(saved_time), data=dataA)
-		fds.attrs['modified'] = time.ctime(saved_time)
+def create_sourcefile_dataset(f, dataA, dataB, t_ms, saved_time):
 
-		grp = f.require_group("phase_p29")
-		fds = grp.create_dataset(str(saved_time), data=dataB)
-		fds.attrs['modified'] = time.ctime(saved_time)
+	grp = f.require_group("phase_p20")
+	fds = grp.create_dataset(str(saved_time), data=dataA)
+	fds.attrs['modified'] = time.ctime(saved_time)
 
-		grp = f.require_group("time_array")
-		fds = grp.create_dataset(str(saved_time), data=t_ms)
-		fds.attrs['modified'] = time.ctime(saved_time)
+	grp = f.require_group("phase_p29")
+	fds = grp.create_dataset(str(saved_time), data=dataB)
+	fds.attrs['modified'] = time.ctime(saved_time)
+
+	grp = f.require_group("time_array")
+	fds = grp.create_dataset(str(saved_time), data=t_ms)
+	fds.attrs['modified'] = time.ctime(saved_time)
 
 	print("Saved interferometer shot at", time.ctime(saved_time))
 
