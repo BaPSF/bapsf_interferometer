@@ -7,9 +7,39 @@ from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.backends.backend_qt5agg import NavigationToolbar2QT as NavigationToolbar
 
 import numpy as np
+import h5py
+import os
 
-from interf_plot import init_plot, get_latest_file, get_data
 from interf_raw import get_calibration_factor
+
+#===============================================================================================================================================
+#===============================================================================================================================================
+
+def get_latest_file(dir_path):
+    """
+    This function returns the latest file in a directory.
+
+    Args:
+        dir_path (str): The path to the directory.
+
+    Returns:
+        str: The path to the latest file.
+    """
+    file_list = os.listdir(dir_path)
+    full_path_file_list = [os.path.join(dir_path, file) for file in file_list]
+    return max(full_path_file_list, key=os.path.getctime)
+
+def get_data(ifn, i):
+    with h5py.File(ifn, 'r', swmr=True) as f:
+        dataset_names = list(f['phase_p20'].keys())
+        last_dataset_name = dataset_names[i]
+        phaseA = np.array(f['phase_p20'][last_dataset_name])
+        phaseB = np.array(f['phase_p29'][last_dataset_name])
+        t_ms = np.array(f['time_array'][last_dataset_name])
+    return t_ms, phaseA, phaseB
+
+#===============================================================================================================================================
+#===============================================================================================================================================
 
 class Worker(QObject):
     data_updated = pyqtSignal(np.ndarray, np.ndarray, np.ndarray)  # Signal to emit the data
@@ -17,16 +47,18 @@ class Worker(QObject):
     def __init__(self, ifn):
         super().__init__()
         self.dir_path = r"C:\data\LAPD\interferometer_samples"
+        self.i = 0
 
     def run(self):
         # This method will run in a separate thread
         # Replace this with your actual data update logic
         while True:
             ifn = get_latest_file(self.dir_path)
-            t_ms, phaseA, phaseB = get_data(ifn)
+            t_ms, phaseA, phaseB = get_data(ifn, self.i)
             neA = phaseA * get_calibration_factor(288e9)
             neB = phaseB * get_calibration_factor(282e9)
             self.data_updated.emit(t_ms, neA, neB)
+            self.i += 1
             QThread.sleep(1)  # Simulate some delay
 
 class MainWindow(QMainWindow):
