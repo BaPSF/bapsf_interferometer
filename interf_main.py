@@ -15,6 +15,7 @@ Ver1.1 updated on: 2021-07-11
 '''
 import sys
 import multiprocessing
+import threading
 import h5py
 import numpy as np
 import time
@@ -24,6 +25,8 @@ import os
 from interf_raw import phase_from_raw, get_calibration_factor
 from interf_file import find_latest_shot_number, init_hdf5_file, create_sourcefile_dataset
 from read_scope_data import read_trc_data_simplified, read_trc_data_no_header
+import interf_cleanup as cleanup
+
 
 #===============================================================================================================================================
 def get_current_day(timestamp):
@@ -173,4 +176,15 @@ def main(hdf5_path, file_path ="/mnt/smbshare", ram_path="/mnt/ramdisk"):
 #===============================================================================================================================================
 
 if __name__ == '__main__':
-	main("/home/interfpi/data")
+	
+	def run_main_and_cleanup():
+		main_thread = threading.Thread(target=main, args=("/home/interfpi/data",))
+		cleanup_thread = threading.Thread(target=cleanup.main)
+		
+		main_thread.start()
+		cleanup_thread.start()
+		
+		main_thread.join()
+		cleanup_thread.join()
+
+	run_main_and_cleanup()
