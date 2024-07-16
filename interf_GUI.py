@@ -28,7 +28,7 @@ from interf_raw import get_calibration_factor
 #===============================================================================================================================================
 #===============================================================================================================================================
 
-def get_latest_file(dir_path=r"C:\data\interferometer"):
+def get_latest_file(dir_path="/mnt/diagnostic-data/interferometer"):
     """
     This function returns the latest file in a directory.
 
@@ -95,6 +95,7 @@ class MainWindow(QMainWindow):
         #======================== GUI setup ========================
         central_widget = QWidget() # Create a central widget
         self.setCentralWidget(central_widget) # Set the central widget
+        self.setGeometry(100,100,1500,1000)
 
         # Create a layout for the central widget
         layout = QVBoxLayout(central_widget)
@@ -116,18 +117,19 @@ class MainWindow(QMainWindow):
         self.remove_trace_button.clicked.connect(self.remove_trace)
 
         # Create a figure and a canvas for the figure
-        self.fig = Figure()
-        # plt.rcParams['font.size'] = 24
+        self.fig = Figure(figsize=(15,15))
+        plt.rcParams['font.size'] = 24
         self.ax = self.fig.add_subplot(111)
         self.canvas = FigureCanvas(self.fig)  # Create a canvas for the figure
-        layout.addWidget(self.canvas)  # Add the canvas to the layout
         # Add the navigation toolbar for interacting with plot
         self.toolbar = NavigationToolbar(self.canvas, self)
         layout.addWidget(self.toolbar)
+        layout.addWidget(self.canvas)  # Add the canvas to the layout
         # Plot label and title
         self.ax.set_xlabel('Time (ms)')
         self.ax.set_ylabel('ne (m^-3)')
         self.ax.set_title('Density assuming 40cm plasma Dia')
+        self.ax.grid(True)
         # Create the plot lines
         self.line_neA, = self.ax.plot([], [], 'r-')
         self.line_neB, = self.ax.plot([], [], 'g-')
@@ -152,7 +154,7 @@ class MainWindow(QMainWindow):
         self.line_neB.set_data(x, y_neB)
         self.line_neA.set_label('P20  ' + label)
         self.line_neB.set_label('P29  ' + label)
-        self.ax.legend(loc='upper right')
+        self.ax.legend(loc='upper right', fontsize=18)
         self.ax.relim()
         self.ax.autoscale_view(True, True, True)
 
