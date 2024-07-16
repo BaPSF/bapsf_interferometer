@@ -26,7 +26,7 @@ from interf_raw import get_calibration_factor
 #===============================================================================================================================================
 #===============================================================================================================================================
 
-def get_latest_file(dir_path=r"C:\data\LAPD\interferometer_samples"):
+def get_latest_file(dir_path=r"C:\data\interferometer"):
     """
     This function returns the latest file in a directory.
 
@@ -70,7 +70,7 @@ class Worker(QObject):
         '''
         while True:
             ifn = get_latest_file()
-            t_ms, phaseA, phaseB, tstamp = get_data(ifn, -1)
+            t_ms, phaseA, phaseB, tstamp = get_data(ifn, self.i)
             neA = phaseA * get_calibration_factor(288e9)
             neB = phaseB * get_calibration_factor(282e9)
             self.data_updated.emit(t_ms, neA, neB, tstamp)

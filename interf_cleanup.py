@@ -10,11 +10,11 @@ import time
 import os
 import threading
 
-
+#===============================================================================================================================================
 file_path ="/mnt/smbshare"
 ram_path="/mnt/ramdisk"
 log_ifn = f"{ram_path}/interferometer_log.bin"
-
+#===============================================================================================================================================
 def remove_file(ifn, verbose=False):
 	if not os.path.exists(ifn):
 		return False
