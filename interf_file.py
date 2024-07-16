@@ -130,19 +130,19 @@ def init_hdf5_file(file_name):
 		grp.attrs['unit'] = "ms"
 
 
-def create_sourcefile_dataset(file_path, dataA, dataB, t_ms, saved_time):
-	with h5py.File(file_path, "a") as f:
-		grp = f.require_group("phase_p20")
-		fds = grp.create_dataset(str(saved_time), data=dataA)
-		fds.attrs['modified'] = time.ctime(saved_time)
+def create_sourcefile_dataset(f, dataA, dataB, t_ms, saved_time):
 
-		grp = f.require_group("phase_p29")
-		fds = grp.create_dataset(str(saved_time), data=dataB)
-		fds.attrs['modified'] = time.ctime(saved_time)
+	grp = f.require_group("phase_p20")
+	fds = grp.create_dataset(str(saved_time), data=dataA)
+	fds.attrs['modified'] = time.ctime(saved_time)
 
-		grp = f.require_group("time_array")
-		fds = grp.create_dataset(str(saved_time), data=t_ms)
-		fds.attrs['modified'] = time.ctime(saved_time)
+	grp = f.require_group("phase_p29")
+	fds = grp.create_dataset(str(saved_time), data=dataB)
+	fds.attrs['modified'] = time.ctime(saved_time)
+
+	grp = f.require_group("time_array")
+	fds = grp.create_dataset(str(saved_time), data=t_ms)
+	fds.attrs['modified'] = time.ctime(saved_time)
 
 	print("Saved interferometer shot at", time.ctime(saved_time))
 

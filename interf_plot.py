@@ -1,6 +1,9 @@
 # coding: utf-8
 '''
 Module used for showing plots on the screen
+ 
+Old script used before 2024-07-15
+Separate Windows version on a different branch
 '''
 from tkinter import ttk
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
@@ -30,7 +33,7 @@ def init_plot():
 
     return ax, line_neA, line_neB
 
-def update_plot(ax, lineA, lineB, t_ms, neA, neB, Als, Bls, tls):
+def update_plot(ax, lineA, lineB, t_ms, neA, neB):
     """
     This function updates the data for the line objects in the plot and adjusts the plot limits dynamically.
 
@@ -45,22 +48,10 @@ def update_plot(ax, lineA, lineB, t_ms, neA, neB, Als, Bls, tls):
     Returns:
         None
     """
-#    if Als and Bls:
-#        for i,data in enumerate(Als):
-#            ax.cla()
-#            ax.plot(tls[i], Als[i], 'r-', alpha=0.5)
-#            ax.plot(tls[i], Bls[i], 'b-', alpha=0.5)
-        
     
     # Update data for plotting
     lineA.set_data(t_ms, neA)
     lineB.set_data(t_ms, neB)
-    
-    Als.append(neA)
-    Bls.append(neB)
-    
-    Als = Als[-10:]
-    Bls = Bls[-10:]
     
     # Adjust plot limits dynamically
     if len(t_ms) > 0:
@@ -72,8 +63,7 @@ def update_plot(ax, lineA, lineB, t_ms, neA, neB, Als, Bls, tls):
         
     plt.draw()
     plt.pause(0.001)  # Pause to allow the plot to update
-    
-    return Als, Bls, tls
+
 
 def end_plot():
     plt.ioff() # Turn off interactive mode

@@ -6,7 +6,11 @@ The analyzed data are saved to a HDF5 file using the interf_file module
 The data are plotted using the interf_plot module
 
 Author: Jia Han
-Ver1.0 created on: 2021-06-01
+Ver1.0 created on: 2024-06-01
+
+Update 2024-07-15
+- Fixed hdf5 create bugs for Linux version
+- Separate Windows version on a different branch
 '''
 import sys
 import multiprocessing
@@ -22,12 +26,13 @@ from interf_file import find_latest_shot_number, init_hdf5_file, create_sourcefi
 from read_scope_data import read_trc_data_simplified, read_trc_data_no_header
 
 #===============================================================================================================================================
+
 def get_current_day(timestamp):
 	'''
-	gets current day in year,month,day format from the timestamp
+	gets current day from the timestamp
 	'''
 	ct = time.localtime(timestamp)
-	return (ct.tm_year, ct.tm_mon, ct.tm_mday)
+	return ct.tm_yday
 
 #===============================================================================================================================================
 # Multiprocessing functions
@@ -101,9 +106,6 @@ def main(hdf5_path, file_path ="/mnt/smbshare", ram_path="/mnt/ramdisk"):
 
 	# Initialize the plot
 	ax, line_A, line_B = init_plot()
-	lineA_ls = []
-	lineB_ls = []
-	t_ls = []
 	
 	# Find the most recent shot in LeCroy Network drive 
 	shot_number = find_latest_shot_number(file_path)
@@ -112,12 +114,6 @@ def main(hdf5_path, file_path ="/mnt/smbshare", ram_path="/mnt/ramdisk"):
 		try:
 			# Check if the day has changed; if so, create a new HDF5 file
 			st = time.time() # current time
-			
-			h5_cdate = time.ctime(os.path.getctime(hdf5_ifn))[:10]
-			if time.ctime(st)[:10] != h5_cdate:
-				date = datetime.date.today()
-				hdf5_ifn = f"{hdf5_path}/interferometer_data_{date}.hdf5"
-				init_hdf5_file(hdf5_ifn)
 
 			# Check if the interferometer data files are available on leCroy scope drive
 			# C4 is the last channel to be saved
@@ -139,13 +135,26 @@ def main(hdf5_path, file_path ="/mnt/smbshare", ram_path="/mnt/ramdisk"):
 			t_ms, phaseA, phaseB = multiprocess_analyze(file_path, shot_number)
 #			print( np.array_equal(neA, neB) )
 
+			# Save the data to the HDF5 file
+			f = h5py.File(hdf5_ifn, 'a', libver='latest')
+			
+			fc_day = f.attrs['created'][-2] # Check if the day has changed
+			cd = get_current_day(st)
+			if fc_day != cd: # if so, create a new HDF5 file
+				f.close()
+				date = datetime.date.today()
+				hdf5_ifn = f"{hdf5_path}/interferometer_data_{date}.hdf5"
+				init_hdf5_file(hdf5_ifn)
+				f = h5py.File(hdf5_ifn, 'a', libver='latest')
+
 			# save data to HDF5 file as new datasets
-			create_sourcefile_dataset(hdf5_ifn, phaseA, phaseB, t_ms, saved_time)
+			create_sourcefile_dataset(f, phaseA, phaseB, t_ms, saved_time)
+			f.close()
 			
 			neA = phaseA * get_calibration_factor(288e9)
 			neB = phaseB * get_calibration_factor(282e9)
 			# update the plot with the new data
-			lineA_ls, lineB_ls, t_ls = update_plot(ax, line_A, line_B, t_ms, neA, neB, lineA_ls, lineB_ls, t_ls)
+			update_plot(ax, line_A, line_B, t_ms, neA, neB)
 			
 #			print("Time taken: ", time.time() - st)
 			if shot_number == 99999: # reset shot number to 0 after reaching the maximum
