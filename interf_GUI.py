@@ -10,6 +10,7 @@ Ver1.0 created on: 2021-07-13
 
 from PyQt5.QtWidgets import QApplication, QMainWindow, QVBoxLayout, QLabel, QPushButton, QWidget
 from PyQt5.QtCore import QThread, pyqtSignal, QObject
+from PyQt5.QtGui import QFont
 
 import matplotlib.pyplot as plt
 from matplotlib.figure import Figure
@@ -22,6 +23,7 @@ import os
 import time
 
 from interf_raw import get_calibration_factor
+
 
 #===============================================================================================================================================
 #===============================================================================================================================================
@@ -57,29 +59,40 @@ def get_data(ifn, i):
 #===============================================================================================================================================
 
 class Worker(QObject):
+    '''
+    Worker function that emits the data to the plotting GUI
+    Runs in a separate thread to avoid blocking the GUI
+    '''
     data_updated = pyqtSignal(np.ndarray, np.ndarray, np.ndarray, str)  # Signal to emit the data
 
     def __init__(self):
         super().__init__()
-        self.i = 0
+        self.i = 0 # Counter for testing
 
     def run(self):
         '''
-        Worker function that emits the data to the main thread; this method will run in a separate thread
         Find the latest file and read the last indexed data from it
         '''
         while True:
-            ifn = get_latest_file()
-            t_ms, phaseA, phaseB, tstamp = get_data(ifn, self.i)
-            neA = phaseA * get_calibration_factor(288e9)
-            neB = phaseB * get_calibration_factor(282e9)
-            self.data_updated.emit(t_ms, neA, neB, tstamp)
-            self.i += 1
-            QThread.sleep(1)  # Simulate some delay
+            try:
+                ifn = get_latest_file()
+                t_ms, phaseA, phaseB, tstamp = get_data(ifn, -1)
+                neA = phaseA * get_calibration_factor(288e9)
+                neB = phaseB * get_calibration_factor(282e9)
+                self.data_updated.emit(t_ms, neA, neB, tstamp)
+                self.i += 1
+                QThread.sleep(1)  # Sleep for 1 second
+            except OSError:
+                print("Unable to open hdf5 file. Retry...")
+                QThread.sleep(1)
+
 
 class MainWindow(QMainWindow):
+
     def __init__(self):
         super().__init__() # Call the parent class constructor
+
+        #======================== GUI setup ========================
         central_widget = QWidget() # Create a central widget
         self.setCentralWidget(central_widget) # Set the central widget
 
@@ -88,19 +101,23 @@ class MainWindow(QMainWindow):
         layout.addWidget(QLabel("Interferometer Plot"))
         # Create a button to start the plot
         button = QPushButton("Start Plot")
+        button.setFont(QFont("Arial", 24)) 
         layout.addWidget(button)
         button.clicked.connect(self.start_plot)
         # Create a button to save the current trace
         self.keep_trace_button = QPushButton("Save current trace on plot")
+        self.keep_trace_button.setFont(QFont("Arial", 24))  
         layout.addWidget(self.keep_trace_button)
         self.keep_trace_button.clicked.connect(self.keep_trace)
         # Create a button to remove the saved trace from keep_trace
         self.remove_trace_button = QPushButton("Remove saved trace from plot")
+        self.remove_trace_button.setFont(QFont("Arial", 24))
         layout.addWidget(self.remove_trace_button)
         self.remove_trace_button.clicked.connect(self.remove_trace)
 
         # Create a figure and a canvas for the figure
         self.fig = Figure()
+        # plt.rcParams['font.size'] = 24
         self.ax = self.fig.add_subplot(111)
         self.canvas = FigureCanvas(self.fig)  # Create a canvas for the figure
         layout.addWidget(self.canvas)  # Add the canvas to the layout
@@ -114,9 +131,9 @@ class MainWindow(QMainWindow):
         # Create the plot lines
         self.line_neA, = self.ax.plot([], [], 'r-')
         self.line_neB, = self.ax.plot([], [], 'g-')
-
+        #======================== END GUI setup ========================
+    
         # Updating the plot by reading data from hdf5; use thread to avoid blocking the GUI
-        
         self.thread = QThread()  # Thread for running the worker
         self.worker = Worker()  # Worker object
         self.worker.moveToThread(self.thread)  # Move worker to the thread
@@ -125,6 +142,7 @@ class MainWindow(QMainWindow):
 
         self.update_count = 0  # Counter for testing
 
+    #======================== GUI functions ========================
     def start_plot(self):
         self.thread.start()  # Start the thread, which starts worker.run
 
@@ -134,7 +152,7 @@ class MainWindow(QMainWindow):
         self.line_neB.set_data(x, y_neB)
         self.line_neA.set_label('P20  ' + label)
         self.line_neB.set_label('P29  ' + label)
-        self.ax.legend()
+        self.ax.legend(loc='upper right')
         self.ax.relim()
         self.ax.autoscale_view(True, True, True)
 
@@ -164,7 +182,7 @@ class MainWindow(QMainWindow):
         self.ax.legend()
         self.fig.canvas.draw()
         self.fig.canvas.flush_events()
-
+    #======================== END GUI functions ========================
 
 if __name__ == "__main__":
     app = QApplication([])
