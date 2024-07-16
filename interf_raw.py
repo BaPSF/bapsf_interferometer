@@ -23,12 +23,18 @@ Jia modified syntax and optimized speed using Github copilot on May. 23. 2024
 Uses the Hilbert transform to compute the phase of the signal
 Hilbert transform using built-in function by scipy.signal
 Slower computation time than Pat's code, same result compared using plotting
+
+2021-07-15 Update by Jia
+- use scipy.fft instead of mlab.csd; improved computation speed
+- TODO: why is the result negative?
+	added a negative sign to the phase for the moment
 """
 import sys
 sys.path.append(r"C:\Users\hjia9\Documents\GitHub\data-analysis")
 sys.path.append(r"C:\Users\hjia9\Documents\GitHub\data-analysis\read")
 
 import math
+import scipy
 import numpy as np
 import matplotlib.pyplot as plt
 from scipy import constants as const
@@ -122,11 +128,13 @@ def correlation_spectrogram(tarr, refch, plach, FT_len):
 	# loop over each subset of FT_len points  (note: num_FTs = int(#samples / FT_len))
 	for m in range(num_FTs):
 		i = m * FT_len
-		if i+FT_len > NS:
+		if i+FT_len >= NS:
 			break
 		ttt[m] = i*dt
 
-		csd, _ = mlab.csd(plach[i:i+FT_len], refch[i:i+FT_len], NFFT=FT_len, Fs=1./dt, sides='default', scale_by_freq=False)
+		# Compute the cross-spectral density using scipy.fft
+		csd = scipy.fft.fft(plach[i:i+FT_len]) * np.conj(scipy.fft.fft(refch[i:i+FT_len]))
+#		csd, _ = mlab.csd(plach[i:i+FT_len], refch[i:i+FT_len], NFFT=FT_len, Fs=1./dt, sides='default', scale_by_freq=False)
 
 		npts_to_ignore = 10                 # skip 10 initial points to avoid DC offset being the largest value
 
@@ -142,7 +150,7 @@ def correlation_spectrogram(tarr, refch, plach, FT_len):
 
 		csd_ang[m] = csd_angle
 		csd_mag[m] = mag
-	return ttt+tarr[0], csd_ang, csd_mag
+	return ttt+tarr[0], -csd_ang, csd_mag
 
 def auto_find_fixups(t_ms, csd_ang, threshold=5.):
 	d = np.diff(csd_ang)
@@ -169,7 +177,7 @@ def phase_from_raw(tarr, refch, plach):
 	compute phase of the cross-spectral density
 	'''
 	offset_range = range(5)
-
+	
 	ttt, csd_ang, csd_mag = correlation_spectrogram(tarr, refch, plach, FT_len)
 
 	t_ms = ttt * 1000
