@@ -119,7 +119,7 @@ def main(hdf5_path, file_path, ram_path):
 	# Find the most recent shot in LeCroy Network drive 
 	shot_number = find_latest_shot_number(file_path)
 
-	pool = multiprocessing.Pool(processes=4)
+	pool = multiprocessing.Pool()
 	# Define a handler for SIGINT
 	def sigint_handler(signum, frame):
 		print("SIGINT (Ctrl-C) detected. Attempting to exit gracefully...")
@@ -133,14 +133,13 @@ def main(hdf5_path, file_path, ram_path):
 
 	while True:
 		try:
-
+			time.sleep(0.01)
 			st = time.time() # start time of the loop
 			
 			# Check if the interferometer data files are available on leCroy scope drive
 			# C4 is the last channel to be saved
 			ifn = f"{file_path}\\C4-interf-shot{shot_number:05d}.trc"
 			if not os.path.exists(ifn):
-				time.sleep(0.1)
 				continue
 			saved_time=os.path.getctime(ifn) # time when the shot data was saved
 			td = st - saved_time
@@ -174,7 +173,7 @@ def main(hdf5_path, file_path, ram_path):
 			create_sourcefile_dataset(f, phaseA, phaseB, t_ms, saved_time)
 			f.close()
 			
-			print("Time taken: ", time.time() - st)
+			# print("Time taken: ", time.time() - st)
 			if shot_number == 99999: # reset shot number to 0 after reaching the maximum
 				shot_number = 0
 				continue
@@ -193,11 +192,11 @@ def main(hdf5_path, file_path, ram_path):
 			print("Cleanup complete. Exiting.")
 			break
 			
-		except Exception as e:
-			print(f"An error occurred: {e}")
-			pool.terminate()
-			pool.join()
-			print("Cleanup complete. Exiting.")
+		# except Exception as e:
+		# 	print(f"An error occurred: {e}")
+		# 	pool.terminate()
+		# 	pool.join()
+		# 	print("Cleanup complete. Exiting.")
 
 #===============================================================================================================================================
 #<o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o>
@@ -216,5 +215,6 @@ if __name__ == '__main__':
 		
 		main_thread.join()
 		cleanup_thread.join()
+
 
 #	run_main_and_cleanup()

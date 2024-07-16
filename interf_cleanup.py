@@ -11,9 +11,8 @@ import os
 import threading
 
 #===============================================================================================================================================
-file_path ="/mnt/smbshare"
-ram_path="/mnt/ramdisk"
-log_ifn = f"{ram_path}/interferometer_log.bin"
+file_path = r"I:\\"
+log_ifn = r"C:\data\log\interferometer_log.bin"
 #===============================================================================================================================================
 def remove_file(ifn, verbose=False):
 	if not os.path.exists(ifn):
@@ -40,13 +39,14 @@ def main(verbose=False):
 		log_file_exists = False
 
 	while log_file_exists:
-		time.sleep(0.1)
+		
 		try:
 			# Read the log file to get the recorded shot numbers
 			with open(log_ifn, 'r+') as log_file:
 				log_data = log_file.readlines()
 				# skip iteration if log file is empty
 				if len(log_data) == 0:
+					time.sleep(0.1)
 					if verbose:
 						print('Log file is empty.')
 					continue
@@ -77,11 +77,16 @@ def main(verbose=False):
 					# Remove shot
 					recorded_shot_numbers.remove(shot_number)
 					print(f"Removed shot {shot_number}")
+					time.sleep(0.1)
 
 
 		except KeyboardInterrupt:
 			print("Keyboard interrupt")
 			break
+		except ValueError:
+			if verbose:
+				print("Invalid literal for int() with base 10")
+			continue
 		except Exception as e:
 			if 'Permission denied' in str(e):
 				# print('waiting for log file to be written')
