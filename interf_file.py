@@ -113,7 +113,7 @@ def init_hdf5_file(file_name):
 		ct = time.localtime()
 		f.attrs['created'] = ct
 		print("HDF5 file created ", time.strftime("%Y-%m-%d %H:%M:%S", ct))
-		f.attrs['description'] = "Interferometer data. See group description and attribute for more info."
+		f.attrs['description'] = "Interferometer data. Datasets in each group are named by timestamp of when data was acquired. Timestamps are saved as seconds since epoch January 1, 1970, 00:00:00 (UTC). See each individual group description and attribute for more info."
 
 		grp = f.require_group("phase_p20")
 		grp.attrs['description'] = "Phase data for interferometer at port 20. Attribute calibration factor assumes 40cm plasma length."
@@ -135,16 +135,13 @@ def init_hdf5_file(file_name):
 def create_sourcefile_dataset(f, dataA, dataB, t_ms, saved_time):
 
 	grp = f.require_group("phase_p20")
-	fds = grp.create_dataset(str(saved_time), data=dataA)
-	fds.attrs['modified'] = time.ctime(saved_time)
+	grp.create_dataset(str(saved_time), data=dataA)
 
 	grp = f.require_group("phase_p29")
-	fds = grp.create_dataset(str(saved_time), data=dataB)
-	fds.attrs['modified'] = time.ctime(saved_time)
+	grp.create_dataset(str(saved_time), data=dataB)
 
 	grp = f.require_group("time_array")
-	fds = grp.create_dataset(str(saved_time), data=t_ms)
-	fds.attrs['modified'] = time.ctime(saved_time)
+	grp.create_dataset(str(saved_time), data=t_ms)
 
 	print("Saved interferometer shot at", time.ctime(saved_time))
 
