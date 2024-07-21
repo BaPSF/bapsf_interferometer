@@ -192,14 +192,14 @@ def main(hdf5_path, file_path, ram_path):
 			print("Cleanup complete. Exiting.")
 			break
 		except OSError:
-			print("Unable to open hdf5 file possibly due to change in trigger rep rate")
+			print("Unable to open hdf5 file. Try again...")
 			time.sleep(0.5)
 			continue
-		# except Exception as e:
-		# 	print(f"An error occurred: {e}")
-		# 	pool.terminate()
-		# 	pool.join()
-		# 	print("Cleanup complete. Exiting.")
+		except Exception as e:
+			print(f"An error occurred: {e}")
+			pool.terminate()
+			pool.join()
+			print("Cleanup complete. Exiting.")
 
 #===============================================================================================================================================
 #<o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o>
