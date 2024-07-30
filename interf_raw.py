@@ -125,6 +125,9 @@ def correlation_spectrogram(tarr, refch, plach, FT_len):
 	csd_ang = np.zeros(num_FTs)   # computed cross spectral density phase vs time
 	csd_mag = np.zeros(num_FTs)   # computed cross spectral density magnitude vs time
 
+    # Define a window function (To match same functionality as mlab.csd)
+	window = np.hanning(FT_len) # i.e. hanning window
+
 	# loop over each subset of FT_len points  (note: num_FTs = int(#samples / FT_len))
 	for m in range(num_FTs):
 		i = m * FT_len
@@ -132,24 +135,31 @@ def correlation_spectrogram(tarr, refch, plach, FT_len):
 			break
 		ttt[m] = i*dt
 
-		# Compute the cross-spectral density using scipy.fft
-		csd = scipy.fft.fft(plach[i:i+FT_len]) * np.conj(scipy.fft.fft(refch[i:i+FT_len]))
+        # Apply window function (To match same functionality as mlab.csd)
+		plach_segment = plach[i:i + FT_len] * window
+		refch_segment = refch[i:i + FT_len] * window
+
+        # Compute the cross-spectral density using scipy.fft
+		plach_fft = scipy.fft.fft(plach_segment)
+		refch_fft = scipy.fft.fft(refch_segment)
+		csd = plach_fft * np.conj(refch_fft)
+		csd /= (np.sum(window**2) * FT_len)  # Normalize by the sum of the window squared and FT_len
+
+		# Old command using mlab.csd
 #		csd, _ = mlab.csd(plach[i:i+FT_len], refch[i:i+FT_len], NFFT=FT_len, Fs=1./dt, sides='default', scale_by_freq=False)
 
+		# Find the peak of the cross-spectral density
 		npts_to_ignore = 10                 # skip 10 initial points to avoid DC offset being the largest value
-
 		adx = np.argmax(np.abs(csd[npts_to_ignore:]))
-		mag = adx # not used need to be removed
 		adx += npts_to_ignore
-		data = np.angle(csd)
-		i = int(adx)
-		csd_angle = data[i] + (data[i+1]-data[i]) * (adx-i)
+
+		csd_angle = np.angle(csd)[adx]
 
 		if csd_angle < 0:
 			csd_angle += 2*math.pi
 
 		csd_ang[m] = csd_angle
-		csd_mag[m] = mag
+		csd_mag[m] = np.abs(csd[adx])
 	return ttt+tarr[0], -csd_ang, csd_mag
 
 def auto_find_fixups(t_ms, csd_ang, threshold=5.):
@@ -194,13 +204,13 @@ def phase_from_raw(tarr, refch, plach):
 # The following function is from Steve
 #============================================================================
 
-def density_from_phase_steve(tarr, refch, plach):
+def phase_from_steve(tarr, refch, plach):
 
 	# Decimate data as we are only interested in the slowly varying phase,
 	# not the carrier wave phase variations
 	decimate_factor = 10
 	dt = tarr[1]-tarr[0]
-	carrier_period_nt = int((1./carrier_frequency)/dt)
+	# carrier_period_nt = int((1./carrier_frequency)/dt)
 	ftype='iir'
 
 	r = signal.decimate(refch, decimate_factor, ftype=ftype, zero_phase=True)
@@ -237,18 +247,10 @@ def density_from_phase_steve(tarr, refch, plach):
 	# Subtract the mean of the first 100 samples as it is not meaningful to us
 	#dphi -= dphi[mindex:4*mindex].mean()
 
-
 	# filter out carrier frequency
-
 	#dphi = uniform_filter1d(dphi, carrier_period_nt)
 
-	# Apply calibration factor & divide by the diameter.
-	# Note: This assumes the diameter is not a function of time,
-	# which of course it is. You need a probe measurement here.
-
-	density = dphi*calibration
-
-	return t_ms, density
+	return t_ms, dphi
 
 
 #===============================================================================================================================================
@@ -258,24 +260,19 @@ def density_from_phase_steve(tarr, refch, plach):
 
 if __name__ == '__main__':
 
-	print (calibration)
-# 	# modify testing for Linux
-# 	st1 = time.time()
-# 
-# 	ifn = "/home/interfpi/C1-topo-22-12-05-00000.trc"
-# 	refch, tarr = read_trc_data_simplified(ifn)
-# 
-# 	ifn = "/home/interfpi/C2-topo-22-12-05-00000.trc"
-# 	plach, tarr = read_trc_data_simplified(ifn)
-# 	st2 = time.time()
-# 
-# 	t_ms, ne = density_from_phase(tarr, refch, plach)
-# 	st3 = time.time()
-# 
-# 	print('Reading time: ', st2-st1)
-# 	print('Analyzing time: ', st3-st2)
-# 	print('Total time: ', st3-st1)
-# 	
-# 	plt.figure()
-# 	plt.plot(t_ms, ne)
-# 	plt.show()
+	ifn = r"C:\data\LAPD\interferometer_samples\C1-interf-shot57673.trc"
+	refch, tarr, vertical_gain, vertical_offset = read_trc_data_simplified(ifn)
+
+	ifn = r"C:\data\LAPD\interferometer_samples\C2-interf-shot57673.trc"
+	plach, tarr, vertical_gain, vertical_offset = read_trc_data_simplified(ifn)
+
+	plt.figure()
+
+	t_ms, ne = phase_from_raw(tarr, refch, plach)
+	plt.plot(t_ms, ne, label='cross correlation')
+
+	t_ms, ne = phase_from_steve(tarr, refch, plach)
+	plt.plot(t_ms, ne, label='hilbert transform')
+
+	plt.legend()
+	plt.show()
