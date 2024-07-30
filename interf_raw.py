@@ -237,18 +237,10 @@ def density_from_phase_steve(tarr, refch, plach):
 	# Subtract the mean of the first 100 samples as it is not meaningful to us
 	#dphi -= dphi[mindex:4*mindex].mean()
 
-
 	# filter out carrier frequency
-
 	#dphi = uniform_filter1d(dphi, carrier_period_nt)
 
-	# Apply calibration factor & divide by the diameter.
-	# Note: This assumes the diameter is not a function of time,
-	# which of course it is. You need a probe measurement here.
-
-	density = dphi*calibration
-
-	return t_ms, density
+	return t_ms, dphi
 
 
 #===============================================================================================================================================
@@ -258,24 +250,14 @@ def density_from_phase_steve(tarr, refch, plach):
 
 if __name__ == '__main__':
 
-	print (calibration)
-# 	# modify testing for Linux
-# 	st1 = time.time()
-# 
-# 	ifn = "/home/interfpi/C1-topo-22-12-05-00000.trc"
-# 	refch, tarr = read_trc_data_simplified(ifn)
-# 
-# 	ifn = "/home/interfpi/C2-topo-22-12-05-00000.trc"
-# 	plach, tarr = read_trc_data_simplified(ifn)
-# 	st2 = time.time()
-# 
-# 	t_ms, ne = density_from_phase(tarr, refch, plach)
-# 	st3 = time.time()
-# 
-# 	print('Reading time: ', st2-st1)
-# 	print('Analyzing time: ', st3-st2)
-# 	print('Total time: ', st3-st1)
-# 	
-# 	plt.figure()
-# 	plt.plot(t_ms, ne)
-# 	plt.show()
+	ifn = r"C:\data\LAPD\interferometer_samples\C1-interf-shot57674.trc"
+	refch, tarr, vertical_gain, vertical_offset = read_trc_data_simplified(ifn)
+
+	ifn = r"C:\data\LAPD\interferometer_samples\C2-interf-shot57674.trc"
+	plach, tarr, vertical_gain, vertical_offset = read_trc_data_simplified(ifn)
+
+	t_ms, ne = phase_from_raw(tarr, refch, plach)
+
+	plt.figure()
+	plt.plot(t_ms, ne)
+	plt.show()
