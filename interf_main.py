@@ -144,13 +144,6 @@ def main(hdf5_path, file_path, ram_path):
 			saved_time=os.path.getctime(ifn) # time when the shot data was saved
 			td = st - saved_time
 			# print("Time difference: ", round(td,2))
-			
-			# If the operation is too slow, skip the shot to catch up
-			if td > 3:
-				print("Skip one shot")
-				shot_number += 1
-				time.sleep(0.01)
-				continue
 
 			print("Shot ", shot_number)
 			# t_ms, phaseA = read_and_analyze(file_path, shot_number, 1, 2)
@@ -173,16 +166,22 @@ def main(hdf5_path, file_path, ram_path):
 			create_sourcefile_dataset(f, phaseA, phaseB, t_ms, saved_time)
 			f.close()
 			
-			# print("Time taken: ", time.time() - st)
-			if shot_number == 99999: # reset shot number to 0 after reaching the maximum
-				shot_number = 0
-				continue
-			
 			# Record shot number and saved_time in log file
 			with open(log_ifn, 'a') as log_file:
 				log_file.write(f"{shot_number},{saved_time}\n")
+			# print("Time taken: ", time.time() - st)
 
-			shot_number += 1
+
+			# Update shot number
+			if shot_number == 99999:
+				shot_number = 0 # reset shot number to 0 after reaching the maximum
+			else: 
+				shot_number += 1
+
+			# If the operation is too slow, skip the shot to catch up
+			if td > 3:
+				print("Skip one shot")
+				shot_number += 1
 
 	
 		except KeyboardInterrupt:
