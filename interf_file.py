@@ -26,8 +26,9 @@ def find_latest_shot_number(dir_path):
 		newest_file = max(full_path_file_list, key=os.path.getctime)
 		shot_number = int(newest_file[-9:-4])
 	except ValueError:
-		print('No file exist in directory; start iteration at shot 0')
-		return 0
+		print('No file exist in directory; try again in 10 sec')
+		time.sleep(10)
+		shot_number = find_latest_shot_number(dir_path)
 	return shot_number
 
 def write_to_temp(file_path, temp_path): # NOT USED

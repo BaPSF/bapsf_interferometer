@@ -58,12 +58,17 @@ def read_and_analyze(file_path, shot_number, refch_i, plach_i):
 	# read channel data from scope
 	ifn = f"{file_path}\\C{refch_i}-interf-shot{shot_number:05d}.trc"
 	refch, tarr, vertical_gain, vertical_offset = read_trc_data_simplified(ifn)
-	data_size = len(tarr)
+	refch -= np.mean(refch) # remove DC offset
 	
-	# important note: the vertical gain and offset are assumed to be the same for C1 and C2
 	ifn = f"{file_path}\\C{plach_i}-interf-shot{shot_number:05d}.trc"
-	plach = read_trc_data_no_header(ifn, data_size, vertical_gain, vertical_offset)
-#	plach, tarr, vertical_gain, vertical_offset = read_trc_data_simplified(ifn)
+	plach, tarr, vertical_gain, vertical_offset = read_trc_data_simplified(ifn)
+
+	# if using read_trc_no_header:
+	# the vertical gain and offset are assumed to be the same for C1 and C2
+	# data_size = len(tarr)
+	# plach = read_trc_data_no_header(ifn, data_size, vertical_gain, vertical_offset)
+
+	plach -= np.mean(plach) # remove DC offset
 	
 	# calculate the phase from interferometer raw data
 	t_ms, phase = phase_from_raw(tarr, refch, plach)
