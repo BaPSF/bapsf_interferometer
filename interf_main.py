@@ -16,6 +16,9 @@ Ver1.1 updated on: 2021-07-11
 Ver1.2 updated on: 2021-07-15
 - Adjust multiprocessing for Windows
 - previous versions works on Linux
+
+Ver1.3 updated on: 2024-12-12
+- Change log writing such that writes every 10 shots
 '''
 import sys
 import signal
@@ -166,10 +169,18 @@ def main(hdf5_path, file_path, ram_path):
 			create_sourcefile_dataset(f, phaseA, phaseB, t_ms, saved_time)
 			f.close()
 			
-			# Record shot number and saved_time in log file
-			with open(log_ifn, 'a') as log_file:
-				log_file.write(f"{shot_number},{saved_time}\n")
-			# print("Time taken: ", time.time() - st)
+			# Buffer log entries and write every 10 shots
+			try:
+				if not hasattr(main, 'log_buffer'):
+					main.log_buffer = []
+				main.log_buffer.append(f"{shot_number},{saved_time}\n")
+				
+				if len(main.log_buffer) >= 10:
+					with open(log_ifn, 'a') as log_file:
+						log_file.writelines(main.log_buffer)
+					main.log_buffer = []
+			except Exception as e:
+				print(f"Error writing to log: {e}")
 
 
 			# Update shot number
@@ -207,16 +218,3 @@ def main(hdf5_path, file_path, ram_path):
 if __name__ == '__main__':
 
 	main(hdf5_path, scope_path, log_path)
-	
-	def run_main_and_cleanup():
-		main_thread = threading.Thread(target=main, args=(hdf5_path, scope_path, log_path))
-		cleanup_thread = threading.Thread(target=cleanup.main)
-		
-		main_thread.start()
-		cleanup_thread.start()
-		
-		main_thread.join()
-		cleanup_thread.join()
-
-
-#	run_main_and_cleanup()
