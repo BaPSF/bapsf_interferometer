@@ -184,7 +184,15 @@ def do_fixups(t_ms, csd_ang):
 
 def phase_from_raw(tarr, refch, plach):
 	'''
-	compute phase of the cross-spectral density
+	1. Divide data into segments of length FT_len (512 points)
+	2. For each segment:
+		- Apply Hanning window
+		- Compute FFT of both reference and plasma signals
+		- Calculate Cross-Spectral Density (CSD): CSD = FFT(plasma) * conj(FFT(ref))
+		- Find peak in CSD spectrum (skipping first 10 points to avoid DC)
+    	- Extract phase angle at peak frequency
+    3. Unwrap phase to handle 2π jumps
+    4. Subtract initial offset
 	'''
 	offset_range = range(5)
 	
@@ -205,7 +213,14 @@ def phase_from_raw(tarr, refch, plach):
 #============================================================================
 
 def phase_from_steve(tarr, refch, plach):
-
+	'''
+    1. Decimate data by factor of 10 (reduce sampling rate)
+    2. Create analytic signals using Hilbert transform analytic signal = original + i*Hilbert(original)
+    3. Subtract mean values
+    4. Calculate phase angles of both signals
+    5. Unwrap phases
+    6. Take difference between reference and plasma phases
+	'''
 	# Decimate data as we are only interested in the slowly varying phase,
 	# not the carrier wave phase variations
 	decimate_factor = 10
