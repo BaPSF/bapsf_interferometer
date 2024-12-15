@@ -96,12 +96,45 @@ Module works like the following:
 
 ## Data Structure
 
-The interferometer data is stored in HDF5 files with the following structure:
-- File naming: `interferometer_data_YYYY-MM-DD.hdf5`
-- Contains three main groups:
-  1. `phase_p20`: Phase data from port 20 (288 GHz)
-  2. `phase_p29`: Phase data from port 29 (282 GHz)
-  3. `time_array`: Time points in milliseconds
-- Each measurement is stored with its Unix timestamp
-- Includes calibration factors for density conversion
-- All units and metadata are stored as attributes
+interferometer_data_YYYY-MM-DD.hdf5
+│
+├── Attributes
+│   ├── created: <time struct>
+│   └── description: "Interferometer data. Datasets in each group are named by timestamp..."
+│
+├── phase_p20/
+│   ├── Attributes
+│   │   ├── description: "Phase data for interferometer at port 20..."
+│   │   ├── unit: "rad"
+│   │   ├── Microwave frequency (Hz): 288e9
+│   │   └── calibration factor (m^-3/rad): <value>
+│   │
+│   └── Datasets
+│       ├── <timestamp1>: [phase data array]
+│       ├── <timestamp2>: [phase data array]
+│       └── ...
+│
+├── phase_p29/
+│   ├── Attributes
+│   │   ├── description: "Phase data for interferometer at port 29..."
+│   │   ├── unit: "rad"
+│   │   ├── Microwave frequency (Hz): 282e9
+│   │   └── calibration factor (m^-3/rad): <value>
+│   │
+│   └── Datasets
+│       ├── <timestamp1>: [phase data array]
+│       ├── <timestamp2>: [phase data array]
+│       └── ...
+│
+└── time_array/
+    ├── Attributes
+    │   ├── description: "Time array for interferometer data..."
+    │   └── unit: "ms"
+    │
+    └── Datasets
+        ├── <timestamp1>: [time array]
+        ├── <timestamp2>: [time array]
+        └── ...
+
+Timestamp is the time when the scope trace was saved on the scope, in particular the last channel (C4) was saved.
+Might have some delay between when shot was received and when the scope trace was saved.
