@@ -23,12 +23,18 @@ Jia modified syntax and optimized speed using Github copilot on May. 23. 2024
 Uses the Hilbert transform to compute the phase of the signal
 Hilbert transform using built-in function by scipy.signal
 Slower computation time than Pat's code, same result compared using plotting
+
+2021-07-15 Update by Jia
+- use scipy.fft instead of mlab.csd; improved computation speed
+- TODO: why is the result negative?
+	added a negative sign to the phase for the moment
 """
 import sys
 sys.path.append(r"C:\Users\hjia9\Documents\GitHub\data-analysis")
 sys.path.append(r"C:\Users\hjia9\Documents\GitHub\data-analysis\read")
 
 import math
+import scipy
 import numpy as np
 import matplotlib.pyplot as plt
 from scipy import constants as const
@@ -40,9 +46,17 @@ from read_scope_data import read_trc_data, read_trc_data_simplified
 import time
 
 #============================================================================
+# Parameters for analyzing raw signal of interferometer
+FT_len = 512
+#============================================================================
+
 def get_calibration_factor(f_uwave = 288e9, plasma_length = 0.4):
-#	f_uwave = 288e9 # Microwave frequency (Hz)
-	# Note: SI units for physical constants
+	'''
+	Convert phase to density with:
+	f_uwave --> Microwave frequency (Hz)
+	plasma_length --> Plasma length (m)
+	Note: SI units for physical constants
+	'''
 	e = const.elementary_charge
 	m_e = const.electron_mass
 	eps0 = const.epsilon_0
@@ -59,6 +73,9 @@ def get_calibration_factor(f_uwave = 288e9, plasma_length = 0.4):
 # The following functions are from Pat
 #============================================================================
 def parinterp(x1, x2, x3, y1, y2, y3):
+	'''
+	Parabolic interpolation of the peak of a function
+	'''
 	d = - (x1-x2) * (x2-x3) * (x3-x1)
 	if d == 0:
 		raise ValueError('parinterp:() two abscissae are the same')
@@ -79,6 +96,9 @@ def parinterp(x1, x2, x3, y1, y2, y3):
 
 
 def fit_peak_index(data):
+	'''
+	Find the peak of a function
+	'''
 	i = np.argmax(data)
 	if i == 0:
 		return 0, data[0]
@@ -105,30 +125,42 @@ def correlation_spectrogram(tarr, refch, plach, FT_len):
 	csd_ang = np.zeros(num_FTs)   # computed cross spectral density phase vs time
 	csd_mag = np.zeros(num_FTs)   # computed cross spectral density magnitude vs time
 
+    # Define a window function (To match same functionality as mlab.csd)
+	window = np.hanning(FT_len) # i.e. hanning window
+
 	# loop over each subset of FT_len points  (note: num_FTs = int(#samples / FT_len))
 	for m in range(num_FTs):
 		i = m * FT_len
-		if i+FT_len > NS:
+		if i+FT_len >= NS:
 			break
 		ttt[m] = i*dt
 
-		csd, _ = mlab.csd(plach[i:i+FT_len], refch[i:i+FT_len], NFFT=FT_len, Fs=1./dt, sides='default', scale_by_freq=False)
+        # Apply window function (To match same functionality as mlab.csd)
+		plach_segment = plach[i:i + FT_len] * window
+		refch_segment = refch[i:i + FT_len] * window
 
+        # Compute the cross-spectral density using scipy.fft
+		plach_fft = scipy.fft.fft(plach_segment)
+		refch_fft = scipy.fft.fft(refch_segment)
+		csd = plach_fft * np.conj(refch_fft)
+		csd /= (np.sum(window**2) * FT_len)  # Normalize by the sum of the window squared and FT_len
+
+		# Old command using mlab.csd
+#		csd, _ = mlab.csd(plach[i:i+FT_len], refch[i:i+FT_len], NFFT=FT_len, Fs=1./dt, sides='default', scale_by_freq=False)
+
+		# Find the peak of the cross-spectral density
 		npts_to_ignore = 10                 # skip 10 initial points to avoid DC offset being the largest value
-
 		adx = np.argmax(np.abs(csd[npts_to_ignore:]))
-		mag = adx # not used need to be removed
 		adx += npts_to_ignore
-		data = np.angle(csd)
-		i = int(adx)
-		csd_angle = data[i] + (data[i+1]-data[i]) * (adx-i)
+
+		csd_angle = np.angle(csd)[adx]
 
 		if csd_angle < 0:
 			csd_angle += 2*math.pi
 
 		csd_ang[m] = csd_angle
-		csd_mag[m] = mag
-	return ttt+tarr[0], csd_ang, csd_mag
+		csd_mag[m] = np.abs(csd[adx])
+	return ttt+tarr[0], -csd_ang, csd_mag
 
 def auto_find_fixups(t_ms, csd_ang, threshold=5.):
 	d = np.diff(csd_ang)
@@ -152,11 +184,18 @@ def do_fixups(t_ms, csd_ang):
 
 def phase_from_raw(tarr, refch, plach):
 	'''
-	compute phase of the cross-spectral density
+	1. Divide data into segments of length FT_len (512 points)
+	2. For each segment:
+		- Apply Hanning window
+		- Compute FFT of both reference and plasma signals
+		- Calculate Cross-Spectral Density (CSD): CSD = FFT(plasma) * conj(FFT(ref))
+		- Find peak in CSD spectrum (skipping first 10 points to avoid DC)
+    	- Extract phase angle at peak frequency
+    3. Unwrap phase to handle 2π jumps
+    4. Subtract initial offset
 	'''
-	FT_len = 512
 	offset_range = range(5)
-
+	
 	ttt, csd_ang, csd_mag = correlation_spectrogram(tarr, refch, plach, FT_len)
 
 	t_ms = ttt * 1000
@@ -173,13 +212,20 @@ def phase_from_raw(tarr, refch, plach):
 # The following function is from Steve
 #============================================================================
 
-def density_from_phase_steve(tarr, refch, plach):
-
+def phase_from_steve(tarr, refch, plach):
+	'''
+    1. Decimate data by factor of 10 (reduce sampling rate)
+    2. Create analytic signals using Hilbert transform analytic signal = original + i*Hilbert(original)
+    3. Subtract mean values
+    4. Calculate phase angles of both signals
+    5. Unwrap phases
+    6. Take difference between reference and plasma phases
+	'''
 	# Decimate data as we are only interested in the slowly varying phase,
 	# not the carrier wave phase variations
 	decimate_factor = 10
 	dt = tarr[1]-tarr[0]
-	carrier_period_nt = int((1./carrier_frequency)/dt)
+	# carrier_period_nt = int((1./carrier_frequency)/dt)
 	ftype='iir'
 
 	r = signal.decimate(refch, decimate_factor, ftype=ftype, zero_phase=True)
@@ -216,18 +262,10 @@ def density_from_phase_steve(tarr, refch, plach):
 	# Subtract the mean of the first 100 samples as it is not meaningful to us
 	#dphi -= dphi[mindex:4*mindex].mean()
 
-
 	# filter out carrier frequency
-
 	#dphi = uniform_filter1d(dphi, carrier_period_nt)
 
-	# Apply calibration factor & divide by the diameter.
-	# Note: This assumes the diameter is not a function of time,
-	# which of course it is. You need a probe measurement here.
-
-	density = dphi*calibration
-
-	return t_ms, density
+	return t_ms, dphi
 
 
 #===============================================================================================================================================
@@ -237,24 +275,19 @@ def density_from_phase_steve(tarr, refch, plach):
 
 if __name__ == '__main__':
 
-	print (calibration)
-# 	# modify testing for Linux
-# 	st1 = time.time()
-# 
-# 	ifn = "/home/interfpi/C1-topo-22-12-05-00000.trc"
-# 	refch, tarr = read_trc_data_simplified(ifn)
-# 
-# 	ifn = "/home/interfpi/C2-topo-22-12-05-00000.trc"
-# 	plach, tarr = read_trc_data_simplified(ifn)
-# 	st2 = time.time()
-# 
-# 	t_ms, ne = density_from_phase(tarr, refch, plach)
-# 	st3 = time.time()
-# 
-# 	print('Reading time: ', st2-st1)
-# 	print('Analyzing time: ', st3-st2)
-# 	print('Total time: ', st3-st1)
-# 	
-# 	plt.figure()
-# 	plt.plot(t_ms, ne)
-# 	plt.show()
+	ifn = r"C:\data\LAPD\interferometer_samples\C1-interf-shot57673.trc"
+	refch, tarr, vertical_gain, vertical_offset = read_trc_data_simplified(ifn)
+
+	ifn = r"C:\data\LAPD\interferometer_samples\C2-interf-shot57673.trc"
+	plach, tarr, vertical_gain, vertical_offset = read_trc_data_simplified(ifn)
+
+	plt.figure()
+
+	t_ms, ne = phase_from_raw(tarr, refch, plach)
+	plt.plot(t_ms, ne, label='cross correlation')
+
+	t_ms, ne = phase_from_steve(tarr, refch, plach)
+	plt.plot(t_ms, ne, label='hilbert transform')
+
+	plt.legend()
+	plt.show()

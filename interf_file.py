@@ -1,8 +1,10 @@
 # coding: utf-8
 
 '''
-This module reads interferometer data acquired from the scope and saves them to a temporary npz file. (Binary format)
-NOT USED
+This module contains functions for hdf5 handeling
+
+Author: Jia Han
+Ver1.0 created on: 2021-06-01
 '''
 
 import sys
@@ -24,11 +26,12 @@ def find_latest_shot_number(dir_path):
 		newest_file = max(full_path_file_list, key=os.path.getctime)
 		shot_number = int(newest_file[-9:-4])
 	except ValueError:
-		print('No file exist in directory; start iteration at shot 0')
-		return 0
+		print('No file exist in directory; try again in 10 sec')
+		time.sleep(10)
+		shot_number = find_latest_shot_number(dir_path)
 	return shot_number
 
-def write_to_temp(file_path, temp_path): # not used Jun-2024
+def write_to_temp(file_path, temp_path): # NOT USED
 	'''
 	Saves interferometer data to a temporary folder.
 	Loops continuously to save the latest interferometer data files to the temporary folder.
@@ -107,11 +110,11 @@ def init_hdf5_file(file_name):
 		print("HDF5 file exist")
 		return None
 	
-	with h5py.File(file_name, "w") as f:
+	with h5py.File(file_name, "w",  libver='latest') as f:
 		ct = time.localtime()
 		f.attrs['created'] = ct
 		print("HDF5 file created ", time.strftime("%Y-%m-%d %H:%M:%S", ct))
-		f.attrs['description'] = "Interferometer data. See group description and attribute for more info."
+		f.attrs['description'] = "Interferometer data. Datasets in each group are named by timestamp of when data was acquired. Timestamps are saved as seconds since epoch January 1, 1970, 00:00:00 (UTC). See each individual group description and attribute for more info."
 
 		grp = f.require_group("phase_p20")
 		grp.attrs['description'] = "Phase data for interferometer at port 20. Attribute calibration factor assumes 40cm plasma length."
@@ -133,16 +136,13 @@ def init_hdf5_file(file_name):
 def create_sourcefile_dataset(f, dataA, dataB, t_ms, saved_time):
 
 	grp = f.require_group("phase_p20")
-	fds = grp.create_dataset(str(saved_time), data=dataA)
-	fds.attrs['modified'] = time.ctime(saved_time)
+	grp.create_dataset(str(saved_time), data=dataA)
 
 	grp = f.require_group("phase_p29")
-	fds = grp.create_dataset(str(saved_time), data=dataB)
-	fds.attrs['modified'] = time.ctime(saved_time)
+	grp.create_dataset(str(saved_time), data=dataB)
 
 	grp = f.require_group("time_array")
-	fds = grp.create_dataset(str(saved_time), data=t_ms)
-	fds.attrs['modified'] = time.ctime(saved_time)
+	grp.create_dataset(str(saved_time), data=t_ms)
 
 	print("Saved interferometer shot at", time.ctime(saved_time))
 

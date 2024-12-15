@@ -1,94 +1,101 @@
 # coding utf-8
+'''
+This module removes interferometer raw data saved on the scope after they have been analyzed and saved to a HDF5 file.
 
-# This module removes interferometer raw data saved on the scope after they have been analyzed and saved to a HDF5 file.
+Author: Jia Han
+Ver1.0 created on: 2021-06-01
+- Basic functionality to remove interferometer raw data files from scope after analysis
+- Simple file deletion after log file written by interf_main.py
+
+Ver2.0 created on: 2024-12-12 by AI (TODO: need to be tested)
+- Added proper logging and error handling
+- Improved file processing with shot number tracking
+- Added verbose mode for debugging
+- Designed to be called from interf_main.py rather than standalone
+- More robust file existence checks and deletion confirmation
+'''
 
 import time
 import os
-import threading
-
-
-file_path ="/mnt/smbshare"
-ram_path="/mnt/ramdisk"
-log_ifn = f"{ram_path}/interferometer_log.bin"
-
-def remove_file(ifn):
-	if not os.path.exists(ifn):
-		return False
-
-	try:
-		if os.path.isfile(ifn) or os.path.islink(ifn):
-			os.unlink(ifn)
-			print(f"Removed file: {ifn}")
-			return True
-			
-	except Exception as e:
-		print(f"Failed to remove {ifn}. Reason: {e}")
-		return False
-
-
-def main():
-	# Check if the log file exists
-	if os.path.exists(log_ifn):
-		log_file_exists = True
-	else:
-		print("Log file does not exist")
-		log_file_exists = False
-
-	while log_file_exists:
-		time.sleep(0.1)
-		try:
-			# Read the log file to get the recorded shot numbers
-			with open(log_ifn, 'r+') as log_file:
-				log_data = log_file.readlines()
-				# skip iteration if log file is empty
-				if len(log_data) == 0:
-					print('Log file is empty.')
-					continue
-
-			# Remove the newline characters from the shot numbers
-			recorded_shot_numbers = [int(shot_number.split(',')[0].strip()) for shot_number in log_data]
-
-			# Delete the corresponding interferometer files
-			for shot_number in recorded_shot_numbers:
-				ifn = f"{file_path}/C1-interf-shot{int(shot_number):05d}.trc"
-				is_removed = remove_file(ifn)
-				ifn = f"{file_path}/C2-interf-shot{int(shot_number):05d}.trc"
-				is_removed = remove_file(ifn)
-				ifn = f"{file_path}/C3-interf-shot{int(shot_number):05d}.trc"
-				is_removed = remove_file(ifn)
-				ifn = f"{file_path}/C4-interf-shot{int(shot_number):05d}.trc"
-				is_removed = remove_file(ifn)
-
-				if is_removed:
-					# Remove entire line with the shot number from the log file
-					with open(log_ifn, 'r+') as log_file:
-						log_file.seek(0)
-						for line in log_data:
-							if int(line.split(',')[0].strip()) != shot_number:
-								log_file.write(line)
-						log_file.truncate()
-					
-					# Remove shot
-					recorded_shot_numbers.remove(shot_number)
-					print(f"Removed shot {shot_number}")
-
-
-		except KeyboardInterrupt:
-			print("Keyboard interrupt")
-			break
-		except Exception as e:
-			if 'Permission denied' in str(e):
-				# print('waiting for log file to be written')
-				time.sleep(0.5)
-				continue
-			else:
-				print(f"Error: {e}")
-				break
 
 #===============================================================================================================================================
-#<o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o>
+file_path = r"I:\\"
+log_ifn = r"C:\data\log\interferometer_log.bin"
 #===============================================================================================================================================
+def remove_file(ifn, verbose=False):
+    if not os.path.exists(ifn):
+        return False
+
+    try:
+        if os.path.isfile(ifn) or os.path.islink(ifn):
+            os.unlink(ifn)
+            if verbose:
+                print(f"Removed file: {ifn}")
+            return True
+            
+    except Exception as e:
+        print(f"Failed to remove {ifn}. Reason: {e}")
+        return False
+
+def process_single_shot(shot_number, verbose=False):
+    """Process and remove files for a single shot number"""
+    success = True
+    for ch in range(1, 5):
+        ifn = f"{file_path}\\C{ch}-interf-shot{shot_number:05d}.trc"
+        if not remove_file(ifn, verbose):
+            success = False
+    return success
+
+def main(verbose=False):
+    """
+    Main function to process the log file and remove processed files.
+    No threading - designed to be called from interf_main.py
+    """
+    while True:
+        try:
+            time.sleep(0.1)  # Prevent CPU overuse
+            
+            if not os.path.exists(log_ifn):
+                if verbose:
+                    print("Log file does not exist")
+                continue
+                
+            # Read first line only
+            try:
+                with open(log_ifn, 'r') as log_file:
+                    first_line = log_file.readline().strip()
+                    if not first_line:
+                        continue
+            except (IOError, PermissionError):
+                time.sleep(0.5)
+                continue
+                
+            try:
+                shot_number = int(first_line.split(',')[0])
+            except (ValueError, IndexError):
+                continue
+                
+            # Process the shot
+            if process_single_shot(shot_number, verbose):
+                # Remove the processed line from log
+                try:
+                    with open(log_ifn, 'r') as log_file:
+                        lines = log_file.readlines()
+                    with open(log_ifn, 'w') as log_file:
+                        log_file.writelines(lines[1:])
+                    if verbose:
+                        print(f"Removed shot {shot_number}")
+                except (IOError, PermissionError):
+                    time.sleep(0.5)
+                    continue
+                    
+        except KeyboardInterrupt:
+            print("Cleanup: Keyboard interrupt")
+            break
+        except Exception as e:
+            print(f"Cleanup error: {e}")
+            time.sleep(1)
+            continue
 
 if __name__ == '__main__':
-
-	main()
+    main(verbose=True)
