@@ -96,45 +96,44 @@ Module works like the following:
 
 ## Data Structure
 
-interferometer_data_YYYY-MM-DD.hdf5
-│
-├── Attributes
-│   ├── created: <time struct>
-│   └── description: "Interferometer data. Datasets in each group are named by timestamp..."
-│
-├── phase_p20/
-│   ├── Attributes
-│   │   ├── description: "Phase data for interferometer at port 20..."
-│   │   ├── unit: "rad"
-│   │   ├── Microwave frequency (Hz): 288e9
-│   │   └── calibration factor (m^-3/rad): <value>
-│   │
-│   └── Datasets
-│       ├── <timestamp1>: [phase data array]
-│       ├── <timestamp2>: [phase data array]
-│       └── ...
-│
-├── phase_p29/
-│   ├── Attributes
-│   │   ├── description: "Phase data for interferometer at port 29..."
-│   │   ├── unit: "rad"
-│   │   ├── Microwave frequency (Hz): 282e9
-│   │   └── calibration factor (m^-3/rad): <value>
-│   │
-│   └── Datasets
-│       ├── <timestamp1>: [phase data array]
-│       ├── <timestamp2>: [phase data array]
-│       └── ...
-│
-└── time_array/
-    ├── Attributes
-    │   ├── description: "Time array for interferometer data..."
-    │   └── unit: "ms"
-    │
-    └── Datasets
-        ├── <timestamp1>: [time array]
-        ├── <timestamp2>: [time array]
-        └── ...
+The HDF5 files are named `interferometer_data_YYYY-MM-DD.hdf5` and have the following structure:
+
+### Root Attributes
+- `created`: Time structure when file was created
+- `description`: "Interferometer data. Datasets in each group are named by timestamp..."
+
+### Groups and Datasets
+
+**phase_p20/**
+- Attributes:
+  - `description`: "Phase data for interferometer at port 20..."
+  - `unit`: "rad" 
+  - `Microwave frequency (Hz)`: 288e9
+  - `calibration factor (m^-3/rad)`: [value]
+- Datasets:
+  - `[timestamp1]`: Phase data array
+  - `[timestamp2]`: Phase data array
+  - ...
+
+**phase_p29/**
+- Attributes:
+  - `description`: "Phase data for interferometer at port 29..."
+  - `unit`: "rad"
+  - `Microwave frequency (Hz)`: 282e9
+  - `calibration factor (m^-3/rad)`: [value]
+- Datasets:
+  - `[timestamp1]`: Phase data array
+  - `[timestamp2]`: Phase data array
+  - ...
+
+**time_array/**
+- Attributes:
+  - `description`: "Time array for interferometer data..."
+  - `unit`: "ms"
+- Datasets:
+  - `[timestamp1]`: Time array
+  - `[timestamp2]`: Time array
+  - ...
 
 Timestamp is the time when the scope trace was saved on the scope, in particular the last channel (C4) was saved.
 Might have some delay between when shot was received and when the scope trace was saved.
