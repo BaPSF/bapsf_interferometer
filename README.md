@@ -96,13 +96,15 @@ Module works like the following:
 
 ## Data Structure
 
-The HDF5 files are named `interferometer_data_YYYY-MM-DD.hdf5` and have the following structure:
+### Standalone Interferometer HDF5 Files
 
-### Root Attributes
+The standalone interferometer HDF5 files are named `interferometer_data_YYYY-MM-DD.hdf5` and have the following structure:
+
+#### Root Attributes
 - `created`: Time structure when file was created
 - `description`: "Interferometer data. Datasets in each group are named by timestamp..."
 
-### Groups and Datasets
+#### Groups and Datasets
 
 **phase_p20/**
 - Attributes:
@@ -137,3 +139,71 @@ The HDF5 files are named `interferometer_data_YYYY-MM-DD.hdf5` and have the foll
 
 Timestamp is the time when the scope trace was saved on the scope, in particular the last channel (C4) was saved.
 Might have some delay between when shot was received and when the scope trace was saved.
+
+### Datarun HDF5 Files After Merge
+
+After interferometer data is merged into datarun HDF5 files using `interf_merge_datarun.py`, the data is organized under the following structure:
+
+#### Main Path Structure
+```
+diagnostics/interferometer/
+```
+
+#### Specific Data Groups
+
+**diagnostics/interferometer/phase_p20/**
+- Contains phase data from interferometer at port 20
+- Attributes:
+  - `description`: "Phase data for interferometer at port 20. Attribute calibration factor assumes 40cm plasma length."
+  - `unit`: "rad"
+  - `Microwave frequency (Hz)`: 288e9
+  - `calibration factor (m^-3/rad)`: [calculated value]
+- Datasets:
+  - `1`: Phase data array for shot 1
+  - `2`: Phase data array for shot 2
+  - `3`: Phase data array for shot 3
+  - ... (numbered by shot)
+
+**diagnostics/interferometer/phase_p29/**
+- Contains phase data from interferometer at port 29
+- Attributes:
+  - `description`: "Phase data for interferometer at port 29. Attribute calibration factor assumes 40cm plasma length."
+  - `unit`: "rad"
+  - `Microwave frequency (Hz)`: 282e9
+  - `calibration factor (m^-3/rad)`: [calculated value]
+- Datasets:
+  - `1`: Phase data array for shot 1
+  - `2`: Phase data array for shot 2
+  - `3`: Phase data array for shot 3
+  - ... (numbered by shot)
+
+**diagnostics/interferometer/time_array/**
+- Contains time array for interferometer data
+- Attributes:
+  - `description`: "Time array for interferometer data in milliseconds."
+  - `unit`: "ms"
+- Datasets:
+  - `1`: Time array for shot 1
+  - `2`: Time array for shot 2
+  - `3`: Time array for shot 3
+  - ... (numbered by shot)
+
+#### Dataset Naming Convention
+- **Datasets within each group are named by shot number** (starting from 1)
+- Shot numbers correspond to completed shots in the datarun sequence
+- If a shot number doesn't exist as a dataset, it means interferometer data is missing for that shot
+- The merge process matches timestamps between datarun shots and interferometer data
+
+#### Example Access Pattern
+To access interferometer data for shot number 5 in a datarun file:
+- Phase data (port 20): `diagnostics/interferometer/phase_p20/5`
+- Phase data (port 29): `diagnostics/interferometer/phase_p29/5`
+- Time array: `diagnostics/interferometer/time_array/5`
+
+#### Merge Process
+The merge process (`interf_merge_datarun.py`):
+1. Extracts timestamps from completed shots in the datarun file
+2. Matches these timestamps with interferometer data (within ±1 second tolerance)
+3. Copies matching interferometer data into the datarun file structure
+4. Preserves all metadata and attributes from the original interferometer files
+5. Only copies data when a matching timestamp is found
