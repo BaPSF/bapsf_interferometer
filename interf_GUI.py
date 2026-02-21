@@ -28,7 +28,7 @@ from interf_raw import get_calibration_factor
 #===============================================================================================================================================
 #===============================================================================================================================================
 
-def get_latest_file(dir_path="/mnt/diagnostic-data/interferometer"):
+def get_latest_file(dir_path=r"C:\data\interferometer"):
     """
     This function returns the latest file in a directory.
 
@@ -117,8 +117,8 @@ class MainWindow(QMainWindow):
         self.remove_trace_button.clicked.connect(self.remove_trace)
 
         # Create a figure and a canvas for the figure
-        self.fig = Figure(figsize=(15,15))
-        plt.rcParams['font.size'] = 24
+        self.fig = Figure(figsize=(10,10))
+        plt.rcParams['font.size'] = 18
         self.ax = self.fig.add_subplot(111)
         self.canvas = FigureCanvas(self.fig)  # Create a canvas for the figure
         # Add the navigation toolbar for interacting with plot

@@ -98,14 +98,16 @@ def get_interf_data(year, month, day, hour, minute, second, data_path):
 
 # Example usage:
 if __name__ == "__main__":
-    data_path = r"D:\interferometer"
-    
+    data_path = r"C:\data\interferometer"
+
+    fig, ax = plt.subplots(figsize=(10, 6))
+
     # Example: Get data for June 8, 2024 at 14:30:00 PST
     t_ms, phaseA, phaseB, actual_time = get_interf_data(
-        year=2024, 
-        month=11, 
-        day=2, 
-        hour=10, 
+        year=2025, 
+        month=4,
+        day=4,
+        hour=20,
         minute=30, 
         second=0, 
         data_path=data_path
@@ -122,11 +124,67 @@ if __name__ == "__main__":
         ne_29 = phaseB * cal_29
         
         # Plot the data
-        plt.figure(figsize=(10,6))
-        plt.plot(t_ms, ne_20, label='Port 20')
-        plt.plot(t_ms, ne_29, label='Port 29')
-        plt.xlabel('Time (ms)')
-        plt.ylabel('Density (m^-3)')
+
+        ax.plot(t_ms, ne_20, label='Friday')
+        ax.plot(t_ms, ne_29, '--', label='Friday')
+        ax.set_xlabel('Time (ms)')
+        ax.set_ylabel('Density (m^-3)')
+    else:
+        print("No data found")
+
+    # Example: Get data for June 8, 2024 at 14:30:00 PST
+    t_ms, phaseA, phaseB, actual_time = get_interf_data(
+        year=2025, 
+        month=4, 
+        day=6,
+        hour=9,
+        minute=30,
+        second=0, 
+        data_path=data_path
+    )
+    
+    if t_ms is not None:
+        print(f"Found data at: {actual_time}")
+        
+        # Convert phase to density if needed
+        cal_20 = get_calibration_factor(288e9)  # For port 20
+        cal_29 = get_calibration_factor(282e9)  # For port 29
+        
+        ne_20 = phaseA * cal_20
+        ne_29 = phaseB * cal_29
+        
+        # Plot the data
+
+        ax.plot(t_ms, ne_20, label='9:30')
+        ax.plot(t_ms, ne_29, '--', label='Sunday')
+    else:
+        print("No data found")
+
+    t_ms, phaseA, phaseB, actual_time = get_interf_data(
+        year=2025, 
+        month=4, 
+        day=6,
+        hour=11, 
+        minute=20,
+        second=20, 
+        data_path=data_path
+    )
+    
+    if t_ms is not None:
+        print(f"Found data at: {actual_time}")
+        
+        # Convert phase to density if needed
+        cal_20 = get_calibration_factor(288e9)  # For port 20
+        cal_29 = get_calibration_factor(282e9)  # For port 29
+        
+        ne_20 = phaseA * cal_20
+        ne_29 = phaseB * cal_29
+        
+        # Plot the data
+
+        ax.plot(t_ms, ne_20, label='11:30')
+        ax.plot(t_ms, ne_29, '--', label='Sunday')
+
         plt.legend()
         plt.grid(True)
         plt.show()
