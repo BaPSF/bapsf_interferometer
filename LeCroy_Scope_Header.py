@@ -52,27 +52,27 @@ WAVEDESC_FMT = '=16s16shhllllllllll16sl16shhlllllllllhhffffhhfdd48s48sfdBBBBhhfh
 #    The initial '=' character specifies native byte order, with standard (C) alignment
 
 RECORD_TYPES = ['single_sweep', 'interleaved', 'histogram', 'graph', 'filter_coefficient',
-                'complex', 'extrema', 'sequence_obsolete', 'centered_RIS', 'peak_detect']
+				'complex', 'extrema', 'sequence_obsolete', 'centered_RIS', 'peak_detect']
 
 PROCESSING_TYPES = ['no_processing', 'fir_filter', 'interpolated', 'sparsed',
-                    'autoscaled', 'no_result', 'rolling', 'cumulative']
+					'autoscaled', 'no_result', 'rolling', 'cumulative']
 
 TIMEBASE_IDS = ['1 ps', '2 ps', '5 ps', '10 ps', '20 ps', '50 ps', '100 ps', '200 ps', '500 ps',
-                '1 ns', '2 ns', '5 ns', '10 ns', '20 ns', '50 ns', '100 ns', '200 ns', '500 ns',
-                '1 us', '2 us', '5 us', '10 us', '20 us', '50 us', '100 us', '200 us', '500 us',
-                '1 ms', '2 ms', '5 ms', '10 ms', '20 ms', '50 ms', '100 ms', '200 ms', '500 ms',
-                '1 s',  '2 s',  '5 s',  '10 s',  '20 s',  '50 s',  '100 s',  '200 s',  '500 s',
-                '1 ks', '2 ks', '5 ks']   # these are per division; ALSO: 100 corresponds to EXTERNAL
+				'1 ns', '2 ns', '5 ns', '10 ns', '20 ns', '50 ns', '100 ns', '200 ns', '500 ns',
+				'1 us', '2 us', '5 us', '10 us', '20 us', '50 us', '100 us', '200 us', '500 us',
+				'1 ms', '2 ms', '5 ms', '10 ms', '20 ms', '50 ms', '100 ms', '200 ms', '500 ms',
+				'1 s',  '2 s',  '5 s',  '10 s',  '20 s',  '50 s',  '100 s',  '200 s',  '500 s',
+				'1 ks', '2 ks', '5 ks']   # these are per division; ALSO: 100 corresponds to EXTERNAL
 
 VERT_GAIN_IDS = ['1 uV', '2 uV', '5 uV', '10 uV', '20 uV', '50 uV', '100 uV', '200 uV', '500 uV',
-                 '1 mV', '2 mV', '5 mV', '10 mV', '20 mV', '50 mV', '100 mV', '200 mV', '500 mV',
-                 '1 V',  '2 V',  '5 V',  '10 V',  '20 V',  '50 V',  '100 V',  '200 V',  '500 V',
-                 '1 kV', '2 kV', '5 kV', '10 kV']   # these are per division; pp added the last 3
+				 '1 mV', '2 mV', '5 mV', '10 mV', '20 mV', '50 mV', '100 mV', '200 mV', '500 mV',
+				 '1 V',  '2 V',  '5 V',  '10 V',  '20 V',  '50 V',  '100 V',  '200 V',  '500 V',
+				 '1 kV', '2 kV', '5 kV', '10 kV']   # these are per division; pp added the last 3
 
 VERT_COUPLINGS = ['DC 50 Ohms', 'ground', 'DC 1 MOhm', 'ground', 'AC 1 MOhm']
 
 EXPANDED_TRACE_NAMES = {'F1': 'Math1'   , 'F2': 'Math2'   , 'F3': 'Math3'   , 'F4': 'Math4'   ,  # documentation indicates these are possible, but some of them result in errors
-                        'F5': 'Math5'   , 'F6': 'Math6'   , 'F7': 'Math7'   , 'F8': 'Math8'   ,
+						'F5': 'Math5'   , 'F6': 'Math6'   , 'F7': 'Math7'   , 'F8': 'Math8'   ,
 					  'TA': 'ChannelA', 'TB': 'ChannelB', 'TC': 'ChannelC', 'TD': 'ChannelD',
 					  'M1': 'Memory1' , 'M2': 'Memory2' , 'M3': 'Memory3' , 'M4': 'Memory4' ,
 					  'C1': 'Channel1', 'C2': 'Channel2', 'C3': 'Channel3', 'C4': 'Channel4' }
@@ -172,21 +172,21 @@ class LeCroy_Scope_Header:
 
 	def generate_test_data(self, NTimes=1000, verbose=False):
 		self.hdr = self.hdr._replace(descriptor_name = b"WAVEDESC\0\0\0\0\0\0\0\0",
-		                             comm_type       = 1,    # data returned as shorts
-		                             wave_array_1    = 2*NTimes,
-		                             record_type     = 3,
-		                             timebase        = 3,
-		                             fixed_vert_gain = 3,
-		                             vert_coupling   = 3,
-		                             processing_done = 1,
-		                             sweeps_per_acq  = 10,
-		                             nominal_bits    = 12,
-		                             vertunit        = ('\0'*48).encode('utf8'),   # must be 48 bytes
-		                             horunit         = ('\0'*48).encode('utf8'),   # must be 48 bytes
-		                             horiz_interval  = 0.001,
-		                             horiz_offset    = 0.002,
-		                             vertical_gain   = 0.1,
-		                             vertical_offset = 0.2)
+									 comm_type       = 1,    # data returned as shorts
+									 wave_array_1    = 2*NTimes,
+									 record_type     = 3,
+									 timebase        = 3,
+									 fixed_vert_gain = 3,
+									 vert_coupling   = 3,
+									 processing_done = 1,
+									 sweeps_per_acq  = 10,
+									 nominal_bits    = 12,
+									 vertunit        = ('\0'*48).encode('utf8'),   # must be 48 bytes
+									 horunit         = ('\0'*48).encode('utf8'),   # must be 48 bytes
+									 horiz_interval  = 0.001,
+									 horiz_offset    = 0.002,
+									 vertical_gain   = 0.1,
+									 vertical_offset = 0.2)
 		if verbose:
 			print("new header:")
 			print(self.dump())

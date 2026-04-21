@@ -125,7 +125,7 @@ def correlation_spectrogram(tarr, refch, plach, FT_len):
 	csd_ang = np.zeros(num_FTs)   # computed cross spectral density phase vs time
 	csd_mag = np.zeros(num_FTs)   # computed cross spectral density magnitude vs time
 
-    # Define a window function (To match same functionality as mlab.csd)
+	# Define a window function (To match same functionality as mlab.csd)
 	window = np.hanning(FT_len) # i.e. hanning window
 
 	# loop over each subset of FT_len points  (note: num_FTs = int(#samples / FT_len))
@@ -135,11 +135,11 @@ def correlation_spectrogram(tarr, refch, plach, FT_len):
 			break
 		ttt[m] = i*dt
 
-        # Apply window function (To match same functionality as mlab.csd)
+		# Apply window function (To match same functionality as mlab.csd)
 		plach_segment = plach[i:i + FT_len] * window
 		refch_segment = refch[i:i + FT_len] * window
 
-        # Compute the cross-spectral density using scipy.fft
+		# Compute the cross-spectral density using scipy.fft
 		plach_fft = scipy.fft.fft(plach_segment)
 		refch_fft = scipy.fft.fft(refch_segment)
 		csd = plach_fft * np.conj(refch_fft)
@@ -190,9 +190,9 @@ def phase_from_raw(tarr, refch, plach):
 		- Compute FFT of both reference and plasma signals
 		- Calculate Cross-Spectral Density (CSD): CSD = FFT(plasma) * conj(FFT(ref))
 		- Find peak in CSD spectrum (skipping first 10 points to avoid DC)
-    	- Extract phase angle at peak frequency
-    3. Unwrap phase to handle 2π jumps
-    4. Subtract initial offset
+		- Extract phase angle at peak frequency
+	3. Unwrap phase to handle 2π jumps
+	4. Subtract initial offset
 	'''
 	offset_range = range(5)
 	
@@ -214,12 +214,12 @@ def phase_from_raw(tarr, refch, plach):
 
 def phase_from_steve(tarr, refch, plach):
 	'''
-    1. Decimate data by factor of 10 (reduce sampling rate)
-    2. Create analytic signals using Hilbert transform analytic signal = original + i*Hilbert(original)
-    3. Subtract mean values
-    4. Calculate phase angles of both signals
-    5. Unwrap phases
-    6. Take difference between reference and plasma phases
+	1. Decimate data by factor of 10 (reduce sampling rate)
+	2. Create analytic signals using Hilbert transform analytic signal = original + i*Hilbert(original)
+	3. Subtract mean values
+	4. Calculate phase angles of both signals
+	5. Unwrap phases
+	6. Take difference between reference and plasma phases
 	'''
 	# Decimate data as we are only interested in the slowly varying phase,
 	# not the carrier wave phase variations

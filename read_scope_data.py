@@ -40,12 +40,12 @@ from LeCroy_Scope_Header import LeCroy_Scope_Header
 #======================================================================================
 
 def decode_header_info(hdr_bytes):
-    try:
-        header = LeCroy_Scope_Header(hdr_bytes)
-    except Exception as e:
-        print("Error decoding LeCroy_Scope_Header info:", e)
-        header = None
-    return header
+	try:
+		header = LeCroy_Scope_Header(hdr_bytes)
+	except Exception as e:
+		print("Error decoding LeCroy_Scope_Header info:", e)
+		header = None
+	return header
 
 #======================================================================================
 

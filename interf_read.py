@@ -33,64 +33,64 @@ import datetime
 from interf_raw import get_calibration_factor
 
 def get_interf_data(year, month, day, hour, minute, second, data_path):
-    """
-    Get interferometer data from HDF5 files for a specific date and time (Pacific Time).
-    
-    Args:
-        year (int): Year (e.g., 2024)
-        month (int): Month (1-12)
-        day (int): Day (1-31)
-        hour (int): Hour (0-23)
-        minute (int): Minute (0-59)
-        second (int): Second (0-59)
-        data_path (str): Path to directory containing interferometer HDF5 files
-    
-    Returns:
-        tuple: (t_ms, phaseA, phaseB, actual_time) or (None, None, None, None) if no data found
-            - t_ms: Time array in milliseconds
-            - phaseA: Phase data from port 20
-            - phaseB: Phase data from port 29
-            - actual_time: String representing actual time of data found
-    """
-    # Convert input time to timestamp (Pacific Time)
-    pacific = datetime.timezone(datetime.timedelta(hours=-8))  # PST (UTC-8)
-    input_dt = datetime.datetime(year, month, day, hour, minute, second, tzinfo=pacific)
-    input_timestamp = input_dt.timestamp()
-    
-    # Construct filename
-    date_str = f"{year:04d}-{month:02d}-{day:02d}"
-    filename = f"interferometer_data_{date_str}.hdf5"
-    file_path = os.path.join(data_path, filename)
-    
-    if not os.path.exists(file_path):
-        print(f"No interferometer data file found for date {date_str}")
-        return None, None, None, None
-        
-    with h5py.File(file_path, 'r') as f:
-        # Get all timestamps in the file
-        dataset_names = list(f['phase_p20'].keys())
-        timestamps = np.array([float(ts) for ts in dataset_names])
-        
-        # Find closest timestamp within ±10 seconds
-        time_diffs = np.abs(timestamps - input_timestamp)
-        closest_idx = np.argmin(time_diffs)
-        
-        if time_diffs[closest_idx] > 10:  # More than 10 seconds difference
-            print(f"No data found within 10 seconds of {input_dt.strftime('%Y-%m-%d %H:%M:%S %Z')}")
-            return None, None, None, None
-            
-        actual_timestamp = str(timestamps[closest_idx])
-        
-        # Get data
-        phaseA = np.array(f['phase_p20'][actual_timestamp])
-        phaseB = np.array(f['phase_p29'][actual_timestamp])
-        t_ms = np.array(f['time_array'][actual_timestamp])
-        
-        # Convert actual timestamp to readable time string
-        actual_time = datetime.datetime.fromtimestamp(float(actual_timestamp), pacific)
-        actual_time_str = actual_time.strftime("%Y-%m-%d %H:%M:%S %Z")
-        
-    return t_ms, phaseA, phaseB, actual_time_str
+	"""
+	Get interferometer data from HDF5 files for a specific date and time (Pacific Time).
+	
+	Args:
+		year (int): Year (e.g., 2024)
+		month (int): Month (1-12)
+		day (int): Day (1-31)
+		hour (int): Hour (0-23)
+		minute (int): Minute (0-59)
+		second (int): Second (0-59)
+		data_path (str): Path to directory containing interferometer HDF5 files
+	
+	Returns:
+		tuple: (t_ms, phaseA, phaseB, actual_time) or (None, None, None, None) if no data found
+			- t_ms: Time array in milliseconds
+			- phaseA: Phase data from port 20
+			- phaseB: Phase data from port 29
+			- actual_time: String representing actual time of data found
+	"""
+	# Convert input time to timestamp (Pacific Time)
+	pacific = datetime.timezone(datetime.timedelta(hours=-8))  # PST (UTC-8)
+	input_dt = datetime.datetime(year, month, day, hour, minute, second, tzinfo=pacific)
+	input_timestamp = input_dt.timestamp()
+	
+	# Construct filename
+	date_str = f"{year:04d}-{month:02d}-{day:02d}"
+	filename = f"interferometer_data_{date_str}.hdf5"
+	file_path = os.path.join(data_path, filename)
+	
+	if not os.path.exists(file_path):
+		print(f"No interferometer data file found for date {date_str}")
+		return None, None, None, None
+		
+	with h5py.File(file_path, 'r') as f:
+		# Get all timestamps in the file
+		dataset_names = list(f['phase_p20'].keys())
+		timestamps = np.array([float(ts) for ts in dataset_names])
+		
+		# Find closest timestamp within ±10 seconds
+		time_diffs = np.abs(timestamps - input_timestamp)
+		closest_idx = np.argmin(time_diffs)
+		
+		if time_diffs[closest_idx] > 10:  # More than 10 seconds difference
+			print(f"No data found within 10 seconds of {input_dt.strftime('%Y-%m-%d %H:%M:%S %Z')}")
+			return None, None, None, None
+			
+		actual_timestamp = str(timestamps[closest_idx])
+		
+		# Get data
+		phaseA = np.array(f['phase_p20'][actual_timestamp])
+		phaseB = np.array(f['phase_p29'][actual_timestamp])
+		t_ms = np.array(f['time_array'][actual_timestamp])
+		
+		# Convert actual timestamp to readable time string
+		actual_time = datetime.datetime.fromtimestamp(float(actual_timestamp), pacific)
+		actual_time_str = actual_time.strftime("%Y-%m-%d %H:%M:%S %Z")
+		
+	return t_ms, phaseA, phaseB, actual_time_str
 
 #===============================================================================================================================================
 #<o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o>
@@ -98,95 +98,95 @@ def get_interf_data(year, month, day, hour, minute, second, data_path):
 
 # Example usage:
 if __name__ == "__main__":
-    data_path = r"C:\data\interferometer"
+	data_path = r"C:\data\interferometer"
 
-    fig, ax = plt.subplots(figsize=(10, 6))
+	fig, ax = plt.subplots(figsize=(10, 6))
 
-    # Example: Get data for June 8, 2024 at 14:30:00 PST
-    t_ms, phaseA, phaseB, actual_time = get_interf_data(
-        year=2025, 
-        month=4,
-        day=4,
-        hour=20,
-        minute=30, 
-        second=0, 
-        data_path=data_path
-    )
-    
-    if t_ms is not None:
-        print(f"Found data at: {actual_time}")
-        
-        # Convert phase to density if needed
-        cal_20 = get_calibration_factor(288e9)  # For port 20
-        cal_29 = get_calibration_factor(282e9)  # For port 29
-        
-        ne_20 = phaseA * cal_20
-        ne_29 = phaseB * cal_29
-        
-        # Plot the data
+	# Example: Get data for June 8, 2024 at 14:30:00 PST
+	t_ms, phaseA, phaseB, actual_time = get_interf_data(
+		year=2025, 
+		month=4,
+		day=4,
+		hour=20,
+		minute=30, 
+		second=0, 
+		data_path=data_path
+	)
+	
+	if t_ms is not None:
+		print(f"Found data at: {actual_time}")
+		
+		# Convert phase to density if needed
+		cal_20 = get_calibration_factor(288e9)  # For port 20
+		cal_29 = get_calibration_factor(282e9)  # For port 29
+		
+		ne_20 = phaseA * cal_20
+		ne_29 = phaseB * cal_29
+		
+		# Plot the data
 
-        ax.plot(t_ms, ne_20, label='Friday')
-        ax.plot(t_ms, ne_29, '--', label='Friday')
-        ax.set_xlabel('Time (ms)')
-        ax.set_ylabel('Density (m^-3)')
-    else:
-        print("No data found")
+		ax.plot(t_ms, ne_20, label='Friday')
+		ax.plot(t_ms, ne_29, '--', label='Friday')
+		ax.set_xlabel('Time (ms)')
+		ax.set_ylabel('Density (m^-3)')
+	else:
+		print("No data found")
 
-    # Example: Get data for June 8, 2024 at 14:30:00 PST
-    t_ms, phaseA, phaseB, actual_time = get_interf_data(
-        year=2025, 
-        month=4, 
-        day=6,
-        hour=9,
-        minute=30,
-        second=0, 
-        data_path=data_path
-    )
-    
-    if t_ms is not None:
-        print(f"Found data at: {actual_time}")
-        
-        # Convert phase to density if needed
-        cal_20 = get_calibration_factor(288e9)  # For port 20
-        cal_29 = get_calibration_factor(282e9)  # For port 29
-        
-        ne_20 = phaseA * cal_20
-        ne_29 = phaseB * cal_29
-        
-        # Plot the data
+	# Example: Get data for June 8, 2024 at 14:30:00 PST
+	t_ms, phaseA, phaseB, actual_time = get_interf_data(
+		year=2025, 
+		month=4, 
+		day=6,
+		hour=9,
+		minute=30,
+		second=0, 
+		data_path=data_path
+	)
+	
+	if t_ms is not None:
+		print(f"Found data at: {actual_time}")
+		
+		# Convert phase to density if needed
+		cal_20 = get_calibration_factor(288e9)  # For port 20
+		cal_29 = get_calibration_factor(282e9)  # For port 29
+		
+		ne_20 = phaseA * cal_20
+		ne_29 = phaseB * cal_29
+		
+		# Plot the data
 
-        ax.plot(t_ms, ne_20, label='9:30')
-        ax.plot(t_ms, ne_29, '--', label='Sunday')
-    else:
-        print("No data found")
+		ax.plot(t_ms, ne_20, label='9:30')
+		ax.plot(t_ms, ne_29, '--', label='Sunday')
+	else:
+		print("No data found")
 
-    t_ms, phaseA, phaseB, actual_time = get_interf_data(
-        year=2025, 
-        month=4, 
-        day=6,
-        hour=11, 
-        minute=20,
-        second=20, 
-        data_path=data_path
-    )
-    
-    if t_ms is not None:
-        print(f"Found data at: {actual_time}")
-        
-        # Convert phase to density if needed
-        cal_20 = get_calibration_factor(288e9)  # For port 20
-        cal_29 = get_calibration_factor(282e9)  # For port 29
-        
-        ne_20 = phaseA * cal_20
-        ne_29 = phaseB * cal_29
-        
-        # Plot the data
+	t_ms, phaseA, phaseB, actual_time = get_interf_data(
+		year=2025, 
+		month=4, 
+		day=6,
+		hour=11, 
+		minute=20,
+		second=20, 
+		data_path=data_path
+	)
+	
+	if t_ms is not None:
+		print(f"Found data at: {actual_time}")
+		
+		# Convert phase to density if needed
+		cal_20 = get_calibration_factor(288e9)  # For port 20
+		cal_29 = get_calibration_factor(282e9)  # For port 29
+		
+		ne_20 = phaseA * cal_20
+		ne_29 = phaseB * cal_29
+		
+		# Plot the data
 
-        ax.plot(t_ms, ne_20, label='11:30')
-        ax.plot(t_ms, ne_29, '--', label='Sunday')
+		ax.plot(t_ms, ne_20, label='11:30')
+		ax.plot(t_ms, ne_29, '--', label='Sunday')
 
-        plt.legend()
-        plt.grid(True)
-        plt.show()
-    else:
-        print("No data found")
+		plt.legend()
+		plt.grid(True)
+		plt.show()
+	else:
+		print("No data found")
