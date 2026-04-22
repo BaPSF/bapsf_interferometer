@@ -128,12 +128,22 @@ def init_hdf5_file(file_name):
 		grp.attrs['Microwave frequency (Hz)'] = 282e9
 		grp.attrs['calibration factor (m^-3/rad)'] = get_calibration_factor(grp.attrs['Microwave frequency (Hz)'])
 
+		grp = f.require_group("phase_p40")
+		grp.attrs['description'] = "Phase data for interferometer at port 40 (Rigol DHO scope). Attribute calibration factor assumes 40cm plasma length."
+		grp.attrs['unit'] = "rad"
+		grp.attrs['Microwave frequency (Hz)'] = 288e9
+		grp.attrs['calibration factor (m^-3/rad)'] = get_calibration_factor(grp.attrs['Microwave frequency (Hz)'])
+
 		grp = f.require_group("time_array")
 		grp.attrs['description'] = "Time array for interferometer data in milliseconds."
 		grp.attrs['unit'] = "ms"
 
+		grp = f.require_group("time_array_p40")
+		grp.attrs['description'] = "Time array for phase_p40 (Rigol). Independent of time_array which is LeCroy."
+		grp.attrs['unit'] = "ms"
 
-def create_sourcefile_dataset(f, dataA, dataB, t_ms, saved_time):
+
+def create_sourcefile_dataset(f, dataA, dataB, dataC, t_ms, t_ms_C, saved_time, rigol_missing=False):
 
 	grp = f.require_group("phase_p20")
 	grp.create_dataset(str(saved_time), data=dataA)
@@ -143,6 +153,13 @@ def create_sourcefile_dataset(f, dataA, dataB, t_ms, saved_time):
 
 	grp = f.require_group("time_array")
 	grp.create_dataset(str(saved_time), data=t_ms)
+
+	grp = f.require_group("phase_p40")
+	ds_p40 = grp.create_dataset(str(saved_time), data=dataC)
+	ds_p40.attrs['rigol_missing'] = bool(rigol_missing)
+
+	grp = f.require_group("time_array_p40")
+	grp.create_dataset(str(saved_time), data=t_ms_C)
 
 	print("Saved interferometer shot at", time.ctime(saved_time))
 

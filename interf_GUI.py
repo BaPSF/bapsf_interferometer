@@ -53,7 +53,14 @@ def get_data(ifn, i):
 		phaseB = np.array(f['phase_p29'][dataset_name])
 		t_ms = np.array(f['time_array'][dataset_name])
 
-	return t_ms, phaseA, phaseB, time.ctime(float(dataset_name))
+		if 'phase_p40' in f and dataset_name in f['phase_p40']:
+			phaseC = np.array(f['phase_p40'][dataset_name])
+			t_ms_C = np.array(f['time_array_p40'][dataset_name])
+		else:
+			phaseC = None
+			t_ms_C = None
+
+	return t_ms, phaseA, phaseB, t_ms_C, phaseC, time.ctime(float(dataset_name))
 
 #===============================================================================================================================================
 #===============================================================================================================================================
@@ -63,7 +70,7 @@ class Worker(QObject):
 	Worker function that emits the data to the plotting GUI
 	Runs in a separate thread to avoid blocking the GUI
 	'''
-	data_updated = pyqtSignal(np.ndarray, np.ndarray, np.ndarray, str)  # Signal to emit the data
+	data_updated = pyqtSignal(np.ndarray, np.ndarray, np.ndarray, object, object, str)  # t_ms, neA, neB, t_ms_C, neC, label
 
 	def __init__(self):
 		super().__init__()
@@ -76,10 +83,14 @@ class Worker(QObject):
 		while True:
 			try:
 				ifn = get_latest_file()
-				t_ms, phaseA, phaseB, tstamp = get_data(ifn, -1)
+				t_ms, phaseA, phaseB, t_ms_C, phaseC, tstamp = get_data(ifn, -1)
 				neA = phaseA * get_calibration_factor(288e9)
 				neB = phaseB * get_calibration_factor(282e9)
-				self.data_updated.emit(t_ms, neA, neB, tstamp)
+				if phaseC is not None:
+					neC = phaseC * get_calibration_factor(288e9)
+				else:
+					neC = None
+				self.data_updated.emit(t_ms, neA, neB, t_ms_C, neC, tstamp)
 				self.i += 1
 				QThread.sleep(1)  # Sleep for 1 second
 			except OSError:
@@ -133,6 +144,7 @@ class MainWindow(QMainWindow):
 		# Create the plot lines
 		self.line_neA, = self.ax.plot([], [], 'r-')
 		self.line_neB, = self.ax.plot([], [], 'g-')
+		self.line_neC, = self.ax.plot([], [], 'b-')
 		#======================== END GUI setup ========================
 	
 		# Updating the plot by reading data from hdf5; use thread to avoid blocking the GUI
@@ -148,12 +160,18 @@ class MainWindow(QMainWindow):
 	def start_plot(self):
 		self.thread.start()  # Start the thread, which starts worker.run
 
-	def update_plot(self, x, y_neA, y_neB, label):
+	def update_plot(self, x, y_neA, y_neB, x_C, y_neC, label):
 		# Update the plot with new data
 		self.line_neA.set_data(x, y_neA)
 		self.line_neB.set_data(x, y_neB)
 		self.line_neA.set_label('P20  ' + label)
 		self.line_neB.set_label('P29  ' + label)
+		if y_neC is not None and x_C is not None:
+			self.line_neC.set_data(x_C, y_neC)
+			self.line_neC.set_label('P40  ' + label)
+		else:
+			self.line_neC.set_data([], [])
+			self.line_neC.set_label('_nolegend_')
 		self.ax.legend(loc='upper right', fontsize=18)
 		self.ax.relim()
 		self.ax.autoscale_view(True, True, True)

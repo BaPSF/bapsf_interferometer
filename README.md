@@ -5,10 +5,11 @@ Main branch contains scripts that run on raspeberry pi only (Linux version; NOT 
 diagnostic-pc branch contains UP TO DATE script that runs both on PC and RP.
 
 Module works like the following:
-- Interferometer raw signal goes into a LeCroy scope
-- Scope runs on "save waveform" -> "Wrap", which continuously saves displayed traces on a local drive.
+- Interferometer raw signal goes into a LeCroy scope (ports 20 and 29) and a Rigol DHO scope (port 40)
+- LeCroy scope runs on "save waveform" -> "Wrap", which continuously saves displayed traces on a local drive.
 - The folder that contains saved scope traces is shared on DAQ NET.
-- Diagnostic PC grabs data from the network folder (see interf_main.py)
+- Rigol DHO scope (192.168.7.60) runs in AUTO trigger mode; traces are read in-memory over telnet on each shot
+- Diagnostic PC grabs data from the network folder and from the Rigol scope (see interf_main.py)
 - Analyzes the raw signal to find phase shift (see interf_raw.py)
 - Stores phase data and time array locally on hdf5 (see interf_file.py)
 - Deletes saved traces on the scope so disk don't fill up (see interf_cleanup.py)
@@ -128,6 +129,17 @@ The standalone interferometer HDF5 files are named `interferometer_data_YYYY-MM-
   - `[timestamp2]`: Phase data array
   - ...
 
+**phase_p40/**
+- Attributes:
+  - `description`: "Phase data for interferometer at port 40 (Rigol DHO scope)..."
+  - `unit`: "rad"
+  - `Microwave frequency (Hz)`: 288e9
+  - `calibration factor (m^-3/rad)`: [value]
+- Datasets:
+  - `[timestamp1]`: Phase data array (resampled onto LeCroy time grid; same length as phase_p20)
+  - Per-dataset attribute `rigol_missing` (bool): True when the Rigol was unreachable for this shot and the array is a zero-filled placeholder
+  - ...
+
 **time_array/**
 - Attributes:
   - `description`: "Time array for interferometer data..."
@@ -135,6 +147,14 @@ The standalone interferometer HDF5 files are named `interferometer_data_YYYY-MM-
 - Datasets:
   - `[timestamp1]`: Time array
   - `[timestamp2]`: Time array
+  - ...
+
+**time_array_p40/**
+- Attributes:
+  - `description`: "Time array for phase_p40 (Rigol). Independent of time_array which is LeCroy."
+  - `unit`: "ms"
+- Datasets:
+  - `[timestamp1]`: Time array (currently identical to time_array since phase_p40 is resampled onto the LeCroy grid)
   - ...
 
 Timestamp is the time when the scope trace was saved on the scope, in particular the last channel (C4) was saved.
@@ -207,3 +227,11 @@ The merge process (`interf_merge_datarun.py`):
 3. Copies matching interferometer data into the datarun file structure
 4. Preserves all metadata and attributes from the original interferometer files
 5. Only copies data when a matching timestamp is found
+
+## Update 04/21/2026
+
+- Added a third interferometer at **port 40** (288 GHz, 40 cm plasma path) acquired with a Rigol DHO scope at `192.168.7.60` (CH1 = ref, CH2 = plasma).
+- Per shot, `interf_main.py` now: detects the LeCroy `.trc` file → sends `:STOP` to the Rigol → reads both Rigol channels in-memory over telnet → sends `:RUN` → reads all four LeCroy channels via the multiprocessing pool → runs all three `phase_from_raw` analyses in parallel via the same pool.
+- HDF5 schema gained two groups: `phase_p40` and `time_array_p40`. The Rigol phase is resampled onto the LeCroy time grid via `np.interp`, so all three phase traces and both time arrays share the same length per shot.
+- If the Rigol is unreachable or errors mid-run, the LeCroy pipeline keeps writing; `phase_p40` is saved as a zero-filled placeholder with the per-dataset attribute `rigol_missing = True`. Reconnect is retried every 100 shots.
+- `interf_GUI.py` and `interf_plot.py` now display a third trace (P40) alongside P20 and P29; older HDF5 files without the `phase_p40` group still load correctly.
