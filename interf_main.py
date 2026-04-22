@@ -30,9 +30,11 @@ import numpy as np
 import time
 import datetime
 import os
+from pathlib import Path
 
-#TODO: add path here for import
-sys.path.append(r"...\bapsf_dimagnetic")
+# TODO: add path here for import
+BAPSF_DIMAGNETIC_PATH = (Path(__file__).parent / ".." / "bapsf_dimagnetic").resolve()
+sys.path.append(f"{BAPSF_DIMAGNETIC_PATH}")
 
 from interf_raw import phase_from_raw, get_calibration_factor
 from interf_file import find_latest_shot_number, init_hdf5_file, create_sourcefile_dataset
