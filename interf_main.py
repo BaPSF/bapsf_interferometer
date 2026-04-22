@@ -49,7 +49,7 @@ scope_path = r"I:\\"
 log_path = r"C:\data\\log"
 hdf5_path = r"C:\data\\interferometer"
 
-RIGOL_IP = "192.168.7.60"
+RIGOL_IP = "192.168.7.63"
 RIGOL_REF_CH = "C1"
 RIGOL_PLA_CH = "C2"
 RIGOL_RETRY_INTERVAL = 100  # shots between reconnect attempts when scope is offline
