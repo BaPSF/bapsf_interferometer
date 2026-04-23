@@ -53,7 +53,13 @@ def get_data(ifn, i):
 		phaseB = np.array(f['phase_p29'][dataset_name])
 		t_ms = np.array(f['time_array'][dataset_name])
 
-		if 'phase_p40' in f and dataset_name in f['phase_p40']:
+		has_p40 = (
+			'phase_p40' in f and
+			'time_array_p40' in f and
+			dataset_name in f['phase_p40'] and
+			dataset_name in f['time_array_p40']
+		)
+		if has_p40:
 			phaseC = np.array(f['phase_p40'][dataset_name])
 			t_ms_C = np.array(f['time_array_p40'][dataset_name])
 		else:
