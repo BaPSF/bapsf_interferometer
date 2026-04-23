@@ -60,4 +60,3 @@ while True:
 		break
 
 data = read_shot(0)
-print(data.keys())

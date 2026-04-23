@@ -26,8 +26,10 @@ Slower computation time than Pat's code, same result compared using plotting
 
 2021-07-15 Update by Jia
 - use scipy.fft instead of mlab.csd; improved computation speed
-- TODO: why is the result negative?
-	added a negative sign to the phase for the moment
+- The CSD angle = phase(plasma) − phase(ref). Plasma has n < 1, so the plasma
+	  channel accumulates less phase than the reference → CSD angle is negative when
+	  plasma is present. The negation in correlation_spectrogram() converts to the
+	  conventional positive-phase definition used with the calibration factor.
 """
 import sys
 sys.path.append(r"C:\Users\hjia9\Documents\GitHub\data-analysis")
@@ -61,11 +63,11 @@ def get_calibration_factor(f_uwave = 288e9, plasma_length = 0.4):
 	m_e = const.electron_mass
 	eps0 = const.epsilon_0
 	c = const.speed_of_light
-	carrier_frequency = 760e3
-	Npass = 2.0 # Number of passes of uwave through plasma
+	Npass = 2.0 # Number of passes of uwave through plasma (retroreflecting geometry)
 	# diameter = 0.35 # Plasma diameter if it were flat (m)
 	# Note: a decent guess for the diameter is the FWHM
 
+	# n_e = phase * cal;  cal = 4π·f·ε₀·m_e·c / (N_pass × e² × L)
 	calibration = 1./((Npass/4./np.pi/f_uwave)*(e**2/m_e/c/eps0)*plasma_length)
 	return calibration
 
