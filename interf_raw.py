@@ -127,41 +127,41 @@ def correlation_spectrogram(tarr, refch, plach, FT_len):
 	csd_ang = np.zeros(num_FTs)   # computed cross spectral density phase vs time
 	csd_mag = np.zeros(num_FTs)   # computed cross spectral density magnitude vs time
 
+	if num_FTs <= 1:
+		return ttt+tarr[0], -csd_ang, csd_mag
+
 	# Define a window function (To match same functionality as mlab.csd)
 	window = np.hanning(FT_len) # i.e. hanning window
+	window_power = np.sum(window**2) * FT_len
 
-	# loop over each subset of FT_len points  (note: num_FTs = int(#samples / FT_len))
-	for m in range(num_FTs):
-		i = m * FT_len
-		if i+FT_len >= NS:
-			break
-		ttt[m] = i*dt
+	# Keep the legacy behavior of skipping the final full window while vectorizing
+	# the FFT work for all earlier windows.
+	valid_segments = num_FTs - 1
+	usable_points = valid_segments * FT_len
+	ttt[:valid_segments] = np.arange(valid_segments) * FT_len * dt
 
-		# Apply window function (To match same functionality as mlab.csd)
-		plach_segment = plach[i:i + FT_len] * window
-		refch_segment = refch[i:i + FT_len] * window
+	plach_segments = plach[:usable_points].reshape(valid_segments, FT_len) * window
+	refch_segments = refch[:usable_points].reshape(valid_segments, FT_len) * window
 
-		# Compute the cross-spectral density using scipy.fft
-		plach_fft = scipy.fft.fft(plach_segment)
-		refch_fft = scipy.fft.fft(refch_segment)
-		csd = plach_fft * np.conj(refch_fft)
-		csd /= (np.sum(window**2) * FT_len)  # Normalize by the sum of the window squared and FT_len
+	# Compute the cross-spectral density using batched FFTs.
+	plach_fft = scipy.fft.fft(plach_segments, axis=1)
+	refch_fft = scipy.fft.fft(refch_segments, axis=1)
+	csd = plach_fft * np.conj(refch_fft)
+	csd /= window_power  # Normalize by the sum of the window squared and FT_len
 
-		# Old command using mlab.csd
-#		csd, _ = mlab.csd(plach[i:i+FT_len], refch[i:i+FT_len], NFFT=FT_len, Fs=1./dt, sides='default', scale_by_freq=False)
+	# Old command using mlab.csd
+#	csd, _ = mlab.csd(plach[i:i+FT_len], refch[i:i+FT_len], NFFT=FT_len, Fs=1./dt, sides='default', scale_by_freq=False)
 
-		# Find the peak of the cross-spectral density
-		npts_to_ignore = 10                 # skip 10 initial points to avoid DC offset being the largest value
-		adx = np.argmax(np.abs(csd[npts_to_ignore:]))
-		adx += npts_to_ignore
+	# Find the peak of the cross-spectral density
+	npts_to_ignore = 10                 # skip 10 initial points to avoid DC offset being the largest value
+	csd_abs = np.abs(csd)
+	adx = np.argmax(csd_abs[:, npts_to_ignore:], axis=1) + npts_to_ignore
+	row_index = np.arange(valid_segments)
+	csd_angle = np.angle(csd[row_index, adx])
+	csd_angle = np.where(csd_angle < 0, csd_angle + 2*math.pi, csd_angle)
 
-		csd_angle = np.angle(csd)[adx]
-
-		if csd_angle < 0:
-			csd_angle += 2*math.pi
-
-		csd_ang[m] = csd_angle
-		csd_mag[m] = np.abs(csd[adx])
+	csd_ang[:valid_segments] = csd_angle
+	csd_mag[:valid_segments] = csd_abs[row_index, adx]
 	return ttt+tarr[0], -csd_ang, csd_mag
 
 def auto_find_fixups(t_ms, csd_ang, threshold=5.):
