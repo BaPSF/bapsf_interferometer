@@ -8,7 +8,7 @@ Module works like the following:
 - Interferometer raw signal goes into a LeCroy scope (ports 20 and 29) and a Rigol DHO scope (port 40)
 - LeCroy scope runs on "save waveform" -> "Wrap", which continuously saves displayed traces on a local drive.
 - The folder that contains saved scope traces is shared on DAQ NET.
-- Rigol DHO scope (192.168.7.60) runs in AUTO trigger mode; traces are read in-memory over telnet on each shot
+- Rigol DHO scope (192.168.7.63) runs in AUTO trigger mode; traces are read in-memory over telnet on each shot
 - Diagnostic PC grabs data from the network folder and from the Rigol scope (see interf_main.py)
 - Analyzes the raw signal to find phase shift (see interf_raw.py)
 - Stores phase data and time array locally on hdf5 (see interf_file.py)
@@ -95,6 +95,12 @@ Module works like the following:
   - Helps prevent overheating issues
   - Simple diagnostic tool
 
+- **read_hdf5.py**
+  - Utility functions for reading LAPD datarun HDF5 files via bapsflib
+  - Reads probe motion data from the 6K Compumotor control
+  - Reads digitizer signal data by board/channel
+  - Unpacks the datarun sequence (messages, status, timestamps)
+
 ## Data Structure
 
 ### Standalone Interferometer HDF5 Files
@@ -138,6 +144,7 @@ The standalone interferometer HDF5 files are named `interferometer_data_YYYY-MM-
 - Datasets:
   - `[timestamp1]`: Phase data array (resampled onto LeCroy time grid; same length as phase_p20)
   - Per-dataset attribute `rigol_missing` (bool): True when the Rigol was unreachable for this shot and the array is a zero-filled placeholder
+  - Per-dataset attribute `rigol_missing_reason` (str): human-readable reason string when `rigol_missing` is True (e.g., timeout message, interpolation error)
   - ...
 
 **time_array/**
@@ -230,8 +237,9 @@ The merge process (`interf_merge_datarun.py`):
 
 ## Update 04/21/2026
 
-- Added a third interferometer at **port 40** (288 GHz, 40 cm plasma path) acquired with a Rigol DHO scope at `192.168.7.60` (CH1 = ref, CH2 = plasma).
+- Added a third interferometer at **port 40** (288 GHz, 40 cm plasma path) acquired with a Rigol DHO scope at `192.168.7.63` (CH1 = ref, CH2 = plasma).
 - Per shot, `interf_main.py` now: detects the LeCroy `.trc` file → sends `:STOP` to the Rigol → reads both Rigol channels in-memory over telnet → sends `:RUN` → reads all four LeCroy channels via the multiprocessing pool → runs all three `phase_from_raw` analyses in parallel via the same pool.
-- HDF5 schema gained two groups: `phase_p40` and `time_array_p40`. The Rigol phase is resampled onto the LeCroy time grid via `np.interp`, so all three phase traces and both time arrays share the same length per shot.
-- If the Rigol is unreachable or errors mid-run, the LeCroy pipeline keeps writing; `phase_p40` is saved as a zero-filled placeholder with the per-dataset attribute `rigol_missing = True`. Reconnect is retried every 100 shots.
+- HDF5 schema gained two groups: `phase_p40` and `time_array_p40`. The Rigol phase is resampled onto the LeCroy time grid via `np.interp` after bounds/sanity validation, so all three phase traces and both time arrays share the same length per shot.
+- If the Rigol is unreachable or errors mid-run, the LeCroy pipeline keeps writing; `phase_p40` is saved as a zero-filled placeholder with per-dataset attributes `rigol_missing = True` and `rigol_missing_reason` (string). Reconnect is retried every 100 shots.
 - `interf_GUI.py` and `interf_plot.py` now display a third trace (P40) alongside P20 and P29; older HDF5 files without the `phase_p40` group still load correctly.
+- Added `_worker_init()` as the multiprocessing pool initializer to suppress `SIGINT` in worker processes. On Windows, Ctrl-C is broadcast to all console processes; without this, workers raised `KeyboardInterrupt` mid-task and stalled `pool.join()`. The main process retains full Ctrl-C handling.
