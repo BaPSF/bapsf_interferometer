@@ -209,7 +209,14 @@ def restart_pool(pool):
 		pool.join()
 	except Exception:
 		pass
-	return multiprocessing.Pool()
+	return multiprocessing.Pool(initializer=_worker_init)
+
+
+def _worker_init():
+	# Ignore SIGINT in pool workers; only the main process handles Ctrl-C.
+	# On Windows, Ctrl-C is broadcast to all console processes — without this,
+	# workers raise KeyboardInterrupt mid-task and stall pool.join().
+	signal.signal(signal.SIGINT, signal.SIG_IGN)
 #===============================================================================================================================================
 		
 def main(hdf5_path, file_path, ram_path):
@@ -238,7 +245,7 @@ def main(hdf5_path, file_path, ram_path):
 	# Find the most recent shot in LeCroy Network drive 
 	shot_number = find_latest_shot_number(file_path)
 
-	pool = multiprocessing.Pool()
+	pool = multiprocessing.Pool(initializer=_worker_init)
 	# Define a handler for SIGINT
 	def sigint_handler(signum, frame):
 		print("SIGINT (Ctrl-C) detected. Attempting to exit gracefully...")
