@@ -25,7 +25,7 @@ import signal
 import multiprocessing
 import concurrent.futures
 import threading
-from queue import Queue
+from queue import Queue, Full as QueueFull
 import h5py
 import numpy as np
 import time
@@ -42,7 +42,7 @@ from interf_file import find_latest_shot_number, init_hdf5_file, create_sourcefi
 from read_scope_data import read_trc_data_simplified, read_trc_data_no_header
 from rigol_scope import RigolScope
 from rigol_functions import command
-import interf_cleanup as cleanup
+from interf_cleanup import process_single_shot
 
 
 #===============================================================================================================================================
@@ -246,6 +246,21 @@ def main(hdf5_path, file_path, ram_path):
 	shot_number = find_latest_shot_number(file_path)
 
 	pool = multiprocessing.Pool(initializer=_worker_init)
+
+	cleanup_queue = Queue(maxsize=1000)
+
+	def _cleanup_worker():
+		while True:
+			shot = cleanup_queue.get()
+			if shot is None:
+				return
+			try:
+				process_single_shot(shot)
+			except Exception as e:
+				print(f"Cleanup worker: failed to delete shot {shot}: {e}")
+
+	threading.Thread(target=_cleanup_worker, daemon=True).start()
+
 	# Define a handler for SIGINT
 	def sigint_handler(signum, frame):
 		print("SIGINT (Ctrl-C) detected. Attempting to exit gracefully...")
@@ -353,6 +368,14 @@ def main(hdf5_path, file_path, ram_path):
 					create_sourcefile_dataset(f, phaseA, phaseB, phaseC, t_ms, t_ms_C, saved_time, rigol_missing, rigol_missing_reason)
 				finally:
 					f.close()
+
+				# Enqueue for background deletion of .trc files on I:\
+				try:
+					cleanup_queue.put_nowait(shot_number)
+				except QueueFull:
+					print(f"Cleanup queue full; dropping shot {shot_number} (will remain on I:\\)")
+				except Exception as e:
+					print(f"Cleanup enqueue error for shot {shot_number}: {e}")
 
 				# Buffer log entries and write every 10 shots
 				try:
