@@ -33,9 +33,14 @@ Jun. 2024 update: (optimization for speed)
 '''
 
 import numpy as np
-import struct
 
 from LeCroy_Scope_Header import LeCroy_Scope_Header
+
+#======================================================================================
+TRACE_HEADER_PREFIX_BYTES = 11
+TRACE_HEADER_BYTES = 346
+TRACE_DATA_OFFSET = TRACE_HEADER_PREFIX_BYTES + TRACE_HEADER_BYTES
+TRACE_SAMPLE_DTYPE = np.dtype("=i2")
 
 #======================================================================================
 
@@ -49,23 +54,34 @@ def decode_header_info(hdr_bytes):
 
 #======================================================================================
 
+def _read_trace_bytes(file_path):
+	with open(file_path, mode='rb') as file: # rb -> read binary
+		return file.read()
+
+def _scale_trace_data(file_content, data_size, vertical_gain, vertical_offset):
+	# Use an offset-based view so we do not allocate an extra bytes slice per file read.
+	raw_data = np.frombuffer(file_content, dtype=TRACE_SAMPLE_DTYPE, count=data_size, offset=TRACE_DATA_OFFSET)
+	return raw_data.astype(np.float64, copy=False) * vertical_gain - vertical_offset
+
+#======================================================================================
+
 def read_trc_data(file_path, list_some_header_info=False):
 
-	with open(file_path, mode='rb') as file: # rb -> read binary
-		file_content = file.read()
+	file_content = _read_trace_bytes(file_path)
 	
-	first_11 = file_content[:11].decode()
+	first_11 = file_content[:TRACE_HEADER_PREFIX_BYTES].decode()
 
 	if not first_11.startswith('#9'):
 		raise SyntaxError('First two bytes are not #9')
 
-	hdr_bytes = file_content[11:11+346]
+	hdr_bytes = file_content[TRACE_HEADER_PREFIX_BYTES:TRACE_DATA_OFFSET]
 	header = decode_header_info(hdr_bytes)
+	time_array = header.time_array
 
-	data_size = int( (int(first_11[2:]) - 346) / 2)
-	if data_size != len(header.time_array):
-		print('Time array length from header %i does not equal %i from first 11 bytes' %(len(header.time_array), data_size))
-	data_size = len(header.time_array)
+	data_size = int((int(first_11[2:]) - TRACE_HEADER_BYTES) / 2)
+	if data_size != len(time_array):
+		print('Time array length from header %i does not equal %i from first 11 bytes' %(len(time_array), data_size))
+	data_size = len(time_array)
 
 	if list_some_header_info:
 		print("dt =", header.dt)
@@ -74,44 +90,30 @@ def read_trc_data(file_path, list_some_header_info=False):
 		print("timebase =", header.timebase)
 		print("Input = ", header.vertical_coupling)
 
-	data_bytes = file_content[11+346:]
-
 	print('Reading data...')
-	fmt = f"={data_size}h"
-	data = np.frombuffer(data_bytes, dtype=fmt)
-	data = data[0,:] * header.hdr.vertical_gain - header.hdr.vertical_offset
+	data = _scale_trace_data(file_content, data_size, header.hdr.vertical_gain, header.hdr.vertical_offset)
 
 	print('Done')
 
-	return data, header.time_array # signal, time array
+	return data, time_array # signal, time array
 
 #======================================================================================
 def read_trc_data_simplified(file_path):
 
-	with open(file_path, mode='rb') as file: # rb -> read binary
-		file_content = file.read()
+	file_content = _read_trace_bytes(file_path)
 
-	hdr_bytes = file_content[11:11+346]
+	hdr_bytes = file_content[TRACE_HEADER_PREFIX_BYTES:TRACE_DATA_OFFSET]
 	header = decode_header_info(hdr_bytes)
-	data_size = len(header.time_array)
-	
-	data_bytes = file_content[11+346:]
-	fmt = f"={data_size}h"
-	data = np.frombuffer(data_bytes, dtype=fmt)
-	data = data[0,:] * header.hdr.vertical_gain - header.hdr.vertical_offset
+	time_array = header.time_array
+	data = _scale_trace_data(file_content, len(time_array), header.hdr.vertical_gain, header.hdr.vertical_offset)
 
 
-	return data, header.time_array, header.hdr.vertical_gain, header.hdr.vertical_offset
+	return data, time_array, header.hdr.vertical_gain, header.hdr.vertical_offset
 	
 def read_trc_data_no_header(file_path, data_size, vertical_gain, vertical_offset):
 	
-	with open(file_path, mode='rb') as file: # rb -> read binary
-		file_content = file.read()
-	
-	data_bytes = file_content[11+346:]
-	fmt = f"={data_size}h"
-	data = np.frombuffer(data_bytes, dtype=fmt)
-	data = data[0,:] * vertical_gain - vertical_offset
+	file_content = _read_trace_bytes(file_path)
+	data = _scale_trace_data(file_content, data_size, vertical_gain, vertical_offset)
 	
 	return data
 

@@ -380,12 +380,6 @@ def main(hdf5_path, file_path, ram_path):
 					shot_number += 1
 
 
-			except KeyboardInterrupt:
-				print("Keyboard interrupt detected. Exit program.")
-				pool.terminate()
-				pool.join()
-				print("Cleanup complete. Exiting.")
-				break
 			except OSError:
 				print("Unable to open hdf5 file. Try again...")
 				time.sleep(0.5)
