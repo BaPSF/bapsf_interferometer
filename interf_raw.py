@@ -136,7 +136,7 @@ def correlation_spectrogram(tarr, refch, plach, FT_len):
 
 	# Keep the legacy behavior of skipping the final full window while vectorizing
 	# the FFT work for all earlier windows.
-	valid_segments = num_FTs - 1
+	valid_segments = num_FTs if NS % FT_len != 0 else num_FTs - 1
 	usable_points = valid_segments * FT_len
 	ttt[:valid_segments] = np.arange(valid_segments) * FT_len * dt
 
@@ -162,7 +162,7 @@ def correlation_spectrogram(tarr, refch, plach, FT_len):
 
 	csd_ang[:valid_segments] = csd_angle
 	csd_mag[:valid_segments] = csd_abs[row_index, adx]
-	return ttt+tarr[0], -csd_ang, csd_mag
+	return ttt[:valid_segments]+tarr[0], -csd_ang[:valid_segments], csd_mag[:valid_segments]
 
 def auto_find_fixups(t_ms, csd_ang, threshold=5.):
 	d = np.diff(csd_ang)
