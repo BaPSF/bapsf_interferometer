@@ -72,7 +72,9 @@ Module works like the following:
 - **interf_merge_datarun.py**
   - Merges interferometer data into datarun HDF5 files
   - Matches timestamps between datasets
-  - Copies data and attributes to datarun files
+  - Copies data and attributes to datarun files (per-channel attrs onto each subgroup, per-shot attrs onto each dataset)
+  - Auto-detects which interferometer channels are present in the source file (works with both legacy two-channel files and new three-channel files that include port 40)
+  - Defaults to merging only the first and last shot of a run; pass `all_shots=True` to merge every shot
   - Maintains data organization for experiments
 
 ### Utility Files
@@ -204,8 +206,20 @@ diagnostics/interferometer/
   - `3`: Phase data array for shot 3
   - ... (numbered by shot)
 
+**diagnostics/interferometer/phase_p40/** *(present only when merging from new-format interferometer files)*
+- Contains phase data from interferometer at port 40 (Rigol DHO scope)
+- Attributes:
+  - `description`: "Phase data for interferometer at port 40 (Rigol DHO scope). Attribute calibration factor assumes 40cm plasma length."
+  - `unit`: "rad"
+  - `Microwave frequency (Hz)`: 288e9
+  - `calibration factor (m^-3/rad)`: [calculated value]
+- Datasets:
+  - `1`, `2`, ... (numbered by shot)
+  - Per-dataset attribute `rigol_missing` (bool): True when the Rigol was unreachable for this shot and the array is a zero-filled placeholder
+  - Per-dataset attribute `rigol_missing_reason` (str): human-readable reason string when `rigol_missing` is True
+
 **diagnostics/interferometer/time_array/**
-- Contains time array for interferometer data
+- Contains time array for the LeCroy-acquired channels (phase_p20, phase_p29)
 - Attributes:
   - `description`: "Time array for interferometer data in milliseconds."
   - `unit`: "ms"
@@ -215,25 +229,39 @@ diagnostics/interferometer/
   - `3`: Time array for shot 3
   - ... (numbered by shot)
 
+**diagnostics/interferometer/time_array_p40/** *(present only when merging from new-format interferometer files)*
+- Time array for `phase_p40` (Rigol). Currently identical to `time_array` because phase_p40 is resampled onto the LeCroy grid before saving, but kept as a separate group so the LeCroy and Rigol time bases can diverge in the future without breaking older datarun files.
+- Attributes:
+  - `description`: "Time array for phase_p40 (Rigol). Independent of time_array which is LeCroy."
+  - `unit`: "ms"
+
+#### Backward compatibility
+Old interferometer source files (pre–port 40 era) only contain `phase_p20`, `phase_p29`, and `time_array`. `interf_merge_datarun.py` detects which subgroups exist in the source file and only creates/populates those, so merging an old file produces the same three-group layout as before — no `phase_p40` / `time_array_p40` groups are added.
+
 #### Dataset Naming Convention
 - **Datasets within each group are named by shot number** (starting from 1)
 - Shot numbers correspond to completed shots in the datarun sequence
 - If a shot number doesn't exist as a dataset, it means interferometer data is missing for that shot
 - The merge process matches timestamps between datarun shots and interferometer data
+- For new-format files, an individual shot may have `phase_p20`, `phase_p29`, and `time_array` written but no `phase_p40` / `time_array_p40` entry — this happens when the Rigol was completely unavailable for that shot
 
 #### Example Access Pattern
 To access interferometer data for shot number 5 in a datarun file:
 - Phase data (port 20): `diagnostics/interferometer/phase_p20/5`
 - Phase data (port 29): `diagnostics/interferometer/phase_p29/5`
-- Time array: `diagnostics/interferometer/time_array/5`
+- Phase data (port 40, if present): `diagnostics/interferometer/phase_p40/5`
+- Time array (LeCroy): `diagnostics/interferometer/time_array/5`
+- Time array (Rigol, if present): `diagnostics/interferometer/time_array_p40/5`
 
 #### Merge Process
 The merge process (`interf_merge_datarun.py`):
 1. Extracts timestamps from completed shots in the datarun file
 2. Matches these timestamps with interferometer data (within ±1 second tolerance)
 3. Copies matching interferometer data into the datarun file structure
-4. Preserves all metadata and attributes from the original interferometer files
+4. Preserves all metadata and attributes from the original interferometer files (per-channel group attrs are written onto each `diagnostics/interferometer/<name>` subgroup; per-shot dataset attrs such as `rigol_missing` are preserved on each shot dataset)
 5. Only copies data when a matching timestamp is found
+6. **Default: merges only the first and last completed shot.** This is a fast sanity check that keeps the merged datarun file small. To merge every shot, call `merge_interferometer_data(datarun_path, interf_path, all_shots=True)`.
+7. The datarun HDF5 file is opened and closed once per shot so that, if the merge is interrupted, all already-merged shots remain safely flushed to disk.
 
 ## Update 04/21/2026
 
