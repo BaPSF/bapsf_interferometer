@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-Process Tony's 300 GHz interferometer signals using cross-spectral density
+Process Tony's 300 GHz interferometer signals to extract the phase information, which is then converted to density using a calibration factor.
 
 @author: Patrick, Steve, and Jia
 
@@ -23,6 +23,7 @@ Jia modified syntax and optimized speed using Github copilot on May. 23. 2024
 Uses the Hilbert transform to compute the phase of the signal
 Hilbert transform using built-in function by scipy.signal
 Slower computation time than Pat's code, same result compared using plotting
+Jia modified syntax and optimized speed using Claude on May. 4. 2026 (TODO: still shows edge effects)
 
 2021-07-15 Update by Jia
 - use scipy.fft instead of mlab.csd; improved computation speed
@@ -41,8 +42,6 @@ import numpy as np
 import matplotlib.pyplot as plt
 from scipy import constants as const
 from scipy import signal
-from scipy.ndimage import uniform_filter1d
-from matplotlib import mlab
 
 from read_scope_data import read_trc_data, read_trc_data_simplified
 import time
@@ -214,7 +213,7 @@ def phase_from_raw(tarr, refch, plach):
 # The following function is from Steve
 #============================================================================
 
-def phase_from_steve(tarr, refch, plach):
+def phase_from_hilbert(tarr, refch, plach):
 	'''
 	1. Decimate data by factor of 10 (reduce sampling rate)
 	2. Create analytic signals using Hilbert transform analytic signal = original + i*Hilbert(original)
@@ -232,8 +231,7 @@ def phase_from_steve(tarr, refch, plach):
 
 	r = signal.decimate(refch, decimate_factor, ftype=ftype, zero_phase=True)
 	s = signal.decimate(plach, decimate_factor, ftype=ftype, zero_phase=True)
-	t = signal.decimate(tarr, decimate_factor, ftype=ftype, zero_phase=True)
-	dt = t[1]-t[0]
+	t = tarr[0] + np.arange(len(r)) * (dt * decimate_factor)
 	t_ms = t * 1e3
 
 	# Construct analytic function versions of the reference and the plasma signal
@@ -241,19 +239,25 @@ def phase_from_steve(tarr, refch, plach):
 	# So, given real X(t): analytic function = X(t) + i * HX(t), where H is the actual Hilbert transform
 	# https://en.wikipedia.org/wiki/Hilbert_transform
 
-	aref = signal.hilbert(r) # The analytic reference signal
-	asig = signal.hilbert(s) # The analytic data signal
+	# Pad to a 5-smooth length so scipy.fft picks a fast transform size, then truncate.
+	# Use edge-replication padding (not zero-pad) to avoid Gibbs ringing at the boundary.
+	n = len(r)
+	N = scipy.fft.next_fast_len(n)
+	pad = N - n
+	if pad:
+		r_pad = np.concatenate([r, np.full(pad, r[-1])])
+		s_pad = np.concatenate([s, np.full(pad, s[-1])])
+	else:
+		r_pad, s_pad = r, s
+	aref = signal.hilbert(r_pad)[:n]
+	asig = signal.hilbert(s_pad)[:n]
 
-	# Subtract the mean values (you want to keep this code)
+	# Remove DC of the analytic signals before taking phase
 	aref -= np.mean(aref)
 	asig -= np.mean(asig)
 
-	# Compute the phase angles and unwrap specified phase jumps
-	pref = np.unwrap(np.angle(aref))
-	psig = np.unwrap(np.angle(asig), discont=1.0e-8*np.pi)
-
-	# Compute the phase difference (delta phi)
-	dphi = (pref-psig)
+	# Phase difference via single complex product: angle(aref) - angle(asig) = angle(aref * conj(asig))
+	dphi = np.unwrap(np.angle(aref * np.conj(asig)))
 
 	# Flatten out minor but inelegant edge effects due to the Hilbert transforms,
 	# and mostly the filter
@@ -277,19 +281,30 @@ def phase_from_steve(tarr, refch, plach):
 
 if __name__ == '__main__':
 
-	ifn = r"C:\data\LAPD\interferometer_samples\C1-interf-shot57673.trc"
+	ifn = r"E:\interferometer\raw data\C1-interf-shot57507.trc"
 	refch, tarr, vertical_gain, vertical_offset = read_trc_data_simplified(ifn)
 
-	ifn = r"C:\data\LAPD\interferometer_samples\C2-interf-shot57673.trc"
+	ifn = r"E:\interferometer\raw data\C2-interf-shot57507.trc"
 	plach, tarr, vertical_gain, vertical_offset = read_trc_data_simplified(ifn)
 
 	plt.figure()
+	plt.plot(tarr*1e3, refch, label='reference leg')
+	plt.plot(tarr*1e3, plach, label='plasma leg')
+	plt.legend()
+	plt.xlabel('time (ms)')
+	plt.ylabel('voltage (V)')
 
+	plt.figure()
+	t0 = time.perf_counter()
 	t_ms, ne = phase_from_raw(tarr, refch, plach)
+	t_csd = time.perf_counter() - t0
+	print(f"phase_from_raw (cross correlation): {t_csd:.4f} s")
 	plt.plot(t_ms, ne, label='cross correlation')
 
-	t_ms, ne = phase_from_steve(tarr, refch, plach)
+	t0 = time.perf_counter()
+	t_ms, ne = phase_from_hilbert(tarr, refch, plach)
+	t_hilbert = time.perf_counter() - t0
+	print(f"phase_from_hilbert (hilbert transform): {t_hilbert:.4f} s")
 	plt.plot(t_ms, ne, label='hilbert transform')
-
 	plt.legend()
 	plt.show()
