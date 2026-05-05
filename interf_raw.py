@@ -1,36 +1,85 @@
 # -*- coding: utf-8 -*-
 """
-Process Tony's 300 GHz interferometer signals to extract the phase information, which is then converted to density using a calibration factor.
+Phase extraction for the BaPSF ~300 GHz microwave interferometer.
 
-@author: Patrick, Steve, and Jia
+Overview
+--------
+Recovers the line-integrated plasma phase shift from the digitized IF signals
+of a heterodyne interferometer (one reference leg, one plasma leg). The phase
+can then be converted to line-integrated electron density via the calibration
+factor returned by `get_calibration_factor()`.
 
-------------Pat's code comment----------------
-Expects the the reference leg and plasma leg rf (IF actually) signals to be digitized sufficiently fast to
-   determine their instantaneous phase
+Public API
+----------
+- `get_calibration_factor(f_uwave, plasma_length)` -> float
+      Calibration constant `cal` such that  n_e = phase * cal  [m^-3 / rad].
+      Assumes a retro-reflecting (double-pass) geometry.
 
-Uses mlab.csd to generate the phase information
+- `phase_from_raw(tarr, refch, plach)` -> (t_ms, phase_rad)
+      **Default method, used in production.** Cross-spectral-density (CSD) over
+      `FT_len`-point Hanning windows; tracks the peak frequency bin per window
+      and returns its unwrapped phase. Fast and robust.
 
-In the unstacked figures the phase should vary from 0 to 2pi.
+- `phase_from_hilbert(tarr, refch, plach)` -> (t_ms, phase_rad)
+      Alternative method using the analytic signal from `scipy.signal.hilbert`.
+      Gives the same answer as `phase_from_raw` but is slower and currently
+      shows minor edge effects; kept for cross-checking.
 
-Created on Thurs Sep 6 2018;  fixups added a year later
-	Fixups originally involved manually selecting 2pi phase transitions using mouse clicks on the figure
-	Now fixups are done automatically using function auto_find_fixups(), which seems to work very well
-Last modified by Pat Sep 13, 2020
-Jia modified syntax and optimized speed using Github copilot on May. 23. 2024
---------------------------------------------
+Inputs (both phase functions)
+-----------------------------
+- `tarr`  : 1-D time array in seconds, uniformly sampled.
+- `refch` : reference-leg IF samples (same length as `tarr`).
+- `plach` : plasma-leg IF samples (same length as `tarr`).
 
-------------Steve's code comment----------------
-Uses the Hilbert transform to compute the phase of the signal
-Hilbert transform using built-in function by scipy.signal
-Slower computation time than Pat's code, same result compared using plotting
-Jia modified syntax and optimized speed using Claude on May. 4. 2026 (TODO: still shows edge effects)
+Sampling must be fast enough to resolve the IF carrier.
 
-2021-07-15 Update by Jia
-- use scipy.fft instead of mlab.csd; improved computation speed
-- The CSD angle = phase(plasma) − phase(ref). Plasma has n < 1, so the plasma
-	  channel accumulates less phase than the reference → CSD angle is negative when
-	  plasma is present. The negation in correlation_spectrogram() converts to the
-	  conventional positive-phase definition used with the calibration factor.
+Outputs
+-------
+- `t_ms`     : time axis in milliseconds (downsampled relative to input —
+               one point per FFT window for `phase_from_raw`, one per
+               decimated sample for `phase_from_hilbert`).
+- `phase_rad`: cumulative (unwrapped) plasma phase shift in radians, with the
+               first few samples used to subtract the pre-plasma offset so the
+               trace starts near zero.
+
+Sign convention
+---------------
+The cross-spectral density `CSD = FFT(plasma) * conj(FFT(ref))` has angle
+`phase(plasma) - phase(ref)`. Because the plasma refractive index `n < 1`, the
+plasma leg accumulates *less* phase than the reference, so the raw CSD angle is
+negative when plasma is present. `correlation_spectrogram()` negates it so that
+the returned phase is positive during a shot, matching the convention assumed
+by `get_calibration_factor()`.
+
+Tunable parameter
+-----------------
+- `FT_len` (module-level, default 512): FFT window length for `phase_from_raw`.
+  Larger -> better frequency resolution, coarser time resolution.
+
+Quick example
+-------------
+    from read_scope_data import read_trc_data_simplified
+    from interf_raw import phase_from_raw, get_calibration_factor
+
+    refch, tarr, *_ = read_trc_data_simplified("C1-interf-shot00001.trc")
+    plach, _,   *_ = read_trc_data_simplified("C2-interf-shot00001.trc")
+
+    t_ms, phase = phase_from_raw(tarr, refch, plach)
+    n_e = phase * get_calibration_factor(f_uwave=288e9, plasma_length=0.4)
+
+Running this module directly (`python interf_raw.py`) loads a hard-coded sample
+shot, runs both methods, prints their wall-clock times, and overlays the
+results — useful as a smoke test.
+
+Authors and history
+-------------------
+- Patrick (2018-09): original CSD method; manual 2π fix-ups, later replaced by
+  automatic `auto_find_fixups()`. Last edit by Pat: 2020-09-13.
+- Jia (2021-07-15): switched from `matplotlib.mlab.csd` to `scipy.fft`; added
+  notes on the sign convention.
+- Steve (2024-05-20): contributed the Hilbert-transform variant `phase_from_hilbert`.
+- Jia (2024-05-23): syntax cleanup and vectorization of the CSD path.
+- Jia (2026-05-04): Hilbert path cleanup and speed-up (edge effects still present — TODO).
 """
 import sys
 sys.path.append(r"C:\Users\hjia9\Documents\GitHub\data-analysis")
