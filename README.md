@@ -1,273 +1,110 @@
 # bapsf_interferometer
-Interferometer module that includes communication, analysis, saving, and plotting
 
-Main branch contains scripts that run on raspeberry pi only (Linux version; NOT USED since Jul.16.2024)
-diagnostic-pc branch contains UP TO DATE script that runs both on PC and RP.
+Acquisition, analysis, storage, and plotting for the BaPSF microwave interferometers (ports 20, 29, and 40).
 
-Module works like the following:
-- Interferometer raw signal goes into a LeCroy scope (ports 20 and 29) and a Rigol DHO scope (port 40)
-- LeCroy scope runs on "save waveform" -> "Wrap", which continuously saves displayed traces on a local drive.
-- The folder that contains saved scope traces is shared on DAQ NET.
-- Rigol DHO scope (192.168.7.63) runs in AUTO trigger mode; traces are read in-memory over telnet on each shot
-- Diagnostic PC grabs data from the network folder and from the Rigol scope (see interf_main.py)
-- Analyzes the raw signal to find phase shift (see interf_raw.py)
-- Stores phase data and time array locally on hdf5 (see interf_file.py)
-- Deletes saved traces on the scope so disk don't fill up (see interf_cleanup.py)
-- hdf5 data folder is shared on DAQ NET.
-- Raspberry Pi sitting inside main lab runs a plotting GUI that displays the traces by reading the hdf5 file (see interf_GUI.py)
-- Folder is mounted as a network drive on DAQ PC.
-- When data run is over, interferometer data can be merged into datarun hdf5 files (see intef_merge_datarun.py)
+> **Branches:** `main` is the legacy Raspberry Pi (Linux) version, unused since 2024-07-16. **Use `diagnostic-pc`** — it runs on both PC and RP and is current.
 
-## File Structure and Descriptions
+## How it works
 
-### Core Files
+1. Raw interferometer signals feed three scopes:
+   - **LeCroy** — ports 20 (282 GHz) and 29 (288 GHz). Runs in "Save Waveform → Wrap" mode, continuously writing traces to a folder shared on DAQ NET.
+   - **Rigol DHO** (`192.168.7.63`) — port 40 (288 GHz). Runs in AUTO trigger; traces are read in-memory over telnet.
+2. The diagnostic PC ([interf_main.py](interf_main.py)) detects each new LeCroy `.trc`, pulls the matching Rigol shot, computes phase shifts ([interf_raw.py](interf_raw.py)), and appends to a daily HDF5 file ([interf_file.py](interf_file.py)).
+3. Old scope traces are deleted to keep disks clean ([interf_cleanup.py](interf_cleanup.py)).
+4. A Raspberry Pi in the main lab runs a live plotting GUI ([interf_GUI.py](interf_GUI.py)) by reading the shared HDF5.
+5. After a run, interferometer data is merged into the datarun HDF5 ([interf_merge_datarun.py](interf_merge_datarun.py)).
 
-- **interf_main.py**
-  - Main script that runs on the diagnostic PC
-  - Monitors LeCroy scope for new scope traces
-  - Reads and analyzes raw interferometer data
-  - Saves processed data to HDF5 files
+## Files
 
-- **interf_raw.py**
-  - Contains core analysis functions for interferometer signals
-  - Calculates phase shifts from raw interferometer data
-  - Two methods for phase calculation:
-    - cross-correlation (in use)
-    - Hilbert transform (not in use; provides same result but slower)
-  - Provides calibration factors for density estimation
+### Core
+| File | Purpose |
+|---|---|
+| [interf_main.py](interf_main.py) | Diagnostic-PC entry point: monitor LeCroy, read Rigol, analyze, save |
+| [interf_raw.py](interf_raw.py) | Phase extraction (cross-correlation in use; Hilbert available but slower) and density calibration |
+| [interf_file.py](interf_file.py) | HDF5 schema, writes, and metadata |
+| [interf_read.py](interf_read.py) | Read phase/time arrays by date and timestamp; example plotting |
 
+### Support
+| File | Purpose |
+|---|---|
+| [interf_GUI.py](interf_GUI.py) | Live density plots on the lab Raspberry Pi |
+| [interf_plot.py](interf_plot.py) | Shared plotting helpers and styles |
+| [interf_cleanup.py](interf_cleanup.py) | Delete processed scope traces; log activity |
+| [interf_merge_datarun.py](interf_merge_datarun.py) | Merge interferometer data into datarun HDF5 (timestamp matching, auto-detection of channels, per-channel and per-shot attrs) |
 
-- **interf_file.py**
-  - Handles all HDF5 file operations
-  - Creates and initializes HDF5 file structure
-  - Manages data writing and organization
-  - Maintains consistent file naming and metadata
+### Utilities
+| File | Purpose |
+|---|---|
+| [read_scope_data.py](read_scope_data.py) | Read LeCroy `.trc` (binary) and `.txt` (ASCII) files |
+| [LeCroy_Scope_Header.py](LeCroy_Scope_Header.py) | Decode LeCroy binary headers; build time arrays |
+| [read_hdf5.py](read_hdf5.py) | Read LAPD datarun HDF5 via bapsflib (probe motion, digitizer signals, run sequence) |
+| [cpu_temp.py](cpu_temp.py) | Raspberry Pi CPU temperature monitor |
 
-- **interf_read.py**
-  - Provides functions for reading interferometer data
-  - Allows retrieval of data by specific date and time
-  - Returns phase data and time arrays from HDF5 files
-  - Includes example usage and plotting capabilities
+## Data structure
 
-### Support Files
+### Standalone interferometer file: `interferometer_data_YYYY-MM-DD.hdf5`
 
-- **interf_GUI.py**
-  - Graphical interface for real-time data display
-  - Runs on Raspberry Pi in the main lab
-  - Continuously updates plots of interferometer data
-  - Shows density measurements from both ports
+**Root attributes:** `created`, `description`.
 
-- **interf_plot.py**
-  - Contains plotting utilities
-  - Manages dynamic plot updates
-  - Handles data visualization formatting
-  - Provides consistent plotting styles
+**Groups** (each contains datasets keyed by timestamp):
 
-- **interf_cleanup.py**
-  - Manages disk space on the scope
-  - Removes processed raw data files
-  - Prevents storage overflow
-  - Maintains logging of cleanup operations
+| Group | Description | `unit` | Per-group attrs |
+|---|---|---|---|
+| `phase_p20/` | Phase, port 20 | rad | `Microwave frequency (Hz)` = 288e9, `calibration factor (m^-3/rad)` |
+| `phase_p29/` | Phase, port 29 | rad | `Microwave frequency (Hz)` = 282e9, `calibration factor (m^-3/rad)` |
+| `phase_p40/` | Phase, port 40 (Rigol; resampled onto LeCroy time grid) | rad | `Microwave frequency (Hz)` = 288e9, `calibration factor (m^-3/rad)` |
+| `time_array/` | Time base for LeCroy channels | ms | — |
+| `time_array_p40/` | Time base for Rigol (currently identical to `time_array`, kept separate so they can diverge in the future) | ms | — |
 
-- **interf_merge_datarun.py**
-  - Merges interferometer data into datarun HDF5 files
-  - Matches timestamps between datasets
-  - Copies data and attributes to datarun files (per-channel attrs onto each subgroup, per-shot attrs onto each dataset)
-  - Auto-detects which interferometer channels are present in the source file (works with both legacy two-channel files and new three-channel files that include port 40)
-  - Defaults to merging only the first and last shot of a run; pass `all_shots=True` to merge every shot
-  - Maintains data organization for experiments
+`phase_p40` datasets carry per-shot `rigol_missing` (bool) and `rigol_missing_reason` (str) when the Rigol was unreachable; the array is then a zero-filled placeholder.
 
-### Utility Files
+> Timestamps mark when the scope saved the trace's last channel (C4), so there can be a small delay vs. the actual shot.
 
-- **read_scope_data.py**
-  - Functions for reading LeCroy scope data files
-  - Handles both binary (.trc) and ASCII (.txt) formats
-  - Decodes scope headers and data formats
-  - Optimized for speed in data acquisition
+### Datarun file after merge
 
-- **LeCroy_Scope_Header.py**
-  - Defines LeCroy scope header structure
-  - Decodes binary header information
-  - Manages time array generation
-  - Handles scope-specific data formats
+Merged data lives under `diagnostics/interferometer/`:
 
-- **cpu_temp.py**
-  - Monitors Raspberry Pi CPU temperature
-  - Provides temperature logging
-  - Helps prevent overheating issues
-  - Simple diagnostic tool
-
-- **read_hdf5.py**
-  - Utility functions for reading LAPD datarun HDF5 files via bapsflib
-  - Reads probe motion data from the 6K Compumotor control
-  - Reads digitizer signal data by board/channel
-  - Unpacks the datarun sequence (messages, status, timestamps)
-
-## Data Structure
-
-### Standalone Interferometer HDF5 Files
-
-The standalone interferometer HDF5 files are named `interferometer_data_YYYY-MM-DD.hdf5` and have the following structure:
-
-#### Root Attributes
-- `created`: Time structure when file was created
-- `description`: "Interferometer data. Datasets in each group are named by timestamp..."
-
-#### Groups and Datasets
-
-**phase_p20/**
-- Attributes:
-  - `description`: "Phase data for interferometer at port 20..."
-  - `unit`: "rad" 
-  - `Microwave frequency (Hz)`: 288e9
-  - `calibration factor (m^-3/rad)`: [value]
-- Datasets:
-  - `[timestamp1]`: Phase data array
-  - `[timestamp2]`: Phase data array
-  - ...
-
-**phase_p29/**
-- Attributes:
-  - `description`: "Phase data for interferometer at port 29..."
-  - `unit`: "rad"
-  - `Microwave frequency (Hz)`: 282e9
-  - `calibration factor (m^-3/rad)`: [value]
-- Datasets:
-  - `[timestamp1]`: Phase data array
-  - `[timestamp2]`: Phase data array
-  - ...
-
-**phase_p40/**
-- Attributes:
-  - `description`: "Phase data for interferometer at port 40 (Rigol DHO scope)..."
-  - `unit`: "rad"
-  - `Microwave frequency (Hz)`: 288e9
-  - `calibration factor (m^-3/rad)`: [value]
-- Datasets:
-  - `[timestamp1]`: Phase data array (resampled onto LeCroy time grid; same length as phase_p20)
-  - Per-dataset attribute `rigol_missing` (bool): True when the Rigol was unreachable for this shot and the array is a zero-filled placeholder
-  - Per-dataset attribute `rigol_missing_reason` (str): human-readable reason string when `rigol_missing` is True (e.g., timeout message, interpolation error)
-  - ...
-
-**time_array/**
-- Attributes:
-  - `description`: "Time array for interferometer data..."
-  - `unit`: "ms"
-- Datasets:
-  - `[timestamp1]`: Time array
-  - `[timestamp2]`: Time array
-  - ...
-
-**time_array_p40/**
-- Attributes:
-  - `description`: "Time array for phase_p40 (Rigol). Independent of time_array which is LeCroy."
-  - `unit`: "ms"
-- Datasets:
-  - `[timestamp1]`: Time array (currently identical to time_array since phase_p40 is resampled onto the LeCroy grid)
-  - ...
-
-Timestamp is the time when the scope trace was saved on the scope, in particular the last channel (C4) was saved.
-Might have some delay between when shot was received and when the scope trace was saved.
-
-### Datarun HDF5 Files After Merge
-
-After interferometer data is merged into datarun HDF5 files using `interf_merge_datarun.py`, the data is organized under the following structure:
-
-#### Main Path Structure
 ```
 diagnostics/interferometer/
+├── phase_p20/{shot_number}     # rad
+├── phase_p29/{shot_number}     # rad
+├── phase_p40/{shot_number}     # rad   (new-format files only)
+├── time_array/{shot_number}    # ms    (LeCroy)
+└── time_array_p40/{shot_number}# ms    (Rigol; new-format files only)
 ```
 
-#### Specific Data Groups
+Each subgroup carries the same per-channel attrs as in the standalone file; calibration factors assume a 40 cm plasma path. `phase_p40` datasets preserve the `rigol_missing` / `rigol_missing_reason` per-shot attrs.
 
-**diagnostics/interferometer/phase_p20/**
-- Contains phase data from interferometer at port 20
-- Attributes:
-  - `description`: "Phase data for interferometer at port 20. Attribute calibration factor assumes 40cm plasma length."
-  - `unit`: "rad"
-  - `Microwave frequency (Hz)`: 288e9
-  - `calibration factor (m^-3/rad)`: [calculated value]
-- Datasets:
-  - `1`: Phase data array for shot 1
-  - `2`: Phase data array for shot 2
-  - `3`: Phase data array for shot 3
-  - ... (numbered by shot)
+**Example — read shot 5:**
+- `diagnostics/interferometer/phase_p20/5`
+- `diagnostics/interferometer/phase_p29/5`
+- `diagnostics/interferometer/phase_p40/5` *(if present)*
+- `diagnostics/interferometer/time_array/5`
+- `diagnostics/interferometer/time_array_p40/5` *(if present)*
 
-**diagnostics/interferometer/phase_p29/**
-- Contains phase data from interferometer at port 29
-- Attributes:
-  - `description`: "Phase data for interferometer at port 29. Attribute calibration factor assumes 40cm plasma length."
-  - `unit`: "rad"
-  - `Microwave frequency (Hz)`: 282e9
-  - `calibration factor (m^-3/rad)`: [calculated value]
-- Datasets:
-  - `1`: Phase data array for shot 1
-  - `2`: Phase data array for shot 2
-  - `3`: Phase data array for shot 3
-  - ... (numbered by shot)
+**Naming:** datasets are keyed by shot number starting at 1. A missing shot number means no interferometer data for that shot. For new-format files, a shot may have `phase_p20`/`phase_p29`/`time_array` but no `phase_p40`/`time_array_p40` if the Rigol was down.
 
-**diagnostics/interferometer/phase_p40/** *(present only when merging from new-format interferometer files)*
-- Contains phase data from interferometer at port 40 (Rigol DHO scope)
-- Attributes:
-  - `description`: "Phase data for interferometer at port 40 (Rigol DHO scope). Attribute calibration factor assumes 40cm plasma length."
-  - `unit`: "rad"
-  - `Microwave frequency (Hz)`: 288e9
-  - `calibration factor (m^-3/rad)`: [calculated value]
-- Datasets:
-  - `1`, `2`, ... (numbered by shot)
-  - Per-dataset attribute `rigol_missing` (bool): True when the Rigol was unreachable for this shot and the array is a zero-filled placeholder
-  - Per-dataset attribute `rigol_missing_reason` (str): human-readable reason string when `rigol_missing` is True
+**Backward compatibility:** legacy interferometer files (pre-port-40) only have `phase_p20`, `phase_p29`, `time_array`. The merger auto-detects which subgroups exist and only creates those, so merging an old file produces the original three-group layout.
 
-**diagnostics/interferometer/time_array/**
-- Contains time array for the LeCroy-acquired channels (phase_p20, phase_p29)
-- Attributes:
-  - `description`: "Time array for interferometer data in milliseconds."
-  - `unit`: "ms"
-- Datasets:
-  - `1`: Time array for shot 1
-  - `2`: Time array for shot 2
-  - `3`: Time array for shot 3
-  - ... (numbered by shot)
+### Merge process
 
-**diagnostics/interferometer/time_array_p40/** *(present only when merging from new-format interferometer files)*
-- Time array for `phase_p40` (Rigol). Currently identical to `time_array` because phase_p40 is resampled onto the LeCroy grid before saving, but kept as a separate group so the LeCroy and Rigol time bases can diverge in the future without breaking older datarun files.
-- Attributes:
-  - `description`: "Time array for phase_p40 (Rigol). Independent of time_array which is LeCroy."
-  - `unit`: "ms"
+`interf_merge_datarun.py`:
 
-#### Backward compatibility
-Old interferometer source files (pre–port 40 era) only contain `phase_p20`, `phase_p29`, and `time_array`. `interf_merge_datarun.py` detects which subgroups exist in the source file and only creates/populates those, so merging an old file produces the same three-group layout as before — no `phase_p40` / `time_array_p40` groups are added.
+1. Pulls timestamps for completed shots from the datarun file.
+2. Matches them to interferometer timestamps (±1 s tolerance).
+3. Copies matched data into the structure above, preserving per-channel group attrs and per-shot dataset attrs (e.g., `rigol_missing`).
+4. **Defaults to merging only the first and last completed shot** as a fast sanity check that keeps the file small. Pass `all_shots=True` to merge every shot:
 
-#### Dataset Naming Convention
-- **Datasets within each group are named by shot number** (starting from 1)
-- Shot numbers correspond to completed shots in the datarun sequence
-- If a shot number doesn't exist as a dataset, it means interferometer data is missing for that shot
-- The merge process matches timestamps between datarun shots and interferometer data
-- For new-format files, an individual shot may have `phase_p20`, `phase_p29`, and `time_array` written but no `phase_p40` / `time_array_p40` entry — this happens when the Rigol was completely unavailable for that shot
+   ```python
+   merge_interferometer_data(datarun_path, interf_path, all_shots=True)
+   ```
+5. The datarun file is opened and closed once per shot, so an interruption leaves all already-merged shots safely flushed to disk.
 
-#### Example Access Pattern
-To access interferometer data for shot number 5 in a datarun file:
-- Phase data (port 20): `diagnostics/interferometer/phase_p20/5`
-- Phase data (port 29): `diagnostics/interferometer/phase_p29/5`
-- Phase data (port 40, if present): `diagnostics/interferometer/phase_p40/5`
-- Time array (LeCroy): `diagnostics/interferometer/time_array/5`
-- Time array (Rigol, if present): `diagnostics/interferometer/time_array_p40/5`
+## Update 2026-04-21 — port 40 added
 
-#### Merge Process
-The merge process (`interf_merge_datarun.py`):
-1. Extracts timestamps from completed shots in the datarun file
-2. Matches these timestamps with interferometer data (within ±1 second tolerance)
-3. Copies matching interferometer data into the datarun file structure
-4. Preserves all metadata and attributes from the original interferometer files (per-channel group attrs are written onto each `diagnostics/interferometer/<name>` subgroup; per-shot dataset attrs such as `rigol_missing` are preserved on each shot dataset)
-5. Only copies data when a matching timestamp is found
-6. **Default: merges only the first and last completed shot.** This is a fast sanity check that keeps the merged datarun file small. To merge every shot, call `merge_interferometer_data(datarun_path, interf_path, all_shots=True)`.
-7. The datarun HDF5 file is opened and closed once per shot so that, if the merge is interrupted, all already-merged shots remain safely flushed to disk.
-
-## Update 04/21/2026
-
-- Added a third interferometer at **port 40** (288 GHz, 40 cm plasma path) acquired with a Rigol DHO scope at `192.168.7.63` (CH1 = ref, CH2 = plasma).
-- Per shot, `interf_main.py` now: detects the LeCroy `.trc` file → sends `:STOP` to the Rigol → reads both Rigol channels in-memory over telnet → sends `:RUN` → reads all four LeCroy channels via the multiprocessing pool → runs all three `phase_from_raw` analyses in parallel via the same pool.
-- HDF5 schema gained two groups: `phase_p40` and `time_array_p40`. The Rigol phase is resampled onto the LeCroy time grid via `np.interp` after bounds/sanity validation, so all three phase traces and both time arrays share the same length per shot.
-- If the Rigol is unreachable or errors mid-run, the LeCroy pipeline keeps writing; `phase_p40` is saved as a zero-filled placeholder with per-dataset attributes `rigol_missing = True` and `rigol_missing_reason` (string). Reconnect is retried every 100 shots.
-- `interf_GUI.py` and `interf_plot.py` now display a third trace (P40) alongside P20 and P29; older HDF5 files without the `phase_p40` group still load correctly.
-- Added `_worker_init()` as the multiprocessing pool initializer to suppress `SIGINT` in worker processes. On Windows, Ctrl-C is broadcast to all console processes; without this, workers raised `KeyboardInterrupt` mid-task and stalled `pool.join()`. The main process retains full Ctrl-C handling.
+- Third interferometer at **port 40** (288 GHz, 40 cm plasma path) on a Rigol DHO at `192.168.7.63` (CH1 = ref, CH2 = plasma).
+- Per-shot flow in `interf_main.py`: detect LeCroy `.trc` → send `:STOP` to Rigol → read both Rigol channels over telnet → send `:RUN` → read all four LeCroy channels via the multiprocessing pool → run all three `phase_from_raw` analyses in parallel.
+- Schema added `phase_p40` and `time_array_p40`. The Rigol phase is bounds/sanity-checked, then resampled onto the LeCroy grid via `np.interp`, so all phase traces and both time arrays share the same length per shot.
+- If the Rigol is unreachable or errors out, the LeCroy pipeline keeps writing; `phase_p40` becomes a zero-filled placeholder with `rigol_missing=True` and a reason string. Reconnect retries every 100 shots.
+- `interf_GUI.py` and `interf_plot.py` show a third (P40) trace; older HDF5 files without `phase_p40` still load.
+- Added `_worker_init()` as the multiprocessing pool initializer to suppress `SIGINT` in workers. On Windows, Ctrl-C is broadcast to every console process; without this, workers raised `KeyboardInterrupt` mid-task and stalled `pool.join()`. The main process keeps full Ctrl-C handling.
