@@ -40,8 +40,7 @@ sys.path.append(f"{BAPSF_DIMAGNETIC_PATH}")
 from interf_raw import phase_from_raw, get_calibration_factor
 from interf_file import find_latest_shot_number, init_hdf5_file, create_sourcefile_dataset
 from read_scope_data import read_trc_data_simplified, read_trc_data_no_header
-from rigol_scope import RigolScope
-from rigol_functions import command
+from rigol_dho800 import RigolDHO800
 from interf_cleanup import process_single_shot
 
 
@@ -85,16 +84,18 @@ def read_lecroy(file_path, shot_number, refch_i, plach_i):
 
 def read_rigol(scope):
 	'''
-	Read both Rigol channels. Caller is responsible for sending :STOP first.
-	:RUN is sent in finally so the scope always resumes norm triggering.
+	Read both Rigol channels. read_channel blocks until scope is STOP.
+	:RUN is sent in finally so the scope always resumes normal triggering.
 	'''
 	try:
-		tarr = scope.time_array(RIGOL_REF_CH)
-		ref, _ = scope.acquire(RIGOL_REF_CH)
-		pla, _ = scope.acquire(RIGOL_PLA_CH)
+		wref = scope.read_channel(RIGOL_REF_CH)
+		wpla = scope.read_channel(RIGOL_PLA_CH)
+		tarr = wref.time
+		ref = wref.voltage.astype(np.float64)
+		pla = wpla.voltage.astype(np.float64)
 	finally:
 		try:
-			command(scope.tn, ':RUN')
+			scope.run()
 		except Exception:
 			pass
 	return tarr, ref - np.mean(ref), pla - np.mean(pla)
@@ -116,39 +117,15 @@ def run_with_timeout(func, timeout_s, *args):
 		executor.shutdown(wait=False, cancel_futures=True)
 
 
-def set_rigol_timeout(scope):
-	'''
-	Best-effort socket timeout for RigolScope implementations backed by
-	telnetlib or a socket-like transport.
-	'''
-	for attr in ('tn', 'socket', 'sock'):
-		obj = getattr(scope, attr, None)
-		if obj is None:
-			continue
-		for sock_attr in ('sock',):
-			sock = getattr(obj, sock_attr, None)
-			if sock is not None and hasattr(sock, 'settimeout'):
-				sock.settimeout(RIGOL_SOCKET_TIMEOUT)
-				return
-		if hasattr(obj, 'get_socket'):
-			sock = obj.get_socket()
-			if hasattr(sock, 'settimeout'):
-				sock.settimeout(RIGOL_SOCKET_TIMEOUT)
-				return
-		if hasattr(obj, 'settimeout'):
-			obj.settimeout(RIGOL_SOCKET_TIMEOUT)
-			return
-
-
 def open_rigol():
-	scope = RigolScope(RIGOL_IP, verbose=False)
-	set_rigol_timeout(scope)
-	return scope
+	# RigolDHO800 passes ``timeout`` straight to socket.create_connection, so it
+	# also becomes the per-recv timeout -- no separate set_rigol_timeout needed.
+	return RigolDHO800(RIGOL_IP, timeout=RIGOL_SOCKET_TIMEOUT, verbose=False)
 
 
 def try_open_rigol():
 	'''
-	Open a RigolScope connection, returning None on any failure
+	Open a RigolDHO800 connection, returning None on any failure
 	(missing scope, network error, etc.) so the LeCroy pipeline can keep going.
 	'''
 	try:
@@ -159,17 +136,8 @@ def try_open_rigol():
 
 
 def read_stopped_rigol(scope):
-	command(scope.tn, ':STOP')
+	scope.stop()
 	return read_rigol(scope)
-
-
-def disconnect_rigol(scope):
-	if scope is None:
-		return
-	try:
-		scope.disconnect()
-	except Exception:
-		pass
 
 
 def interpolate_rigol_phase(t_ms, t_ms_C_raw, phaseC_raw):
@@ -261,24 +229,23 @@ def main(hdf5_path, file_path, ram_path):
 
 	threading.Thread(target=_cleanup_worker, daemon=True).start()
 
-	# Define a handler for SIGINT
+	shutdown_event = threading.Event()
+
 	def sigint_handler(signum, frame):
 		print("SIGINT (Ctrl-C) detected. Attempting to exit gracefully...")
-		pool.terminate()
-		pool.join()
-		print("Cleanup complete. Exiting.")
-		sys.exit(0)  # Exit the program
+		shutdown_event.set()
 
-	# Set the SIGINT handler
 	signal.signal(signal.SIGINT, sigint_handler)
 
 	scope = try_open_rigol()
 	shots_since_retry = 0
 
 	try:
-		while True:
+		while not shutdown_event.is_set():
 			try:
 				time.sleep(0.01)
+				if shutdown_event.is_set():
+					break
 				st = time.time() # start time of the loop
 
 				# Check if the interferometer data files are available on leCroy scope drive
@@ -314,7 +281,7 @@ def main(hdf5_path, file_path, ram_path):
 					except Exception as e:
 						print(f"Rigol error ({e}); disabling until next retry")
 						rigol_missing_reason = str(e)
-						disconnect_rigol(scope)
+						scope.close()
 						scope = None
 						shots_since_retry = 0
 
@@ -331,25 +298,27 @@ def main(hdf5_path, file_path, ram_path):
 					pC = pool.apply_async(phase_from_raw, (tarr_C, refC, plaC))
 				t_ms, phaseA = pA.get()
 				_,    phaseB = pB.get()
+				INTERPOLATE_RIGOL = False  # set True to resample Rigol onto LeCroy time grid
+
 				if have_rigol:
 					t_ms_C_raw, phaseC_raw = pC.get()
-					try:
-						# Resample Rigol phase onto the LeCroy time grid so all
-						# three traces share the same length and time base.
-						phaseC = interpolate_rigol_phase(t_ms, t_ms_C_raw, phaseC_raw)
-						t_ms_C = t_ms
+					if INTERPOLATE_RIGOL:
+						try:
+							phaseC = interpolate_rigol_phase(t_ms, t_ms_C_raw, phaseC_raw)
+							t_ms_C = t_ms
+							rigol_missing = False
+						except Exception as e:
+							print(f"Rigol interpolation invalid ({e}); saving raw Rigol data")
+							t_ms_C = t_ms_C_raw
+							phaseC = phaseC_raw
+							rigol_missing = False
+					else:
+						t_ms_C = t_ms_C_raw
+						phaseC = phaseC_raw
 						rigol_missing = False
-					except Exception as e:
-						print(f"Rigol interpolation invalid ({e}); saving missing placeholder")
-						t_ms_C = t_ms
-						phaseC = np.zeros_like(phaseA)
-						rigol_missing = True
-						rigol_missing_reason = str(e)
 				else:
-					# Save zero-filled placeholder so phase_p40 stays aligned
-					# with the other groups; flag it in dataset metadata.
-					t_ms_C = t_ms
-					phaseC = np.zeros_like(phaseA)
+					t_ms_C = np.array([], dtype=float)
+					phaseC = np.array([], dtype=float)
 					rigol_missing = True
 
 				# Save the data to the HDF5 file
@@ -408,13 +377,15 @@ def main(hdf5_path, file_path, ram_path):
 				time.sleep(0.5)
 				continue
 			except Exception as e:
+				if shutdown_event.is_set():
+					break
 				print(f"An error occurred: {e}")
 				pool = restart_pool(pool)
 				print("Worker pool restarted. Continuing acquisition.")
 				time.sleep(0.5)
 	finally:
 		if scope is not None:
-			disconnect_rigol(scope)
+			scope.close()
 
 #===============================================================================================================================================
 #<o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o>
