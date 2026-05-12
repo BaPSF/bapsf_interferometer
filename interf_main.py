@@ -261,24 +261,23 @@ def main(hdf5_path, file_path, ram_path):
 
 	threading.Thread(target=_cleanup_worker, daemon=True).start()
 
-	# Define a handler for SIGINT
+	shutdown_event = threading.Event()
+
 	def sigint_handler(signum, frame):
 		print("SIGINT (Ctrl-C) detected. Attempting to exit gracefully...")
-		pool.terminate()
-		pool.join()
-		print("Cleanup complete. Exiting.")
-		sys.exit(0)  # Exit the program
+		shutdown_event.set()
 
-	# Set the SIGINT handler
 	signal.signal(signal.SIGINT, sigint_handler)
 
 	scope = try_open_rigol()
 	shots_since_retry = 0
 
 	try:
-		while True:
+		while not shutdown_event.is_set():
 			try:
 				time.sleep(0.01)
+				if shutdown_event.is_set():
+					break
 				st = time.time() # start time of the loop
 
 				# Check if the interferometer data files are available on leCroy scope drive
@@ -331,25 +330,27 @@ def main(hdf5_path, file_path, ram_path):
 					pC = pool.apply_async(phase_from_raw, (tarr_C, refC, plaC))
 				t_ms, phaseA = pA.get()
 				_,    phaseB = pB.get()
+				INTERPOLATE_RIGOL = False  # set True to resample Rigol onto LeCroy time grid
+
 				if have_rigol:
 					t_ms_C_raw, phaseC_raw = pC.get()
-					try:
-						# Resample Rigol phase onto the LeCroy time grid so all
-						# three traces share the same length and time base.
-						phaseC = interpolate_rigol_phase(t_ms, t_ms_C_raw, phaseC_raw)
-						t_ms_C = t_ms
+					if INTERPOLATE_RIGOL:
+						try:
+							phaseC = interpolate_rigol_phase(t_ms, t_ms_C_raw, phaseC_raw)
+							t_ms_C = t_ms
+							rigol_missing = False
+						except Exception as e:
+							print(f"Rigol interpolation invalid ({e}); saving raw Rigol data")
+							t_ms_C = t_ms_C_raw
+							phaseC = phaseC_raw
+							rigol_missing = False
+					else:
+						t_ms_C = t_ms_C_raw
+						phaseC = phaseC_raw
 						rigol_missing = False
-					except Exception as e:
-						print(f"Rigol interpolation invalid ({e}); saving missing placeholder")
-						t_ms_C = t_ms
-						phaseC = np.zeros_like(phaseA)
-						rigol_missing = True
-						rigol_missing_reason = str(e)
 				else:
-					# Save zero-filled placeholder so phase_p40 stays aligned
-					# with the other groups; flag it in dataset metadata.
-					t_ms_C = t_ms
-					phaseC = np.zeros_like(phaseA)
+					t_ms_C = np.array([], dtype=float)
+					phaseC = np.array([], dtype=float)
 					rigol_missing = True
 
 				# Save the data to the HDF5 file
@@ -408,6 +409,8 @@ def main(hdf5_path, file_path, ram_path):
 				time.sleep(0.5)
 				continue
 			except Exception as e:
+				if shutdown_event.is_set():
+					break
 				print(f"An error occurred: {e}")
 				pool = restart_pool(pool)
 				print("Worker pool restarted. Continuing acquisition.")
