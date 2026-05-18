@@ -424,6 +424,18 @@ def merge_interferometer_data(datarun_path, interf_path, all_shots=False, verbos
 					for attr_name, attr_value in shot_attrs[g].items():
 						new_ds.attrs[attr_name] = attr_value
 					wrote_any = True
+				if wrote_any:
+					# Push h5py library buffers to the kernel, then ask the
+					# kernel to push its page cache to disk. Narrows the
+					# window where an OS crash or power loss could lose the
+					# just-written shot.
+					f_datarun.flush()
+					try:
+						os.fsync(f_datarun.id.get_vfd_handle())
+					except (OSError, AttributeError):
+						# Some VFDs don't expose a raw fd; flush() alone has
+						# already done what it can.
+						pass
 			if wrote_any:
 				shots_written += 1
 
