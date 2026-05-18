@@ -48,6 +48,7 @@ How to use this script:
 '''
 
 import os
+import re
 import bisect
 import h5py
 import numpy as np
@@ -79,30 +80,45 @@ def get_start_timestamp(datarun_path): # NOT USED
 
 def get_shot_timestamps(datarun_path):
 	'''
-	Get the timestamps of the completed shots in the datarun file.
+	Get the shot numbers and timestamps of the completed shots in the datarun file.
 
 	Parameters:
 	datarun_path (str): The path to the datarun hdf5 file.
 
 	Returns:
-	numpy.ndarray: An array of timestamps in seconds since epoch.
+	(numpy.ndarray, numpy.ndarray): Parallel arrays of shot numbers (int) and
+		timestamps in seconds since epoch, sorted by shot number.
 	'''
 	# Extract the sequence of shots from the datarun file
 	f = h5py.File(datarun_path, "r")
 	message_array, status_array, all_timestamp_array = unpack_datarun_sequence(f)
 	f.close()
 
-	# Correct timestamps
-	timestamp_array = np.array([])
+	# Some datarun sequences log multiple "Shot number = N" entries per shot
+	# from different subsystems (e.g. SIS DAQ + bmotion), which would otherwise
+	# produce duplicate timestamps. Only the SIS DAQ row marks actual data
+	# acquisition, so match strictly on that: "SIS crate" (older) or
+	# "SIS 3302" (newer). Shots without a SIS row are skipped.
+	shot_re = re.compile(r'Shot number\s*=\s*(\d+)')
+	by_shot = {}
 	for i, timestamp in enumerate(all_timestamp_array):
-		
-		# Check if the saved message correspond to an actual completed shot
-		if ('Shot number' in message_array[i]) and (status_array[i] == 'Completed'):
+		if status_array[i] != 'Completed':
+			continue
+		msg = message_array[i]
+		if ('SIS crate' not in msg) and ('SIS 3302' not in msg):
+			continue
+		m = shot_re.search(msg)
+		if m is None:
+			continue
+		shot_n = int(m.group(1))
+		# A given shot should only have one SIS row; if duplicates exist,
+		# keep the first occurrence.
+		if shot_n not in by_shot:
+			by_shot[shot_n] = timestamp - 2082844800
 
-			t_corrected = timestamp - 2082844800
-			timestamp_array = np.append(timestamp_array, t_corrected)
-
-	return timestamp_array
+	shot_numbers = sorted(by_shot)
+	return (np.array(shot_numbers, dtype=int),
+	        np.array([by_shot[n] for n in shot_numbers]))
 
 #===============================================================================================================================================
 
@@ -221,7 +237,7 @@ def merge_interferometer_data(datarun_path, interf_path, all_shots=False):
 	all_shots (bool): If True, merge every shot; otherwise only the first
 		and last shots (default False).
 	'''
-	timestamp_array = get_shot_timestamps(datarun_path)
+	shot_numbers, timestamp_array = get_shot_timestamps(datarun_path)
 
 	f_interf = h5py.File(interf_path, "r")
 
@@ -257,32 +273,35 @@ def merge_interferometer_data(datarun_path, interf_path, all_shots=False):
 		datarun_groups = set(f_datarun.get("diagnostics/interferometer", {}).keys())
 	available_groups = [g for g in DATA_GROUPS if g in f_interf and g in datarun_groups]
 
-	# Build the list of shots to merge.
+	# Build the list of shots to merge. Each entry is (shot_number, matching_set)
+	# where shot_number is the real shot number from the datarun sequence, not
+	# the positional index — so dataset names line up with shot identity even
+	# if the sequence has gaps.
 	matched_shots = []
 	if all_shots:
-		for i, timestamp in enumerate(timestamp_array):
+		for k, timestamp in enumerate(timestamp_array):
 			matching_set = find_match(timestamp)
 			if matching_set is None:
-				print(f"Shot {i+1} has no matching interferometer data")
+				print(f"Shot {shot_numbers[k]} has no matching interferometer data")
 				continue
-			matched_shots.append((i, matching_set))
+			matched_shots.append((int(shot_numbers[k]), matching_set))
 	else:
 		# Walk inward from each end so the common case (matches near the
 		# boundaries) short-circuits without scanning the whole run.
 		first_idx = None
-		for i in range(len(timestamp_array)):
-			match = find_match(timestamp_array[i])
+		for k in range(len(timestamp_array)):
+			match = find_match(timestamp_array[k])
 			if match is not None:
-				first_idx = i
-				matched_shots.append((i, match))
+				first_idx = k
+				matched_shots.append((int(shot_numbers[k]), match))
 				break
 
-		for i in range(len(timestamp_array) - 1, -1, -1):
-			if first_idx is not None and i <= first_idx:
+		for k in range(len(timestamp_array) - 1, -1, -1):
+			if first_idx is not None and k <= first_idx:
 				break
-			match = find_match(timestamp_array[i])
+			match = find_match(timestamp_array[k])
 			if match is not None:
-				matched_shots.append((i, match))
+				matched_shots.append((int(shot_numbers[k]), match))
 				break
 
 	if not matched_shots:
@@ -292,8 +311,8 @@ def merge_interferometer_data(datarun_path, interf_path, all_shots=False):
 
 	# Datarun file is opened/closed per shot so an interruption mid-run leaves
 	# already-merged shots safely flushed to disk.
-	for i, matching_set in matched_shots:
-		shot_n = str(i+1) # Naming convention goes with shot number (starts from index 1)
+	for shot_num, matching_set in matched_shots:
+		shot_n = str(shot_num)
 
 		shot_data = {}
 		shot_attrs = {}
@@ -312,10 +331,10 @@ def merge_interferometer_data(datarun_path, interf_path, all_shots=False):
 				if shot_n in dest:
 					continue
 				new_ds = dest.create_dataset(shot_n, data=data)
-				for k, v in shot_attrs[g].items():
-					new_ds.attrs[k] = v
+				for attr_name, attr_value in shot_attrs[g].items():
+					new_ds.attrs[attr_name] = attr_value
 
-		print(f"Shot {i+1} wrote into datarun file")
+		print(f"Shot {shot_num} wrote into datarun file")
 
 	f_interf.close()
 	print('Interferometer data merged into datarun file. File closed.')
