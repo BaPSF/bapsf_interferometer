@@ -84,6 +84,7 @@ Whole folder (batch):
 import os
 import re
 import bisect
+import contextlib
 import h5py
 import numpy as np
 import time
@@ -166,28 +167,36 @@ def init_datarun_groups(datarun_path, interf_path, verbose=True):
 	Initialize the interferometer groups in the datarun file.
 
 	Creates groups for whichever interferometer datasets are present in the
-	source file, so old files (phase_p20, phase_p29, time_array only) and new
-	files (with phase_p40 and time_array_p40) both work.
+	source file(s), so old files (phase_p20, phase_p29, time_array only) and
+	new files (with phase_p40 and time_array_p40) both work. If multiple
+	interferometer paths are given, the union of groups across all files is
+	created so a multi-day run picks up channels that appear in any candidate.
 
 	Parameters:
 	datarun_path (str): The path to the datarun hdf5 file.
-	interf_path (str): The path to the interferometer hdf5 file.
+	interf_path (str | list[str]): The path to one or more interferometer
+		hdf5 files.
 	verbose (bool): If True (default), print a completion line.
 	'''
+	if isinstance(interf_path, (str, os.PathLike)):
+		interf_paths = [interf_path]
+	else:
+		interf_paths = list(interf_path)
+
 	with h5py.File(datarun_path, "a") as f_datarun:
-		with h5py.File(interf_path, "r") as f_interf:
+		parent = f_datarun.require_group("diagnostics/interferometer")
+		for p in interf_paths:
+			with h5py.File(p, "r") as f_interf:
+				if 'description' in f_interf.attrs and 'description' not in parent.attrs:
+					parent.attrs['description'] = f_interf.attrs['description']
 
-			parent = f_datarun.require_group("diagnostics/interferometer")
-			if 'description' in f_interf.attrs and 'description' not in parent.attrs:
-				parent.attrs['description'] = f_interf.attrs['description']
-
-			for name in DATA_GROUPS:
-				if name not in f_interf:
-					continue
-				sub = f_datarun.require_group(f"diagnostics/interferometer/{name}")
-				for attr_name, attr_value in f_interf[name].attrs.items():
-					if attr_name not in sub.attrs:
-						sub.attrs[attr_name] = attr_value
+				for name in DATA_GROUPS:
+					if name not in f_interf:
+						continue
+					sub = f_datarun.require_group(f"diagnostics/interferometer/{name}")
+					for attr_name, attr_value in f_interf[name].attrs.items():
+						if attr_name not in sub.attrs:
+							sub.attrs[attr_name] = attr_value
 
 	if verbose:
 		print('Interferometer groups created/loaded in datarun file')
@@ -271,7 +280,11 @@ def merge_interferometer_data(datarun_path, interf_path, all_shots=False, verbos
 
 	Parameters:
 	datarun_path (str): The path to the datarun hdf5 file.
-	interf_path (str): The path to the interferometer hdf5 file.
+	interf_path (str | list[str]): The path to the interferometer hdf5 file,
+		or a list of paths. When multiple paths are given (e.g. for a run
+		that spans midnight), traces from all files are merged into a
+		single timestamp-indexed lookup so each shot is matched against
+		the global nearest trace in one pass.
 	all_shots (bool): If True, merge every shot; otherwise only the first
 		and last shots (default False).
 	verbose (bool): If True (default), print per-shot progress. Set False for
@@ -285,19 +298,41 @@ def merge_interferometer_data(datarun_path, interf_path, all_shots=False, verbos
 			print(msg)
 	shot_numbers, timestamp_array = get_shot_timestamps(datarun_path, verbose=verbose)
 
+	# Normalize to a list so the rest of the function can treat single- and
+	# multi-file inputs uniformly.
+	if isinstance(interf_path, (str, os.PathLike)):
+		interf_paths = [interf_path]
+	else:
+		interf_paths = list(interf_path)
+	if not interf_paths:
+		raise ValueError("interf_path must be a non-empty path or list of paths")
+
 	shots_written = 0
-	with h5py.File(interf_path, "r") as f_interf:
-		# phase_p20 is the canonical reader index in newer files (it is written
-		# last so partial shots are skipped). Fall back to whichever known group
-		# exists for older formats.
-		index_group = next((g for g in DATA_GROUPS if g in f_interf), None)
-		if index_group is None:
-			raise ValueError(f"No interferometer groups found in {interf_path}")
-		# Sort interferometer dataset names by their float timestamp once so each
-		# shot lookup is O(log N) via bisect instead of O(N) linear scan.
-		sorted_pairs = sorted(((float(name), name) for name in f_interf[index_group].keys()),
-		                      key=lambda p: p[0])
-		sorted_floats = [p[0] for p in sorted_pairs]
+	with contextlib.ExitStack() as stack:
+		# Open all candidate interferometer files; build one unified, sorted
+		# timestamp index across them so the per-shot lookup is a single
+		# O(log N) bisect regardless of how many candidates were supplied.
+		f_interfs = []
+		for p in interf_paths:
+			f_interfs.append(stack.enter_context(h5py.File(p, "r")))
+
+		all_pairs = []  # (float_timestamp, dataset_name, file_idx)
+		# Track which groups are available in which file so per-shot reads
+		# know which channels to look up.
+		per_file_groups = []
+		for file_idx, f_interf in enumerate(f_interfs):
+			# phase_p20 is the canonical reader index in newer files (it is
+			# written last so partial shots are skipped). Fall back to
+			# whichever known group exists for older formats.
+			index_group = next((g for g in DATA_GROUPS if g in f_interf), None)
+			if index_group is None:
+				raise ValueError(f"No interferometer groups found in {interf_paths[file_idx]}")
+			per_file_groups.append(set(g for g in DATA_GROUPS if g in f_interf))
+			for name in f_interf[index_group].keys():
+				all_pairs.append((float(name), name, file_idx))
+
+		all_pairs.sort(key=lambda p: p[0])
+		sorted_floats = [p[0] for p in all_pairs]
 
 		def find_match(timestamp, tolerance=1.0):
 			if not sorted_floats:
@@ -310,43 +345,50 @@ def merge_interferometer_data(datarun_path, interf_path, all_shots=False, verbos
 				candidates.append(idx - 1)
 			best = min(candidates, key=lambda j: abs(sorted_floats[j] - timestamp))
 			if abs(sorted_floats[best] - timestamp) < tolerance:
-				return sorted_pairs[best][1]
+				_, name, match_file_idx = all_pairs[best]
+				return name, match_file_idx
 			return None
 
-		# Only copy groups that exist in both the source file and the datarun file.
+		# Groups available for writing = groups present in the datarun file
+		# AND present in at least one interferometer file.
 		with h5py.File(datarun_path, "r") as f_datarun:
 			datarun_groups = set(f_datarun.get("diagnostics/interferometer", {}).keys())
-		available_groups = [g for g in DATA_GROUPS if g in f_interf and g in datarun_groups]
+		union_interf_groups = set().union(*per_file_groups) if per_file_groups else set()
+		available_groups = [g for g in DATA_GROUPS
+		                    if g in union_interf_groups and g in datarun_groups]
 
-		# Build the list of shots to merge. Each entry is (shot_number, matching_set)
-		# where shot_number is the real shot number from the datarun sequence, not
-		# the positional index — so dataset names line up with shot identity even
-		# if the sequence has gaps.
+		# Build the list of shots to merge. Each entry is
+		# (shot_number, matching_set, file_idx) where shot_number is the
+		# real shot number from the datarun sequence and file_idx points
+		# into f_interfs / per_file_groups.
 		matched_shots = []
 		if all_shots:
 			for k, timestamp in enumerate(timestamp_array):
-				matching_set = find_match(timestamp)
-				if matching_set is None:
+				m = find_match(timestamp)
+				if m is None:
 					_log(f"Shot {shot_numbers[k]} has no matching interferometer data")
 					continue
-				matched_shots.append((int(shot_numbers[k]), matching_set))
+				matching_set, match_file_idx = m
+				matched_shots.append((int(shot_numbers[k]), matching_set, match_file_idx))
 		else:
 			# Walk inward from each end so the common case (matches near the
 			# boundaries) short-circuits without scanning the whole run.
 			first_idx = None
 			for k in range(len(timestamp_array)):
-				match = find_match(timestamp_array[k])
-				if match is not None:
+				m = find_match(timestamp_array[k])
+				if m is not None:
 					first_idx = k
-					matched_shots.append((int(shot_numbers[k]), match))
+					matching_set, match_file_idx = m
+					matched_shots.append((int(shot_numbers[k]), matching_set, match_file_idx))
 					break
 
 			for k in range(len(timestamp_array) - 1, -1, -1):
 				if first_idx is not None and k <= first_idx:
 					break
-				match = find_match(timestamp_array[k])
-				if match is not None:
-					matched_shots.append((int(shot_numbers[k]), match))
+				m = find_match(timestamp_array[k])
+				if m is not None:
+					matching_set, match_file_idx = m
+					matched_shots.append((int(shot_numbers[k]), matching_set, match_file_idx))
 					break
 
 		if not matched_shots:
@@ -355,15 +397,18 @@ def merge_interferometer_data(datarun_path, interf_path, all_shots=False, verbos
 
 		# Datarun file is opened/closed per shot so an interruption mid-run leaves
 		# already-merged shots safely flushed to disk.
-		for shot_num, matching_set in matched_shots:
+		for shot_num, matching_set, match_file_idx in matched_shots:
 			shot_n = str(shot_num)
+			f_interf = f_interfs[match_file_idx]
+			groups_in_this_file = per_file_groups[match_file_idx]
 
 			shot_data = {}
 			shot_attrs = {}
 			for g in available_groups:
-				# phase_p40 may legitimately be absent for a shot when the
-				# Rigol scope was unavailable; just skip that channel.
-				if matching_set not in f_interf[g]:
+				# Skip groups not present in this particular source file
+				# (e.g. older files without phase_p40), and shots where
+				# phase_p40 is legitimately absent for that file.
+				if g not in groups_in_this_file or matching_set not in f_interf[g]:
 					continue
 				ds = f_interf[g][matching_set]
 				shot_data[g] = ds[:]
@@ -511,13 +556,14 @@ def merge_folder(datarun_dir, interf_dir, all_shots=False):
 				counts["skipped"] += 1
 				continue
 
-			interf_path = candidates[0]
-			interf_name = os.path.basename(interf_path)
+			interf_name = os.path.basename(candidates[0])
+			if len(candidates) > 1:
+				interf_name = f"{interf_name} (+{len(candidates) - 1})"
 			src_tag = " [ctime]" if date_source == "ctime" else ""
 
 			try:
-				init_datarun_groups(datarun_path, interf_path, verbose=False)
-				n_written = merge_interferometer_data(datarun_path, interf_path,
+				init_datarun_groups(datarun_path, candidates, verbose=False)
+				n_written = merge_interferometer_data(datarun_path, candidates,
 				                                      all_shots=all_shots, verbose=False)
 				if n_written == 0:
 					emit(f"{prefix}  EMPTY {interf_name}{src_tag}  (0 shots matched)")
