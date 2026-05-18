@@ -2,21 +2,44 @@
 '''
 Merge the interferometer data from the available channels to datarun hdf5 file.
 Author: Jia Han
-Last update: 2026-04-29
+Last update: 2026-05-18
 
 Functions used in this script:
 
-init_datarun_groups(datarun_path, interf_path)
+init_datarun_groups(datarun_path, interf_path, verbose=True)
 	- Creates the interferometer groups in the datarun file.
 	- Copies per-channel attributes (description, unit, microwave frequency,
 	  calibration factor) from the source file onto each
 	  diagnostics/interferometer/<name> subgroup.
-merge_interferometer_data(datarun_path, interf_path, all_shots=False)
-	- Finds the interferometer data for each shot in datarun file by matching the timestamps.
-	- Copies interferometer data into the datarun file.
-	- By default, only the first and last completed shots of the run are
-	  merged (a quick sanity check while keeping the merged file small).
-	  Pass all_shots=True to merge every shot.
+get_shot_timestamps(datarun_path, verbose=True)
+	- Parses the datarun sequence and returns parallel (shot_numbers,
+	  timestamps) arrays for completed shots.
+	- Filters strictly on SIS DAQ rows ("SIS crate" or "SIS 3302") so
+	  sequences that also log bmotion (or other subsystem) rows per shot
+	  do not produce duplicate timestamps.
+	- Shot numbers come from the message itself, not positional index, so
+	  the result tracks real shot identity even when the sequence has gaps.
+merge_interferometer_data(datarun_path, interf_path, all_shots=False, verbose=True)
+	- For each completed datarun shot, finds the matching interferometer
+	  trace by timestamp (±1 s tolerance, binary-search lookup) and copies
+	  it into the datarun file under diagnostics/interferometer/<group>/<shot>.
+	- The interferometer file is opened via a context manager, so an
+	  exception mid-merge cannot leak the file handle.
+	- Defaults to merging only the first and last completed shots (quick
+	  sanity check, small file). Pass all_shots=True to merge every shot.
+	- Returns the number of shots actually written (0 if no matches).
+merge_folder(datarun_dir, interf_dir, all_shots=False)
+	- Batch wrapper: runs init_datarun_groups + merge_interferometer_data
+	  for every .hdf5 file in datarun_dir.
+	- Resolves the matching interferometer file per datarun by parsing
+	  YYYY-MM-DD from the filename, with prev/next-day fallback. If the
+	  filename has no date, falls back to the file's creation time
+	  (real ctime on Windows).
+	- Per-file errors are caught so one bad file does not abort the batch.
+	- Prints one [i/N] progress line per file (OK / EMPTY / SKIP / ERROR)
+	  and writes the same lines to interf_merge_log.txt in datarun_dir
+	  (fixed filename, overwritten per run, flushed per line).
+	- Returns {datarun_path: status_string}.
 write_attribute(datarun_path)
 	- Fallback that fills in attributes for any subgroup that has none.
 	- Useful for source files predating 2024-06-07 which lack attrs.
@@ -30,20 +53,31 @@ How to access interferometer data in datarun file:
 - Per-channel attributes (description, microwave frequency, calibration
   factor, unit) live on each subgroup, e.g.
   diagnostics/interferometer/phase_p29.attrs['Microwave frequency (Hz)'].
-- Datasets under each group are named by shot number (starting from 1).
-- If shot number doesn't exist, it means interferometer data is missing for that shot.
+- Datasets under each group are named by the real shot number from the
+  datarun sequence (starting from 1).
+- If a shot number is absent, it means no interferometer data was matched
+  for that shot (no SIS row, no timestamp match, or the run was skipped).
 - phase_p40 datasets may carry per-shot attributes 'rigol_missing' (bool)
   and 'rigol_missing_reason' (str) when the Rigol scope was unavailable
   for that shot; the array is then a zero-filled placeholder.
 
 How to use this script:
-- Change the datarun_path and interf_path to the correct paths.
-- Run the script in the terminal or in an IDE.
-- The script will try to match the timestamps of the shots in the datarun file with the interferometer data.
-- Sometimes you might need to use the interferometer data from the previous or next day.
-- Data will only be copied over if a matching timestamp is found.
-- The default merges only the first and last shot. To merge every shot,
-  call merge_interferometer_data(..., all_shots=True).
+
+Single file:
+- Set datarun_path and interf_path and call
+    init_datarun_groups(datarun_path, interf_path)
+    merge_interferometer_data(datarun_path, interf_path, all_shots=True)
+- Timestamps are matched with ±1 s tolerance. If a same-day interferometer
+  file does not contain the shots, try the previous or next day's file.
+- Only shots whose timestamps match interferometer traces are copied.
+- The default merges only the first and last shot. Pass all_shots=True
+  to merge every shot.
+
+Whole folder (batch):
+- Call merge_folder(datarun_dir, interf_dir, all_shots=True).
+- Each datarun .hdf5 is paired with interferometer_data_<date>.hdf5 by
+  date (filename or ctime), with prev/next-day fallback.
+- Progress prints to terminal and to interf_merge_log.txt in datarun_dir.
 
 '''
 

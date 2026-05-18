@@ -30,7 +30,7 @@ Acquisition, analysis, storage, and plotting for the BaPSF microwave interferome
 | [interf_GUI.py](interf_GUI.py) | Live density plots on the lab Raspberry Pi |
 | [interf_plot.py](interf_plot.py) | Shared plotting helpers and styles |
 | [interf_cleanup.py](interf_cleanup.py) | Delete processed scope traces; log activity |
-| [interf_merge_datarun.py](interf_merge_datarun.py) | Merge interferometer data into datarun HDF5 (timestamp matching, auto-detection of channels, per-channel and per-shot attrs) |
+| [interf_merge_datarun.py](interf_merge_datarun.py) | Merge interferometer data into datarun HDF5 (timestamp matching, auto-detection of channels, per-channel and per-shot attrs, single-file or whole-folder batch with log file) |
 
 ### Utilities
 | File | Purpose |
@@ -90,15 +90,30 @@ Each subgroup carries the same per-channel attrs as in the standalone file; cali
 
 `interf_merge_datarun.py`:
 
-1. Pulls timestamps for completed shots from the datarun file.
-2. Matches them to interferometer timestamps (±1 s tolerance).
+1. Pulls timestamps for completed shots from the datarun sequence. Only rows whose message originates from the SIS DAQ (`SIS crate` or `SIS 3302`) are counted, so sequences that also log `bmotion` (or other) rows per shot do not double-count shots. Each shot's real shot number is parsed from the message and used as the dataset name, so dataset identity tracks the run sequence even when shot numbers have gaps.
+2. Matches them to interferometer timestamps (±1 s tolerance) via binary search.
 3. Copies matched data into the structure above, preserving per-channel group attrs and per-shot dataset attrs (e.g., `rigol_missing`).
 4. **Defaults to merging only the first and last completed shot** as a fast sanity check that keeps the file small. Pass `all_shots=True` to merge every shot:
 
    ```python
    merge_interferometer_data(datarun_path, interf_path, all_shots=True)
    ```
-5. The datarun file is opened and closed once per shot, so an interruption leaves all already-merged shots safely flushed to disk.
+5. The datarun file is opened and closed once per shot, so an interruption leaves all already-merged shots safely flushed to disk. The interferometer file is opened via a context manager, so an unexpected error mid-merge cannot leak the handle.
+
+### Batch merge (whole folder)
+
+`merge_folder(datarun_dir, interf_dir, all_shots=False)` runs the merge for every `.hdf5` datarun file in a folder:
+
+```python
+from interf_merge_datarun import merge_folder
+merge_folder(r"D:\data\LAPD\Mar26", r"D:\data\LAPD\interferometer_samples", all_shots=True)
+```
+
+- **Interferometer file lookup:** parses a `YYYY-MM-DD` date out of each datarun filename and looks for `interferometer_data_<date>.hdf5` in `interf_dir`, falling back to the previous day, then the next day, if the same-day file is absent. If the filename has no date, the datarun file's **creation time** (real ctime on Windows) is used as a fallback and the log marks that file with a `[ctime]` tag.
+- **Per-file isolation:** missing interferometer files, zero-match runs, and corrupt files are caught and logged; the batch continues.
+- **Progress output:** one fixed-width `[i/N] filename  STATUS  detail` line per file. Status verbs are `OK` (with shot count), `EMPTY` (interferometer file found but no shot matched), `SKIP` (no date or no interferometer file on disk), `ERROR`. A final tally summarises `ok / empty / skipped / error / total`.
+- **Log file:** `interf_merge_log.txt` is written into `datarun_dir` (fixed filename, overwritten on each run, flushed per line so partial batches still leave a usable log). The log mirrors the terminal output and is bracketed by start/finish timestamps.
+- **Return value:** a `{datarun_path: status_string}` dict so callers can drive downstream automation.
 
 ## Update 2026-04-21 — port 40 added
 
