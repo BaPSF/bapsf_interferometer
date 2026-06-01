@@ -54,8 +54,19 @@ RIGOL_REF_CH = "C1"
 RIGOL_PLA_CH = "C2"
 RIGOL_RETRY_INTERVAL = 100  # shots between reconnect attempts when scope is offline
 RIGOL_CONNECT_TIMEOUT = 3.0
-RIGOL_OPERATION_TIMEOUT = 5.0
+# Hard cap on the Rigol stop/read/run, measured from stop(). Lowered from 5.0 so a
+# stalled (not merely slow) scope is dropped quickly and the loop stays current.
+# Tradeoff: a genuinely slow-but-alive read may be abandoned and that shot's phase_p40
+# written as missing.
+RIGOL_OPERATION_TIMEOUT = 2.5
 RIGOL_SOCKET_TIMEOUT = 2.0
+
+# Catch-up: when one shot takes longer than this to process, we've fallen behind, so
+# jump shot_number to the newest shot on disk instead of crawling forward one at a time.
+CATCHUP_PROC_TIME = 3.0
+# Guard against jumping backward across the 99999->0 wraparound: only jump when the
+# modular gap to the latest shot is positive and smaller than this.
+CATCHUP_GAP_MAX = 50000
 #===============================================================================================================================================
 
 def get_current_day(timestamp):
@@ -242,6 +253,7 @@ def main(hdf5_path, file_path, ram_path):
 
 	try:
 		while not shutdown_event.is_set():
+			rigol_executor = None  # bound before any raise so the except handler can clean it up
 			try:
 				time.sleep(0.01)
 				if shutdown_event.is_set():
@@ -268,14 +280,42 @@ def main(hdf5_path, file_path, ram_path):
 						if scope is not None:
 							print("Rigol reconnected")
 
-				# Freeze Rigol immediately + read it. Any failure disables the
-				# scope; the LeCroy pipeline keeps writing zeros for phase_p40.
+				# Launch the Rigol read in a thread so it overlaps the LeCroy disk
+				# reads + phase analysis instead of serializing in front of them.
+				# stop() fires near-immediately on the worker thread, freezing the
+				# Rigol record for this shot. The Rigol socket is not picklable and
+				# not thread-safe across callers, so it can't go in the pool; the
+				# thread owns it exclusively between submit() and result().
+				# NOTE: this overlap is a throughput change only -- the two scopes
+				# remain independently triggered and are NOT clock-synced.
 				have_rigol = False
 				rigol_missing_reason = "scope offline"
 				tarr_C, refC, plaC = None, None, None
+				rigol_future = None
+				rigol_submit_t = None
 				if scope is not None:
+					rigol_executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+					rigol_future = rigol_executor.submit(read_stopped_rigol, scope)
+					rigol_submit_t = time.time()
+
+				# LeCroy reads in parallel via pool (overlapping the Rigol read)
+				rA = pool.apply_async(read_lecroy, (file_path, shot_number, 1, 2))
+				rB = pool.apply_async(read_lecroy, (file_path, shot_number, 3, 4))
+				tarr_A, refA, plaA = rA.get()
+				tarr_B, refB, plaB = rB.get()
+
+				# LeCroy phase analyses in parallel
+				pA = pool.apply_async(phase_from_raw, (tarr_A, refA, plaA))
+				pB = pool.apply_async(phase_from_raw, (tarr_B, refB, plaB))
+				t_ms, phaseA = pA.get()
+				_,    phaseB = pB.get()
+
+				# Join the Rigol read now (after the LeCroy work it overlapped),
+				# preserving the hard timeout cap measured from stop().
+				if rigol_future is not None:
 					try:
-						tarr_C, refC, plaC = run_with_timeout(read_stopped_rigol, RIGOL_OPERATION_TIMEOUT, scope)
+						remaining = max(0.0, RIGOL_OPERATION_TIMEOUT - (time.time() - rigol_submit_t))
+						tarr_C, refC, plaC = rigol_future.result(timeout=remaining)
 						have_rigol = True
 						rigol_missing_reason = ""
 					except Exception as e:
@@ -284,20 +324,12 @@ def main(hdf5_path, file_path, ram_path):
 						scope.close()
 						scope = None
 						shots_since_retry = 0
+					finally:
+						rigol_executor.shutdown(wait=False, cancel_futures=True)
 
-				# LeCroy reads in parallel via pool
-				rA = pool.apply_async(read_lecroy, (file_path, shot_number, 1, 2))
-				rB = pool.apply_async(read_lecroy, (file_path, shot_number, 3, 4))
-				tarr_A, refA, plaA = rA.get()
-				tarr_B, refB, plaB = rB.get()
-
-				# All three phase analyses in parallel
-				pA = pool.apply_async(phase_from_raw, (tarr_A, refA, plaA))
-				pB = pool.apply_async(phase_from_raw, (tarr_B, refB, plaB))
+				# Rigol phase analysis (only once its read succeeded)
 				if have_rigol:
 					pC = pool.apply_async(phase_from_raw, (tarr_C, refC, plaC))
-				t_ms, phaseA = pA.get()
-				_,    phaseB = pB.get()
 				INTERPOLATE_RIGOL = False  # set True to resample Rigol onto LeCroy time grid
 
 				if have_rigol:
@@ -366,10 +398,19 @@ def main(hdf5_path, file_path, ram_path):
 				else:
 					shot_number += 1
 
-				# If the operation is too slow, skip the shot to catch up
-				if td > 3:
-					print("Skip one shot")
-					shot_number += 1
+				# If this shot was slow to process, we've fallen behind. Jump straight
+				# to the newest shot on disk to drain the whole backlog in one step,
+				# rather than crawling forward one shot at a time. Only scan the SMB
+				# directory when we're measurably slow (keeps the fast path cheap).
+				proc_time = time.time() - st
+				if proc_time > CATCHUP_PROC_TIME:
+					latest = find_latest_shot_number(file_path)
+					# Modular gap guards the 99999->0 wraparound and prevents jumping
+					# backward (a near-100000 gap means latest is behind us already).
+					gap = (latest - shot_number) % 100000
+					if 0 < gap < CATCHUP_GAP_MAX:
+						print(f"Behind by {gap} shots ({proc_time:.1f}s); jumping to shot {latest}")
+						shot_number = latest
 
 
 			except OSError:
@@ -377,6 +418,8 @@ def main(hdf5_path, file_path, ram_path):
 				time.sleep(0.5)
 				continue
 			except Exception as e:
+				if rigol_executor is not None:
+					rigol_executor.shutdown(wait=False, cancel_futures=True)
 				if shutdown_event.is_set():
 					break
 				print(f"An error occurred: {e}")
