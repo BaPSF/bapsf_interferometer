@@ -20,7 +20,6 @@ Ver1.2 updated on: 2021-07-15
 Ver1.3 updated on: 2024-12-12
 - Change log writing such that writes every 10 shots
 '''
-import sys
 import signal
 import multiprocessing
 import concurrent.futures
@@ -31,16 +30,11 @@ import numpy as np
 import time
 import datetime
 import os
-from pathlib import Path
-
-# TODO: add path here for import
-BAPSF_DIMAGNETIC_PATH = (Path(__file__).parent / ".." / "bapsf_dimagnetic").resolve()
-sys.path.append(f"{BAPSF_DIMAGNETIC_PATH}")
 
 from interf_raw import phase_from_raw, get_calibration_factor
 from interf_file import find_latest_shot_number, init_hdf5_file, create_sourcefile_dataset
 from read_scope_data import read_trc_data_simplified, read_trc_data_no_header
-from rigol_dho800 import RigolDHO800
+from lab_scopes.rigol import RigolDHO800
 from interf_cleanup import process_single_shot
 
 
