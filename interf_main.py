@@ -52,11 +52,13 @@ RIGOL_CONNECT_TIMEOUT = 3.0
 # stalled (not merely slow) scope is dropped quickly and the loop stays current.
 # Tradeoff: a genuinely slow-but-alive read may be abandoned and that shot's phase_p40
 # written as missing.
-# DEPTH CONSTRAINT: the read scales with Rigol memory depth (WORD = 2 bytes/sample,
-# ~2.6 MB/s measured on DHO804 fw 00.01.05). 1M samples ~= 0.77 s (fits); ~3M ~= 2.3 s
-# is the practical ceiling under this cap. Keep the interferometer Rigol at <=1M --
-# deeper records will exceed 2.5 s and be silently dropped every shot. Raise this cap
-# only if you also accept a stalled scope freezing the loop that much longer.
+# DEPTH CONSTRAINT: read_rigol() reads BOTH channels sequentially (ref then pla), so
+# the budget covers two records, not one. Each read scales with Rigol memory depth
+# (WORD = 2 bytes/sample, ~2.6 MB/s measured on DHO804 fw 00.01.05): 1M ~= 0.77 s each,
+# so ~1.5 s for the pair (fits under 2.5 s, with limited headroom). Keep the
+# interferometer Rigol at <=1M -- the pair already nears the cap there, and deeper
+# records will exceed 2.5 s and be silently dropped every shot. Raise this cap only if
+# you also accept a stalled scope freezing the loop that much longer.
 RIGOL_OPERATION_TIMEOUT = 2.5
 RIGOL_SOCKET_TIMEOUT = 2.0
 
