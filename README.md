@@ -2,13 +2,13 @@
 
 Acquisition, analysis, storage, and plotting for the BaPSF microwave interferometers (ports 20, 29, and 40).
 
-> **Branches:** `main` is the legacy Raspberry Pi (Linux) version, unused since 2024-07-16. **Use `diagnostic-pc`** — it runs on both PC and RP and is current.
+> **Branch:** `main` is the current diagnostic-PC version and carries the port-40 (Rigol) acquisition path. The Rigol driver is provided by the [`lab-scopes`](https://github.com/hjia94/lab_scopes) package (`from lab_scopes.rigol import RigolDHO800`), pinned in [pyproject.toml](pyproject.toml); run `pip install --pre .` to install it.
 
 ## How it works
 
 1. Raw interferometer signals feed three scopes:
-   - **LeCroy** — ports 20 (282 GHz) and 29 (288 GHz). Runs in "Save Waveform → Wrap" mode, continuously writing traces to a folder shared on DAQ NET.
-   - **Rigol DHO** (`192.168.7.63`) — port 40 (288 GHz). Runs in AUTO trigger; traces are read in-memory over telnet.
+   - **LeCroy** — ports 20 (288 GHz) and 29 (282 GHz). Runs in "Save Waveform → Wrap" mode, continuously writing traces to a folder shared on DAQ NET (mounted as `I:\` on the diagnostic PC).
+   - **Rigol DHO804** (`192.168.7.63`, `C1` = ref, `C2` = plasma) — port 40 (288 GHz). Runs in AUTO trigger; per shot it is stopped, both channels are read over a TCP socket (port 5555, via the `lab_scopes` `RigolDHO800` driver), then resumed.
 2. The diagnostic PC ([interf_main.py](interf_main.py)) detects each new LeCroy `.trc`, pulls the matching Rigol shot, computes phase shifts ([interf_raw.py](interf_raw.py)), and appends to a daily HDF5 file ([interf_file.py](interf_file.py)).
 3. Old scope traces are deleted to keep disks clean ([interf_cleanup.py](interf_cleanup.py)).
 4. A Raspberry Pi in the main lab runs a live plotting GUI ([interf_GUI.py](interf_GUI.py)) by reading the shared HDF5.
@@ -52,9 +52,11 @@ Acquisition, analysis, storage, and plotting for the BaPSF microwave interferome
 |---|---|---|---|
 | `phase_p20/` | Phase, port 20 | rad | `Microwave frequency (Hz)` = 288e9, `calibration factor (m^-3/rad)` |
 | `phase_p29/` | Phase, port 29 | rad | `Microwave frequency (Hz)` = 282e9, `calibration factor (m^-3/rad)` |
-| `phase_p40/` | Phase, port 40 (Rigol; resampled onto LeCroy time grid) | rad | `Microwave frequency (Hz)` = 288e9, `calibration factor (m^-3/rad)` |
+| `phase_p40/` | Phase, port 40 (Rigol) | rad | `Microwave frequency (Hz)` = 288e9, `calibration factor (m^-3/rad)` |
 | `time_array/` | Time base for LeCroy channels | ms | — |
-| `time_array_p40/` | Time base for Rigol (currently identical to `time_array`, kept separate so they can diverge in the future) | ms | — |
+| `time_array_p40/` | Time base for Rigol, independent of `time_array` | ms | — |
+
+> By default the Rigol phase is **not** resampled onto the LeCroy grid (`INTERPOLATE_RIGOL = False` in [interf_main.py](interf_main.py)): the raw Rigol time/phase are stored, so `time_array_p40` has its own sample count and length, generally different from `time_array`. Set `INTERPOLATE_RIGOL = True` to resample the Rigol phase onto the LeCroy time grid via `np.interp`, in which case `time_array_p40` matches `time_array`.
 
 `phase_p40` datasets carry per-shot `rigol_missing` (bool) and `rigol_missing_reason` (str) when the Rigol was unreachable; the array is then a zero-filled placeholder.
 
@@ -117,9 +119,10 @@ merge_folder(r"D:\data\LAPD\Mar26", r"D:\data\LAPD\interferometer_samples", all_
 
 ## Update 2026-04-21 — port 40 added
 
-- Third interferometer at **port 40** (288 GHz, 40 cm plasma path) on a Rigol DHO at `192.168.7.63` (CH1 = ref, CH2 = plasma).
-- Per-shot flow in `interf_main.py`: detect LeCroy `.trc` → send `:STOP` to Rigol → read both Rigol channels over telnet → send `:RUN` → read all four LeCroy channels via the multiprocessing pool → run all three `phase_from_raw` analyses in parallel.
-- Schema added `phase_p40` and `time_array_p40`. The Rigol phase is bounds/sanity-checked, then resampled onto the LeCroy grid via `np.interp`, so all phase traces and both time arrays share the same length per shot.
-- If the Rigol is unreachable or errors out, the LeCroy pipeline keeps writing; `phase_p40` becomes a zero-filled placeholder with `rigol_missing=True` and a reason string. Reconnect retries every 100 shots.
+- Third interferometer at **port 40** (288 GHz, 40 cm plasma path) on a Rigol DHO804 at `192.168.7.63` (`C1` = ref, `C2` = plasma).
+- Per-shot flow in `interf_main.py`: detect LeCroy `.trc` → submit a Rigol `stop` → read-both-channels → `run` job on a worker thread (overlapping the LeCroy work, not serialized in front of it) → read all four LeCroy channels via the multiprocessing pool → run the `phase_from_raw` analyses in parallel. The Rigol read is bounded by `RIGOL_OPERATION_TIMEOUT` (2.5 s, measured from `stop()`); a stalled scope is dropped for that shot.
+- Schema added `phase_p40` and `time_array_p40`. By default (`INTERPOLATE_RIGOL = False`) the raw Rigol phase and its own time base are stored as-is, so `time_array_p40` is independent of `time_array`. With `INTERPOLATE_RIGOL = True`, the Rigol phase is bounds/sanity-checked by `interpolate_rigol_phase()` and resampled onto the LeCroy grid via `np.interp` (falling back to raw Rigol data if the time base fails validation).
+- The Rigol driver comes from the `lab_scopes` package (`from lab_scopes.rigol import RigolDHO800`), pinned in [pyproject.toml](pyproject.toml).
+- If the Rigol is unreachable or errors out, the LeCroy pipeline keeps writing; `phase_p40` becomes a zero-filled placeholder with `rigol_missing=True` and a reason string. Reconnect retries every `RIGOL_RETRY_INTERVAL` (100) shots.
 - `interf_GUI.py` and `interf_plot.py` show a third (P40) trace; older HDF5 files without `phase_p40` still load.
 - Added `_worker_init()` as the multiprocessing pool initializer to suppress `SIGINT` in workers. On Windows, Ctrl-C is broadcast to every console process; without this, workers raised `KeyboardInterrupt` mid-task and stalled `pool.join()`. The main process keeps full Ctrl-C handling.
