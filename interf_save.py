@@ -9,7 +9,7 @@ import numpy as np
 import time
 import os
 
-from read_scope_data import read_trc_data_simplified
+from lab_scopes.io.lecroy_files import read_trc_data_simplified
 
 
 #===============================================================================================================================================

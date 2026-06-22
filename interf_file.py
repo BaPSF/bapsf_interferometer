@@ -13,7 +13,7 @@ import time
 import os
 import h5py
 
-from read_scope_data import read_trc_data_simplified, read_trc_data_no_header
+from lab_scopes.io.lecroy_files import read_trc_data_simplified, read_trc_data_no_header
 from interf_raw import get_calibration_factor
 
 #===============================================================================================================================================

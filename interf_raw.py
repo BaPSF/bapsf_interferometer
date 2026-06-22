@@ -58,7 +58,7 @@ Tunable parameter
 
 Quick example
 -------------
-    from read_scope_data import read_trc_data_simplified
+    from lab_scopes.io.lecroy_files import read_trc_data_simplified
     from interf_raw import phase_from_raw, get_calibration_factor
 
     refch, tarr, *_ = read_trc_data_simplified("C1-interf-shot00001.trc")
@@ -92,7 +92,7 @@ import matplotlib.pyplot as plt
 from scipy import constants as const
 from scipy import signal
 
-from read_scope_data import read_trc_data, read_trc_data_simplified
+from lab_scopes.io.lecroy_files import read_trc_data, read_trc_data_simplified
 import time
 
 #============================================================================
