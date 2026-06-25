@@ -19,6 +19,6 @@ dependencies = [
   "matplotlib",
   "PyQt5",
   # Rigol DHO800 driver (interf_main.py: from lab_scopes.rigol import RigolDHO800).
-  # Pinned to the 0.4.0a1 pre-release: Rigol 12-bit/WORD full-depth hardening.
-  "lab-scopes @ git+https://github.com/hjia94/lab_scopes.git@v0.4.0a1",
+  # Pinned to the 0.4.0 release: Rigol 12-bit/WORD full-depth hardening.
+  "lab-scopes @ git+https://github.com/hjia94/lab_scopes.git@v0.4.0",
 ]
