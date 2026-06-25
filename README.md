@@ -2,7 +2,7 @@
 
 Acquisition, analysis, storage, and plotting for the BaPSF microwave interferometers (ports 20, 29, and 40).
 
-> **Branch:** `main` is the current diagnostic-PC version and carries the port-40 (Rigol) acquisition path. The Rigol driver is provided by the [`lab-scopes`](https://github.com/hjia94/lab_scopes) package (`from lab_scopes.rigol import RigolDHO800`), pinned in [pyproject.toml](pyproject.toml); run `pip install --pre .` to install it.
+> **Branch:** `main` is the current diagnostic-PC version and carries the port-40 (Rigol) acquisition path. Both scope drivers — the Rigol (`from lab_scopes.rigol import RigolDHO800`) and the LeCroy `.trc` readers (`from lab_scopes.io.lecroy_files import ...`) — come from the [`lab-scopes`](https://github.com/hjia94/lab_scopes) package, pinned to `v0.4.0` in [pyproject.toml](pyproject.toml); run `pip install .` to install it.
 
 ## How it works
 
@@ -35,10 +35,10 @@ Acquisition, analysis, storage, and plotting for the BaPSF microwave interferome
 ### Utilities
 | File | Purpose |
 |---|---|
-| [read_scope_data.py](read_scope_data.py) | Read LeCroy `.trc` (binary) and `.txt` (ASCII) files |
-| [LeCroy_Scope_Header.py](LeCroy_Scope_Header.py) | Decode LeCroy binary headers; build time arrays |
 | [read_hdf5.py](read_hdf5.py) | Read LAPD datarun HDF5 via bapsflib (probe motion, digitizer signals, run sequence) |
 | [cpu_temp.py](cpu_temp.py) | Raspberry Pi CPU temperature monitor |
+
+> LeCroy `.trc` parsing and header decoding now live in the [`lab-scopes`](https://github.com/hjia94/lab_scopes) package (`lab_scopes.io.lecroy_files`); the former local `read_scope_data.py` / `LeCroy_Scope_Header.py` copies have been removed.
 
 ## Data structure
 
@@ -126,3 +126,8 @@ merge_folder(r"D:\data\LAPD\Mar26", r"D:\data\LAPD\interferometer_samples", all_
 - If the Rigol is unreachable or errors out, the LeCroy pipeline keeps writing; `phase_p40` becomes a zero-filled placeholder with `rigol_missing=True` and a reason string. Reconnect retries every `RIGOL_RETRY_INTERVAL` (100) shots.
 - `interf_GUI.py` and `interf_plot.py` show a third (P40) trace; older HDF5 files without `phase_p40` still load.
 - Added `_worker_init()` as the multiprocessing pool initializer to suppress `SIGINT` in workers. On Windows, Ctrl-C is broadcast to every console process; without this, workers raised `KeyboardInterrupt` mid-task and stalled `pool.join()`. The main process keeps full Ctrl-C handling.
+
+## Update 2026-06-24 — `lab-scopes` 0.4.0 consolidation
+
+- Both scope drivers now come from the released [`lab-scopes`](https://github.com/hjia94/lab_scopes) **v0.4.0** package: the Rigol `RigolDHO800` (12-bit/WORD full-depth acquisition) and the LeCroy `.trc` readers (`lab_scopes.io.lecroy_files`). The local `read_scope_data.py` and `LeCroy_Scope_Header.py` copies were removed, and the dependency in [pyproject.toml](pyproject.toml) is pinned to the `v0.4.0` tag — install with `pip install .` (no `--pre` needed now that it is a stable release).
+- [interf_GUI.py](interf_GUI.py): dropped the per-update `"Plot updated: N"` console print that fired once per second, so the live-plot GUI no longer floods stdout while running.
