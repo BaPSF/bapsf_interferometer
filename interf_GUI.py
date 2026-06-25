@@ -186,7 +186,6 @@ class MainWindow(QMainWindow):
 		self.fig.canvas.flush_events()
 
 		self.update_count += 1  # Increment the update counter
-		print(f"Plot updated: {self.update_count}")  # Print the update count
 
 	def keep_trace(self):
 		# Save the current trace
