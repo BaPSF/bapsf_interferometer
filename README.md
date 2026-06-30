@@ -4,6 +4,8 @@ Acquisition, analysis, storage, and plotting for the BaPSF microwave interferome
 
 > **Branch:** `main` is the current diagnostic-PC version and carries the port-40 (Rigol) acquisition path. Both scope drivers — the Rigol (`from lab_scopes.rigol import RigolDHO800`) and the LeCroy `.trc` readers (`from lab_scopes.io.lecroy_files import ...`) — come from the [`lab-scopes`](https://github.com/hjia94/lab_scopes) package, pinned to `v0.4.0` in [pyproject.toml](pyproject.toml); run `pip install .` to install it.
 
+Requires **Python 3.11+** (developed and tested on 3.14).
+
 ## How it works
 
 1. Raw interferometer signals feed three scopes:
