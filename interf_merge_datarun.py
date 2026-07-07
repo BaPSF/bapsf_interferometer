@@ -608,12 +608,18 @@ def merge_folder(datarun_dir, interf_dir, all_shots=False):
 #===============================================================================================================================================
 
 if __name__ == '__main__':
-	  
-	datarun_path = r"C:\data\LAPD\07_Dipole_plane_p32_Diris7cm_MaskBiasing.hdf5"
-	interf_path = r"C:\data\LAPD\interferometer_samples\interferometer_data_2024-07-02.hdf5"
 
-	init_datarun_groups(datarun_path, interf_path)
+	import sys
+	from pathlib import Path
 
-	merge_interferometer_data(datarun_path, interf_path)
+	# datarun_dir defaults to the current working directory (override with argv[1]);
+	# interf_dir comes from the INTERF_DATA_DIR env var (override on the DAQ PC).
+	datarun_dir = sys.argv[1] if len(sys.argv) > 1 else str(Path.cwd())
+	interf_dir = os.environ.get("INTERF_DATA_DIR", r"C:\data\interferometer")
 
-	write_attribute(datarun_path)
+	try:
+		merge_folder(datarun_dir, interf_dir, all_shots=False)
+	except Exception as err:
+		print(err)
+	finally:
+		input("Press enter to close console...")
