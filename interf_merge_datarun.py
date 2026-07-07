@@ -269,6 +269,119 @@ def find_interf_file(datarun_path, interf_path): # NOT USED
 
 	return ifn_ls
 
+
+#===============================================================================================================================================
+# Shared merge building blocks (also used by interf_merge_lapd_daq.py, the
+# new-format counterpart of this script -- keep behavior format-agnostic)
+#===============================================================================================================================================
+
+def _normalize_interf_paths(interf_path):
+	'''Normalize a single path or a list of paths to a non-empty list.'''
+	if isinstance(interf_path, (str, os.PathLike)):
+		return [interf_path]
+	interf_paths = list(interf_path)
+	if not interf_paths:
+		raise ValueError("interf_path must be a non-empty path or list of paths")
+	return interf_paths
+
+
+def _open_interf_index(stack, interf_paths):
+	'''Open all candidate interferometer files and build one unified index.
+
+	Files are opened read-only on the caller's ExitStack. The unified index is
+	sorted by timestamp so a per-shot lookup is a single O(log N) bisect
+	regardless of how many candidate files were supplied.
+
+	Returns (f_interfs, all_pairs, sorted_floats, per_file_groups) where
+	all_pairs is [(float_timestamp, dataset_name, file_idx)] sorted by time,
+	sorted_floats are the timestamps alone, and per_file_groups[i] is the set
+	of DATA_GROUPS present in file i (so per-shot reads know which channels to
+	look up in which file).
+	'''
+	f_interfs = [stack.enter_context(h5py.File(p, "r")) for p in interf_paths]
+
+	all_pairs = []
+	per_file_groups = []
+	for file_idx, f_interf in enumerate(f_interfs):
+		# phase_p20 is the canonical reader index in newer files (it is
+		# written last so partial shots are skipped). Fall back to
+		# whichever known group exists for older formats.
+		index_group = next((g for g in DATA_GROUPS if g in f_interf), None)
+		if index_group is None:
+			raise ValueError(f"No interferometer groups found in {interf_paths[file_idx]}")
+		per_file_groups.append(set(g for g in DATA_GROUPS if g in f_interf))
+		for name in f_interf[index_group].keys():
+			all_pairs.append((float(name), name, file_idx))
+
+	all_pairs.sort(key=lambda p: p[0])
+	sorted_floats = [p[0] for p in all_pairs]
+	return f_interfs, all_pairs, sorted_floats, per_file_groups
+
+
+def _available_groups(datarun_path, per_file_groups):
+	'''Groups available for writing = groups present in the datarun file AND
+	present in at least one interferometer file.'''
+	with h5py.File(datarun_path, "r") as f_datarun:
+		datarun_groups = set(f_datarun.get("diagnostics/interferometer", {}).keys())
+	union_interf_groups = set().union(*per_file_groups) if per_file_groups else set()
+	return [g for g in DATA_GROUPS
+	        if g in union_interf_groups and g in datarun_groups]
+
+
+def _copy_shot_datasets(datarun_path, f_interf, groups_in_this_file,
+                        available_groups, matching_set, shot_n,
+                        extra_attrs=None):
+	'''Copy one interferometer trace set into the datarun as shot ``shot_n``.
+
+	Reads each available group's ``matching_set`` dataset from the open source
+	file and writes it under diagnostics/interferometer/<group>/<shot_n>,
+	copying the source attributes (plus ``extra_attrs``, if given). Datasets
+	that already exist are left untouched, so re-runs are idempotent. The
+	datarun file is opened just for this shot so an interruption mid-run
+	leaves already-merged shots safely flushed to disk.
+
+	Returns True if any dataset was written.
+	'''
+	shot_data = {}
+	shot_attrs = {}
+	for g in available_groups:
+		# Skip groups not present in this particular source file
+		# (e.g. older files without phase_p40), and shots where
+		# phase_p40 is legitimately absent for that file.
+		if g not in groups_in_this_file or matching_set not in f_interf[g]:
+			continue
+		ds = f_interf[g][matching_set]
+		shot_data[g] = ds[:]
+		shot_attrs[g] = dict(ds.attrs)
+
+	wrote_any = False
+	with h5py.File(datarun_path, "a") as f_datarun:
+		for g, data in shot_data.items():
+			dest = f_datarun[f"diagnostics/interferometer/{g}"]
+			if shot_n in dest:
+				continue
+			new_ds = dest.create_dataset(shot_n, data=data)
+			for attr_name, attr_value in shot_attrs[g].items():
+				new_ds.attrs[attr_name] = attr_value
+			if extra_attrs:
+				for attr_name, attr_value in extra_attrs.items():
+					new_ds.attrs[attr_name] = attr_value
+			wrote_any = True
+		if wrote_any:
+			# Push h5py library buffers to the kernel, then ask the
+			# kernel to push its page cache to disk. Narrows the
+			# window where an OS crash or power loss could lose the
+			# just-written shot.
+			f_datarun.flush()
+			try:
+				os.fsync(f_datarun.id.get_vfd_handle())
+			except (OSError, AttributeError):
+				# Some VFDs don't expose a raw fd; flush() alone has
+				# already done what it can.
+				pass
+	return wrote_any
+
+
 def merge_interferometer_data(datarun_path, interf_path, all_shots=False, verbose=True):
 	'''
 	Merge the interferometer data into the datarun file.
@@ -298,41 +411,12 @@ def merge_interferometer_data(datarun_path, interf_path, all_shots=False, verbos
 			print(msg)
 	shot_numbers, timestamp_array = get_shot_timestamps(datarun_path, verbose=verbose)
 
-	# Normalize to a list so the rest of the function can treat single- and
-	# multi-file inputs uniformly.
-	if isinstance(interf_path, (str, os.PathLike)):
-		interf_paths = [interf_path]
-	else:
-		interf_paths = list(interf_path)
-	if not interf_paths:
-		raise ValueError("interf_path must be a non-empty path or list of paths")
+	interf_paths = _normalize_interf_paths(interf_path)
 
 	shots_written = 0
 	with contextlib.ExitStack() as stack:
-		# Open all candidate interferometer files; build one unified, sorted
-		# timestamp index across them so the per-shot lookup is a single
-		# O(log N) bisect regardless of how many candidates were supplied.
-		f_interfs = []
-		for p in interf_paths:
-			f_interfs.append(stack.enter_context(h5py.File(p, "r")))
-
-		all_pairs = []  # (float_timestamp, dataset_name, file_idx)
-		# Track which groups are available in which file so per-shot reads
-		# know which channels to look up.
-		per_file_groups = []
-		for file_idx, f_interf in enumerate(f_interfs):
-			# phase_p20 is the canonical reader index in newer files (it is
-			# written last so partial shots are skipped). Fall back to
-			# whichever known group exists for older formats.
-			index_group = next((g for g in DATA_GROUPS if g in f_interf), None)
-			if index_group is None:
-				raise ValueError(f"No interferometer groups found in {interf_paths[file_idx]}")
-			per_file_groups.append(set(g for g in DATA_GROUPS if g in f_interf))
-			for name in f_interf[index_group].keys():
-				all_pairs.append((float(name), name, file_idx))
-
-		all_pairs.sort(key=lambda p: p[0])
-		sorted_floats = [p[0] for p in all_pairs]
+		f_interfs, all_pairs, sorted_floats, per_file_groups = \
+			_open_interf_index(stack, interf_paths)
 
 		def find_match(timestamp, tolerance=1.0):
 			if not sorted_floats:
@@ -349,13 +433,7 @@ def merge_interferometer_data(datarun_path, interf_path, all_shots=False, verbos
 				return name, match_file_idx
 			return None
 
-		# Groups available for writing = groups present in the datarun file
-		# AND present in at least one interferometer file.
-		with h5py.File(datarun_path, "r") as f_datarun:
-			datarun_groups = set(f_datarun.get("diagnostics/interferometer", {}).keys())
-		union_interf_groups = set().union(*per_file_groups) if per_file_groups else set()
-		available_groups = [g for g in DATA_GROUPS
-		                    if g in union_interf_groups and g in datarun_groups]
+		available_groups = _available_groups(datarun_path, per_file_groups)
 
 		# Build the list of shots to merge. Each entry is
 		# (shot_number, matching_set, file_idx) where shot_number is the
@@ -395,48 +473,10 @@ def merge_interferometer_data(datarun_path, interf_path, all_shots=False, verbos
 			_log('No interferometer traces found for any datarun shot')
 			return 0
 
-		# Datarun file is opened/closed per shot so an interruption mid-run leaves
-		# already-merged shots safely flushed to disk.
 		for shot_num, matching_set, match_file_idx in matched_shots:
-			shot_n = str(shot_num)
-			f_interf = f_interfs[match_file_idx]
-			groups_in_this_file = per_file_groups[match_file_idx]
-
-			shot_data = {}
-			shot_attrs = {}
-			for g in available_groups:
-				# Skip groups not present in this particular source file
-				# (e.g. older files without phase_p40), and shots where
-				# phase_p40 is legitimately absent for that file.
-				if g not in groups_in_this_file or matching_set not in f_interf[g]:
-					continue
-				ds = f_interf[g][matching_set]
-				shot_data[g] = ds[:]
-				shot_attrs[g] = dict(ds.attrs)
-
-			with h5py.File(datarun_path, "a") as f_datarun:
-				wrote_any = False
-				for g, data in shot_data.items():
-					dest = f_datarun[f"diagnostics/interferometer/{g}"]
-					if shot_n in dest:
-						continue
-					new_ds = dest.create_dataset(shot_n, data=data)
-					for attr_name, attr_value in shot_attrs[g].items():
-						new_ds.attrs[attr_name] = attr_value
-					wrote_any = True
-				if wrote_any:
-					# Push h5py library buffers to the kernel, then ask the
-					# kernel to push its page cache to disk. Narrows the
-					# window where an OS crash or power loss could lose the
-					# just-written shot.
-					f_datarun.flush()
-					try:
-						os.fsync(f_datarun.id.get_vfd_handle())
-					except (OSError, AttributeError):
-						# Some VFDs don't expose a raw fd; flush() alone has
-						# already done what it can.
-						pass
-			if wrote_any:
+			if _copy_shot_datasets(datarun_path, f_interfs[match_file_idx],
+			                       per_file_groups[match_file_idx],
+			                       available_groups, matching_set, str(shot_num)):
 				shots_written += 1
 
 			_log(f"Shot {shot_num} wrote into datarun file")
