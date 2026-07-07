@@ -609,11 +609,16 @@ def merge_folder(datarun_dir, interf_dir, all_shots=False):
 
 if __name__ == '__main__':
 	  
-	datarun_path = r"C:\data\LAPD\07_Dipole_plane_p32_Diris7cm_MaskBiasing.hdf5"
-	interf_path = r"C:\data\LAPD\interferometer_samples\interferometer_data_2024-07-02.hdf5"
+	# datarun_path = r"C:\data\LAPD\07_Dipole_plane_p32_Diris7cm_MaskBiasing.hdf5"
+	# interf_path = r"C:\data\LAPD\interferometer_samples\interferometer_data_2024-07-02.hdf5"
 
-	init_datarun_groups(datarun_path, interf_path)
+	# init_datarun_groups(datarun_path, interf_path)
 
-	merge_interferometer_data(datarun_path, interf_path)
+	# merge_interferometer_data(datarun_path, interf_path)
 
-	write_attribute(datarun_path)
+	# write_attribute(datarun_path)
+
+	datarun_dir = r"E:\Shadow data\Columbia_Alfven_wave\May2026"
+	interf_dir = r"N:\interferometer"
+
+	merge_folder(datarun_dir, interf_dir, all_shots=False)
