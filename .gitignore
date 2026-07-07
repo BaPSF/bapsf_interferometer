@@ -5,5 +5,5 @@ __pycache__/
 
 .venv
 .venvs
-./build
-./dist
+build/
+dist/
