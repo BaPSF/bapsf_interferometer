@@ -28,7 +28,10 @@ from interf_raw import get_calibration_factor
 #===============================================================================================================================================
 #===============================================================================================================================================
 
-def get_latest_file(dir_path=r"C:\data\interferometer"):
+INTERF_DATA_DIR = os.environ.get("INTERF_DATA_DIR", r"C:\data\interferometer")
+
+
+def get_latest_file(dir_path=INTERF_DATA_DIR):
 	"""
 	This function returns the latest file in a directory.
 

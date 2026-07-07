@@ -1,0 +1,10 @@
+git+https://github.com/hjia94/lab_scopes.git@v0.4.0#egg=lab_scopes
+numpy
+scipy
+h5py
+matplotlib
+PyQt5
+
+# for exe build
+pyinstaller
+pillow

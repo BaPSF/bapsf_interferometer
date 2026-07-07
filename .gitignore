@@ -2,3 +2,8 @@ __pycache__/
 *.pyc
 *.pyo
 *.json
+
+.venv
+.venvs
+build/
+dist/
