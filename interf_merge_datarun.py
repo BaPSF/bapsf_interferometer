@@ -608,7 +608,9 @@ def merge_folder(datarun_dir, interf_dir, all_shots=False):
 #===============================================================================================================================================
 
 if __name__ == '__main__':
-	  
+
+	from pathlib import Path
+
 	# datarun_path = r"C:\data\LAPD\07_Dipole_plane_p32_Diris7cm_MaskBiasing.hdf5"
 	# interf_path = r"C:\data\LAPD\interferometer_samples\interferometer_data_2024-07-02.hdf5"
 
@@ -618,7 +620,13 @@ if __name__ == '__main__':
 
 	# write_attribute(datarun_path)
 
-	datarun_dir = r"E:\Shadow data\Columbia_Alfven_wave\May2026"
+	# datarun_dir = r"E:\Shadow data\Columbia_Alfven_wave\May2026"
+	datarun_dir = str(Path.cwd())
 	interf_dir = r"N:\interferometer"
 
-	merge_folder(datarun_dir, interf_dir, all_shots=False)
+	try:
+		merge_folder(datarun_dir, interf_dir, all_shots=False)
+	except Exception as err:
+		print(err)
+	finally:
+		input("Press enter to close console...")
