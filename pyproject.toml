@@ -1,5 +1,5 @@
 [build-system]
-requires = ["setuptools>=68", "wheel"]
+requires = ["setuptools>=77", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -7,10 +7,17 @@ name = "bapsf-interferometer"
 version = "0.1.0"
 description = "BaPSF microwave interferometer acquisition, merge, and analysis tools."
 readme = "README.md"
-requires-python = ">=3.9"
-license = {text = "MIT"}
+requires-python = ">=3.11"
+license = "MIT"
 authors = [
   {name = "LAPD/BaPSF contributors"},
+]
+classifiers = [
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Programming Language :: Python :: 3.14",
 ]
 dependencies = [
   "numpy",
@@ -19,6 +26,6 @@ dependencies = [
   "matplotlib",
   "PyQt5",
   # Rigol DHO800 driver (interf_main.py: from lab_scopes.rigol import RigolDHO800).
-  # Pinned to the 0.4.0a1 pre-release: Rigol 12-bit/WORD full-depth hardening.
-  "lab-scopes @ git+https://github.com/hjia94/lab_scopes.git@v0.4.0a1",
+  # Pinned to the 0.4.0 release: Rigol 12-bit/WORD full-depth hardening.
+  "lab-scopes @ git+https://github.com/hjia94/lab_scopes.git@v0.4.0",
 ]
