@@ -9,15 +9,11 @@ for cross-checking.
 
 `python interf_analysis.py` runs both on a hard-coded .trc shot and overlays them (smoke test).
 
-History: Patrick (2018-09) original CSD method, manual 2π fix-ups later replaced by
-auto_find_fixups() (now np.unwrap), last edit 2020-09-13. Jia (2021-07-15) mlab.csd -> scipy.fft.
+History: Patrick (2018-09) original CSD method, manual 2π fix-ups later automated
+(now np.unwrap), last edit 2020-09-13. Jia (2021-07-15) mlab.csd -> scipy.fft.
 Steve (2024-05-20) phase_from_hilbert. Jia (2024-05-23) CSD vectorization. Jia (2026-05-04)
 Hilbert cleanup and speed-up.
 """
-import sys
-sys.path.append(r"C:\Users\hjia9\Documents\GitHub\data-analysis")
-sys.path.append(r"C:\Users\hjia9\Documents\GitHub\data-analysis\read")
-
 import math
 import scipy
 import numpy as np
@@ -25,7 +21,7 @@ import matplotlib.pyplot as plt
 from scipy import constants as const
 from scipy import signal
 
-from lab_scopes.io.lecroy_files import read_trc_data, read_trc_data_simplified
+from lab_scopes.io.lecroy_files import read_trc_data_simplified
 import time
 
 #============================================================================
@@ -136,26 +132,6 @@ def correlation_spectrogram(tarr, refch, plach, FT_len):
 	csd_ang[:valid_segments] = csd_angle
 	csd_mag[:valid_segments] = csd_abs[row_index, adx]
 	return ttt[:valid_segments]+tarr[0], -csd_ang[:valid_segments], csd_mag[:valid_segments]
-
-def auto_find_fixups(t_ms, csd_ang, threshold=5.):
-	d = np.diff(csd_ang)
-	p = t_ms[:-1][d > threshold] # len(diff) is one less than len(csd_ang)
-	n = t_ms[:-1][d < -threshold]
-	f = np.ones((p.size+n.size, 2))
-	f[:p.size, 0] = p
-	f[:p.size, 1] = -1
-	f[p.size:, 0] = n
-	return f
-
-def do_fixups(t_ms, csd_ang):
-	cum_phase = csd_ang.copy()
-	fixups = auto_find_fixups(t_ms-t_ms[0], cum_phase)
-	dt = t_ms[1]-t_ms[0]
-	for t,s in fixups:
-		n = int(t/dt)
-		# every time there is a 2pi jump, add or subtract 2pi to the entire rest of the time series
-		cum_phase[n+1:] += s*2*np.pi
-	return cum_phase
 
 def phase_from_raw(tarr, refch, plach):
 	'''

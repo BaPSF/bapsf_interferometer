@@ -28,3 +28,7 @@ dependencies = [
   # full-depth read and LeCroy arm_master_single / wait_for_stop_then_complete.
   "lab-scopes @ git+https://github.com/hjia94/lab_scopes.git@v0.4.0",
 ]
+
+[tool.setuptools]
+# Flat layout with several top-level modules: setuptools refuses to auto-discover them.
+py-modules = ["interf_main", "interf_raw", "interf_analysis", "interf_file"]
