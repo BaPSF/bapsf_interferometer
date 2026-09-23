@@ -1,85 +1,18 @@
 # -*- coding: utf-8 -*-
-"""
-Phase extraction for the BaPSF ~300 GHz microwave interferometer.
+"""Phase extraction for the BaPSF ~300 GHz heterodyne interferometers (one reference leg, one plasma leg).
 
-Overview
---------
-Recovers the line-integrated plasma phase shift from the digitized IF signals
-of a heterodyne interferometer (one reference leg, one plasma leg). The phase
-can then be converted to line-integrated electron density via the calibration
-factor returned by `get_calibration_factor()`.
+Both phase functions take (tarr [s, uniformly sampled], refch, plach) and return (t_ms, phase_rad),
+phase_rad = unwrapped phase(ref) - phase(plasma). The plasma leg (n < 1) accumulates less phase,
+so the phase is positive during a shot: the sign get_calibration_factor assumes (n_e = phase * cal).
+phase_from_raw is the default; phase_from_hilbert is slower, has edge effects (TODO), and is kept
+for cross-checking.
 
-Public API
-----------
-- `get_calibration_factor(f_uwave, plasma_length)` -> float
-      Calibration constant `cal` such that  n_e = phase * cal  [m^-3 / rad].
-      Assumes a retro-reflecting (double-pass) geometry.
+`python interf_analysis.py` runs both on a hard-coded .trc shot and overlays them (smoke test).
 
-- `phase_from_raw(tarr, refch, plach)` -> (t_ms, phase_rad)
-      **Default method, used in production.** Cross-spectral-density (CSD) over
-      `FT_len`-point Hanning windows; tracks the peak frequency bin per window
-      and returns its unwrapped phase. Fast and robust.
-
-- `phase_from_hilbert(tarr, refch, plach)` -> (t_ms, phase_rad)
-      Alternative method using the analytic signal from `scipy.signal.hilbert`.
-      Gives the same answer as `phase_from_raw` but is slower and currently
-      shows minor edge effects; kept for cross-checking.
-
-Inputs (both phase functions)
------------------------------
-- `tarr`  : 1-D time array in seconds, uniformly sampled.
-- `refch` : reference-leg IF samples (same length as `tarr`).
-- `plach` : plasma-leg IF samples (same length as `tarr`).
-
-Sampling must be fast enough to resolve the IF carrier.
-
-Outputs
--------
-- `t_ms`     : time axis in milliseconds (downsampled relative to input —
-               one point per FFT window for `phase_from_raw`, one per
-               decimated sample for `phase_from_hilbert`).
-- `phase_rad`: cumulative (unwrapped) plasma phase shift in radians, with the
-               first few samples used to subtract the pre-plasma offset so the
-               trace starts near zero.
-
-Sign convention
----------------
-The cross-spectral density `CSD = FFT(plasma) * conj(FFT(ref))` has angle
-`phase(plasma) - phase(ref)`. Because the plasma refractive index `n < 1`, the
-plasma leg accumulates *less* phase than the reference, so the raw CSD angle is
-negative when plasma is present. `correlation_spectrogram()` negates it so that
-the returned phase is positive during a shot, matching the convention assumed
-by `get_calibration_factor()`.
-
-Tunable parameter
------------------
-- `FT_len` (module-level, default 512): FFT window length for `phase_from_raw`.
-  Larger -> better frequency resolution, coarser time resolution.
-
-Quick example
--------------
-    from lab_scopes.io.lecroy_files import read_trc_data_simplified
-    from interf_analysis import phase_from_raw, get_calibration_factor
-
-    refch, tarr, *_ = read_trc_data_simplified("C1-interf-shot00001.trc")
-    plach, _,   *_ = read_trc_data_simplified("C2-interf-shot00001.trc")
-
-    t_ms, phase = phase_from_raw(tarr, refch, plach)
-    n_e = phase * get_calibration_factor(f_uwave=288e9, plasma_length=0.4)
-
-Running this module directly (`python interf_analysis.py`) loads a hard-coded sample
-shot, runs both methods, prints their wall-clock times, and overlays the
-results — useful as a smoke test.
-
-Authors and history
--------------------
-- Patrick (2018-09): original CSD method; manual 2π fix-ups, later replaced by
-  automatic `auto_find_fixups()`. Last edit by Pat: 2020-09-13.
-- Jia (2021-07-15): switched from `matplotlib.mlab.csd` to `scipy.fft`; added
-  notes on the sign convention.
-- Steve (2024-05-20): contributed the Hilbert-transform variant `phase_from_hilbert`.
-- Jia (2024-05-23): syntax cleanup and vectorization of the CSD path.
-- Jia (2026-05-04): Hilbert path cleanup and speed-up (edge effects still present — TODO).
+History: Patrick (2018-09) original CSD method, manual 2π fix-ups later replaced by
+auto_find_fixups() (now np.unwrap), last edit 2020-09-13. Jia (2021-07-15) mlab.csd -> scipy.fft.
+Steve (2024-05-20) phase_from_hilbert. Jia (2024-05-23) CSD vectorization. Jia (2026-05-04)
+Hilbert cleanup and speed-up.
 """
 import sys
 sys.path.append(r"C:\Users\hjia9\Documents\GitHub\data-analysis")
@@ -96,24 +29,21 @@ from lab_scopes.io.lecroy_files import read_trc_data, read_trc_data_simplified
 import time
 
 #============================================================================
-# Parameters for analyzing raw signal of interferometer
-FT_len = 512
+FT_len = 512  # phase_from_raw window: larger -> finer frequency resolution, coarser time resolution
 #============================================================================
 
 def get_calibration_factor(f_uwave = 288e9, plasma_length = 0.4):
 	'''
-	Convert phase to density with:
-	f_uwave --> Microwave frequency (Hz)
-	plasma_length --> Plasma length (m)
-	Note: SI units for physical constants
+	cal [m^-3/rad] with n_e = phase * cal; f_uwave in Hz, plasma_length in m.
+
+	plasma_length is the diameter of an equivalent flat density profile (the FWHM is a decent
+	guess), so n_e is a path average, not a peak density.
 	'''
 	e = const.elementary_charge
 	m_e = const.electron_mass
 	eps0 = const.epsilon_0
 	c = const.speed_of_light
 	Npass = 2.0 # Number of passes of uwave through plasma (retroreflecting geometry)
-	# diameter = 0.35 # Plasma diameter if it were flat (m)
-	# Note: a decent guess for the diameter is the FWHM
 
 	# n_e = phase * cal;  cal = 4π·f·ε₀·m_e·c / (N_pass × e² × L)
 	calibration = 1./((Npass/4./np.pi/f_uwave)*(e**2/m_e/c/eps0)*plasma_length)
@@ -169,8 +99,6 @@ def correlation_spectrogram(tarr, refch, plach, FT_len):
 	num_FTs = int(NS/FT_len)
 	dt = tarr[1] - tarr[0]
 
-#	print("computing %i FTs"%(num_FTs), flush=True)
-
 	ttt = np.zeros(num_FTs)
 	csd_ang = np.zeros(num_FTs)   # computed cross spectral density phase vs time
 	csd_mag = np.zeros(num_FTs)   # computed cross spectral density magnitude vs time
@@ -196,9 +124,6 @@ def correlation_spectrogram(tarr, refch, plach, FT_len):
 	refch_fft = scipy.fft.fft(refch_segments, axis=1)
 	csd = plach_fft * np.conj(refch_fft)
 	csd /= window_power  # Normalize by the sum of the window squared and FT_len
-
-	# Old command using mlab.csd
-#	csd, _ = mlab.csd(plach[i:i+FT_len], refch[i:i+FT_len], NFFT=FT_len, Fs=1./dt, sides='default', scale_by_freq=False)
 
 	# Find the peak of the cross-spectral density
 	npts_to_ignore = 10                 # skip 10 initial points to avoid DC offset being the largest value
@@ -234,25 +159,17 @@ def do_fixups(t_ms, csd_ang):
 
 def phase_from_raw(tarr, refch, plach):
 	'''
-	1. Divide data into segments of length FT_len (512 points)
-	2. For each segment:
-		- Apply Hanning window
-		- Compute FFT of both reference and plasma signals
-		- Calculate Cross-Spectral Density (CSD): CSD = FFT(plasma) * conj(FFT(ref))
-		- Find peak in CSD spectrum (skipping first 10 points to avoid DC)
-		- Extract phase angle at peak frequency
-	3. Unwrap phase to handle 2π jumps
-	4. Subtract initial offset
+	CSD phase at the peak bin of each FT_len-point Hanning window, unwrapped, minus the mean of
+	the first 5 windows (taken as pre-plasma). One point per window, at the window start.
 	'''
 	offset_range = range(5)
-	
+
 	ttt, csd_ang, csd_mag = correlation_spectrogram(tarr, refch, plach, FT_len)
 
 	t_ms = ttt * 1000
 
 
 	cum_phase = np.unwrap(csd_ang)
-#	cum_phase = do_fixups(t_ms, csd_ang)
 	offset = np.average(cum_phase[offset_range])
 
 	return t_ms, cum_phase-offset
@@ -264,18 +181,13 @@ def phase_from_raw(tarr, refch, plach):
 
 def phase_from_hilbert(tarr, refch, plach):
 	'''
-	1. Decimate data by factor of 10 (reduce sampling rate)
-	2. Create analytic signals using Hilbert transform analytic signal = original + i*Hilbert(original)
-	3. Subtract mean values
-	4. Calculate phase angles of both signals
-	5. Unwrap phases
-	6. Take difference between reference and plasma phases
+	Phase difference of the analytic signals after 10x IIR decimation. No offset is subtracted,
+	so unlike phase_from_raw the trace need not start near zero.
 	'''
 	# Decimate data as we are only interested in the slowly varying phase,
 	# not the carrier wave phase variations
 	decimate_factor = 10
 	dt = tarr[1]-tarr[0]
-	# carrier_period_nt = int((1./carrier_frequency)/dt)
 	ftype='iir'
 
 	r = signal.decimate(refch, decimate_factor, ftype=ftype, zero_phase=True)
@@ -308,25 +220,13 @@ def phase_from_hilbert(tarr, refch, plach):
 	# Phase difference via single complex product: angle(aref) - angle(asig) = angle(aref * conj(asig))
 	dphi = np.unwrap(np.angle(aref * np.conj(asig)))
 
-	# Flatten out minor but inelegant edge effects due to the Hilbert transforms,
-	# and mostly the filter
-	#mindex = int(2048 / np.sqrt(decimate_factor))
-	#dphi[0:mindex-1] = dphi[mindex+1:2*mindex+1].mean()
-	#dphi[-(mindex+1):] = dphi[-2*mindex:-(mindex+1)].mean()
-
-	# Subtract the mean of the first 100 samples as it is not meaningful to us
-	#dphi -= dphi[mindex:4*mindex].mean()
-
-	# filter out carrier frequency
-	#dphi = uniform_filter1d(dphi, carrier_period_nt)
-
+	# Edge effects at both ends, mostly from the decimation filter, are not corrected (TODO).
 	return t_ms, dphi
 
 
 #===============================================================================================================================================
 #<o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o>
 #===============================================================================================================================================
-# sudo mount.cifs //192.168.7.61/interf /home/smbshare -o username=LECROYUSER_2
 
 if __name__ == '__main__':
 

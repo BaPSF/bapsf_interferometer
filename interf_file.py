@@ -1,7 +1,8 @@
 # coding: utf-8
 
 '''
-This module contains functions for hdf5 handeling
+Schema and writers for the daily interferometer HDF5 file written by the previous (.trc)
+acquisition; the new raw acquisition does not use them. The .trc/.npz helpers are unused.
 
 Author: Jia Han
 Ver1.0 created on: 2021-06-01
@@ -32,15 +33,8 @@ def find_latest_shot_number(dir_path):
 	return shot_number
 
 def write_to_temp(file_path, temp_path): # NOT USED
-	'''
-	Saves interferometer data to a temporary folder.
-	Loops continuously to save the latest interferometer data files to the temporary folder.
-	Starts from the most recent shot in the folder.
-
-	Parameters:
-	- file_path (str): The path to the folder containing the interferometer data files.
-	- temp_path (str): The path to the temporary folder where the data will be saved.
-	'''
+	'''Copy each new shot's C1-C4 .trc files from file_path into temp_path as .npz, forever,
+	starting from the newest shot.'''
 
 	shot_number = find_latest_shot_number(file_path)
 
@@ -92,7 +86,6 @@ def write_to_temp(file_path, temp_path): # NOT USED
 			break
 
 def load_shot_data(file_path): # not used Jun-2024
-	# Load the .npz file
 	with np.load(file_path) as data:
 		refchA = data['refchA']
 		plachA = data['plachA']
@@ -196,8 +189,8 @@ def delete_file(file_path):
 if __name__ == '__main__':
 	
 	if False:
-		file_path = "/home/smbshare" # Network drive located on LeCroy scope, mounted on RP 
-		temp_path = "/mnt/ramdisk" 	 # Temporary ramdisk on RP, see readme on desktop
+		file_path = "/home/smbshare" # LeCroy network share, mounted on the old Raspberry Pi
+		temp_path = "/mnt/ramdisk"
 		write_to_temp(file_path, temp_path)
 	
 	if False:

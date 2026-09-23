@@ -44,7 +44,6 @@ def _env(name, default):
 
 
 #===============================================================================================================================================
-# Every constant is overridable by the environment variable of the same name.
 LECROY_IP = _env("LECROY_IP", "10.10.10.10")  # placeholder until the real address is known
 LECROY_CHANNELS = _env("LECROY_CHANNELS", ("C1", "C2", "C3", "C4"))  # [0] carries the sweep counter
 LECROY_TIMEOUT = _env("LECROY_TIMEOUT", 5.0)  # s, VICP socket timeout; bounds every LeCroy call
@@ -90,8 +89,7 @@ class RawShot:
 
 
 #===============================================================================================================================================
-# Rigol: self-contained top-level functions (connect, act, close under one deadline) taking and
-# returning picklable values, so a future worker process can run them unchanged.
+# Rigol
 
 class RigolDeadline(BaseException):
 	"""A Rigol operation overran its wall-clock budget."""
@@ -146,7 +144,6 @@ def rigol_read(ip, channels, budget):
 
 
 def rigol_run(ip, budget):
-	"""Connect, :RUN, close."""
 	with _deadline(budget), _rigol_open(ip) as scope:
 		scope.run()
 
@@ -169,7 +166,7 @@ def _arm_lecroy(lecroy, state):
 
 
 def _prepare(lecroy, state):
-	"""Step 2: get the LeCroy listening without disturbing a pending capture. The Rigol free-runs."""
+	"""Get the LeCroy listening without disturbing a pending capture."""
 	mode = _lecroy_mode(lecroy)
 	if mode == "SIN":
 		# Waiting for the next shot: re-arming would only clear the sweep counter for nothing.
@@ -178,14 +175,14 @@ def _prepare(lecroy, state):
 		pass  # an unconsumed capture is waiting (it may have landed after last iteration's wait)
 	elif mode in ("STO", "NOR", "AUT"):
 		# STO with nothing to consume (rule 3): already consumed, predates us, or stopped by hand.
-		# NOR/AUT (rule 2): free-running emits a trigger-out every shot; SINGLE limits it to one per arm.
+		# NOR/AUT: rule 2.
 		_arm_lecroy(lecroy, state)
 	else:
 		raise RuntimeError(f"unexpected LeCroy TRIG_MODE {mode!r}")
 
 
 def _arm_and_wait(lecroy, state, stop_requested):
-	"""Steps 2-3: True once a fresh capture is present; False on TRIGGER_TIMEOUT or a stop request.
+	"""True once a fresh capture is present; False on TRIGGER_TIMEOUT or a stop request.
 
 	Raises on LeCroy communication errors.
 	"""
@@ -202,7 +199,7 @@ def _arm_and_wait(lecroy, state, stop_requested):
 
 
 def _read_rigol(state, missing):
-	"""Step 6: Rigol data for this shot, or {} with missing["rigol"] set."""
+	"""Rigol data for this shot, or {} with missing["rigol"] set."""
 	if state.rigol_skip_shots > 0:
 		state.rigol_skip_shots -= 1
 		missing["rigol"] = f"backoff, {state.rigol_skip_shots} shots left"
@@ -216,7 +213,7 @@ def _read_rigol(state, missing):
 
 
 def _consume(lecroy, state, stop_requested):
-	"""Steps 4-7 for a detected capture."""
+	"""Read a detected capture from both scopes, then re-arm the LeCroy."""
 	host_time, t0 = time.time(), time.monotonic()
 	_note_resumed(state)
 	# Consume before reading: an exception anywhere below must never lead to a re-read (rule 3).

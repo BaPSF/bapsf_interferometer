@@ -21,14 +21,6 @@ def read_probe_motion(f, number):
 	ny = motion['npoints'][1]
 	nz = motion['npoints'][2]
 
-	# dx = motion['delta'][0]
-	# dy = motion['delta'][1]
-	# dz = motion['delta'][2]
-
-	# x0 = motion['center'][0]
-	# y0 = motion['center'][1]
-	# z0 = motion['center'][2] + pr['probe']['z']
-
 	pos_array = f.read_controls([('6K Compumotor', 3)])['xyz']
 
 	npos = motion['data motion count']
@@ -79,14 +71,13 @@ def unpack_datarun_sequence(f, verbose=True):
 	for i in range(len(sequence_list)):
 		output = sequence_list[i]
 
-		# Extract elements
-		message = output[0].decode('utf-8')  # Convert bytes to string
+		message = output[0].decode('utf-8')
 		message_array = np.append(message_array, message)
 
 		# Don't know what output[1] is
 		# output[2] seems to be an index
 
-		status = output[3].decode('utf-8')  # Convert bytes to string
+		status = output[3].decode('utf-8')
 		status_array = np.append(status_array, status)
 
 		timestamp = output[4]

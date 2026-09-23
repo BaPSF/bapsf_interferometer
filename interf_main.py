@@ -1,6 +1,5 @@
 # coding: utf-8
-"""Acquisition loop: acquire_shot() until stopped, one log line per shot. Linux only.
-"""
+"""Acquisition loop: acquire_shot() until stopped, one log line per shot. Linux only."""
 import logging.handlers
 import os
 import signal
@@ -99,9 +98,8 @@ def main():
 				if shot is not None:
 					prev_trig = _handle_shot(shot, prev_trig)
 			except Exception:
-				# Scope errors are handled inside acquire_shot, so this is a bug (or, once the raw
-				# writer lands here, a write failure). Log it and keep the loop, so an exit still
-				# restores the scopes.
+				# Scope errors are handled inside acquire_shot, so this is a bug. Log it and keep the
+				# loop, so an exit still restores the scopes.
 				log.exception("shot iteration failed")
 				time.sleep(1.0)  # bound the rate of a persistent failure
 		log.info("stop requested; setting LeCroy NORM and Rigol RUN")
