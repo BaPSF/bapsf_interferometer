@@ -52,11 +52,12 @@ longer delay (seconds, waiting for the `.trc` file). AUTO is kept until the benc
 
 | File | Action |
 |---|---|
-| `interf_analysis.py` | **New.** Receives the entire current `interf_raw.py` verbatim (`get_calibration_factor`, `phase_from_raw`, `phase_from_hilbert`, helpers, smoke test). Justification: `interf_raw` becomes the scope-acquisition module; GUI, `interf_read`, and merge scripts need calibration/phase code without importing scope drivers. |
+| `interf_analysis.py` | **New.** Receives the entire current `interf_raw.py` verbatim (`get_calibration_factor`, `phase_from_raw`, `phase_from_hilbert`, helpers, smoke test). Justification: `interf_raw` becomes the scope-acquisition module; `interf_file` and `interf_read` need calibration/phase code without importing scope drivers. |
 | `interf_raw.py` | **Rewritten** as raw acquisition (design below). |
 | `interf_main.py` | **Rewritten** as a minimal loop: call `acquire_shot()` forever, log one line per shot (below), discard the data. Ctrl-C exits cleanly. |
-| `interf_file.py`, `interf_GUI.py`, `interf_read.py`, `interf_merge_datarun.py` | Import line only: `from interf_raw import get_calibration_factor` → `from interf_analysis import ...`. |
+| `interf_file.py`, `interf_read.py` | Import line only: `from interf_raw import get_calibration_factor` → `from interf_analysis import ...`. |
 | `interf_plot.py`, `interf_cleanup.py`, `interf_save.py` | **Deleted.** Plotting will be replaced by EPICS-side plotting; cleanup only deleted `.trc` files on `I:\`; `interf_save.py` is an unused `.trc` script. |
+| `interf_GUI.py`, `cpu_temp.py`, `interf_merge_datarun.py`, `interf_merge_lapd_daq.py` | **Deleted.** The GUI will be re-implemented under EPICS (PyQt5 dependency dropped with it); `cpu_temp.py` is unused; the merge scripts will be re-added later on this branch. |
 | `README.md` | Rewrite entirely based on new refactored code. |
 
 Deferred: raw writer (LAPD_DAQ spool layout, but per-scope dtype preserved -- `spool_format`

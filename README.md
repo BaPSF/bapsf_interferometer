@@ -73,11 +73,9 @@ A Rigol operation that hangs is cut off by `SIGALRM` at its deadline, so it cann
 | [interf_analysis.py](interf_analysis.py) | Phase extraction (`phase_from_raw`, which uses the cross-spectral density; `phase_from_hilbert`, which is slower) and `get_calibration_factor` |
 | [interf_file.py](interf_file.py) | HDF5 schema and writers for the daily interferometer file |
 | [interf_read.py](interf_read.py) | Read phase and time arrays by date and timestamp |
-| [interf_GUI.py](interf_GUI.py) | Live density plots from the daily HDF5 file (`INTERF_DATA_DIR`) |
-| [interf_merge_datarun.py](interf_merge_datarun.py) | Merge interferometer data into an old-format datarun HDF5 file (one with a `data run sequence` group) |
-| [interf_merge_lapd_daq.py](interf_merge_lapd_daq.py) | Merge into a LAPD_DAQ-format datarun: the traces nearest the run's first and last shots, taken from within the run window |
 | [read_hdf5.py](read_hdf5.py) | Read LAPD datarun HDF5 through bapsflib |
-| [cpu_temp.py](cpu_temp.py) | Raspberry Pi CPU temperature monitor |
+
+The live GUI will be re-implemented under EPICS, and the datarun merge scripts will return later on this branch.
 
 ## Existing HDF5 data (previous acquisition)
 
@@ -92,17 +90,3 @@ Each daily file is named `interferometer_data_YYYY-MM-DD.hdf5`. Its groups each 
 - `phase_p40` datasets have per-shot attributes `rigol_missing` and `rigol_missing_reason`. When the Rigol was down, the dataset is a zero-filled placeholder.
 - Files from before port 40 was added have only `phase_p20`, `phase_p29`, and `time_array`.
 - Timestamps mark when the LeCroy saved its C4 file, which can be slightly later than the shot.
-
-### Merging into a datarun file
-
-`interf_merge_datarun.py` copies these groups under `diagnostics/interferometer/<group>/<shot_number>` in the datarun file:
-
-- **Matching:** SIS DAQ sequence timestamps are matched to interferometer timestamps within ±1 s.
-- **Attributes:** group and per-shot attributes are preserved.
-- **Shots merged:** by default only the first and last shot; pass `all_shots=True` to merge every shot.
-- **Whole folder:** `merge_folder(datarun_dir, interf_dir, all_shots=False)` processes every `.hdf5` file in the folder. It finds the matching daily file by date (same day, then the day before, then the day after), and writes `interf_merge_log.txt` into `datarun_dir`.
-
-```python
-from interf_merge_datarun import merge_folder
-merge_folder("/data/LAPD/Mar26", "/data/interferometer", all_shots=True)
-```

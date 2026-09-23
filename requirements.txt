@@ -3,7 +3,6 @@ numpy
 scipy
 h5py
 matplotlib
-PyQt5
 
 # for exe build
 pyinstaller

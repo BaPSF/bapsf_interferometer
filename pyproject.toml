@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "bapsf-interferometer"
 version = "0.1.0"
-description = "BaPSF microwave interferometer acquisition, merge, and analysis tools."
+description = "BaPSF microwave interferometer acquisition and analysis tools."
 readme = "README.md"
 requires-python = ">=3.11"
 license = "MIT"
@@ -24,7 +24,6 @@ dependencies = [
   "scipy",
   "h5py",
   "matplotlib",
-  "PyQt5",
   # LeCroy + Rigol drivers (interf_raw.py). 0.4.0 is the minimum: it has the Rigol 12-bit/WORD
   # full-depth read and LeCroy arm_master_single / wait_for_stop_then_complete.
   "lab-scopes @ git+https://github.com/hjia94/lab_scopes.git@v0.4.0",
