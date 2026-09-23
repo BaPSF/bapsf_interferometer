@@ -2,7 +2,7 @@
 
 Acquisition and analysis for the BaPSF microwave interferometers at ports 20, 29, and 40.
 
-> **Refactor in progress:** branch `refactor/linux-epics-daq`; the plan is in [docs/refactor_step1.md](docs/refactor_step1.md).
+> **Refactor in progress:** branch `refactor/linux-epics-daq`.
 > Acquisition now reads both scopes directly over Ethernet on Linux and stops once it has the raw samples. Nothing is written to disk, no phase is computed in the loop, and nothing is published to EPICS yet. The HDF5 tools below read files written by the previous acquisition, which ran on Windows and read LeCroy `.trc` files.
 
 Requires Python 3.11 or later (developed on 3.14). Acquisition runs on **Linux only**, because the Rigol deadline uses `signal.setitimer`. `pip install .` installs the dependencies, including [`lab-scopes`](https://github.com/hjia94/lab_scopes) `v0.4.0`, which provides both scope drivers.
@@ -18,7 +18,7 @@ The LeCroy trigger-out is hard-wired to the Rigol trigger input, so the Rigol tr
 - The LeCroy is armed for one trigger per shot. It emits no further trigger-out until it is re-armed.
 - The Rigol free-runs in AUTO sweep, as on `main`. Per shot it is stopped, read, and resumed, before the LeCroy is re-armed.
 
-So both records hold the same shot. The one exception is an AUTO-forced Rigol acquisition landing between the trigger and the stop; that is pending a bench test. The rules are in the plan.
+So both records hold the same shot. The one exception is an AUTO-forced Rigol acquisition landing between the trigger and the stop; that is pending a bench test. The same-shot rules are in the [interf_raw.py](interf_raw.py) docstring.
 
 ### Running
 

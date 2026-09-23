@@ -2,8 +2,21 @@
 """Same-shot raw acquisition from the interferometer scopes. Linux main thread only (SIGALRM).
 
 The LeCroy (ports 20, 29) is the trigger master; its trigger-out is hard-wired to the Rigol
-DHO804 (port 40) trigger input. Same-shot rules, the per-iteration flow, and the
-multiprocessing-ready constraints this module follows: docs/refactor_step1.md.
+DHO804 (port 40) trigger input; software assumes this wiring and does not verify it. The Rigol
+free-runs in AUTO sweep and is never armed. Same-shot rules, cited by number below:
+  1. The Rigol :STOP precedes the LeCroy re-arm: a captured SINGLE LeCroy emits no further
+     trigger-out until re-armed, so the Rigol sees no newer triggered shot before it stops.
+  2. A free-running LeCroy (NORM/AUTO) is switched to SINGLE; free-running, it emits a
+     trigger-out every shot, breaking rule 1.
+  3. A LeCroy capture is read at most once: `lecroy_armed` is cleared when a capture is consumed
+     and set only by a successful arm, so a failed re-arm re-arms, never re-reads.
+A missed shot is skipped, never back-filled.
+
+Kept so the Rigol can move into a worker process (Python 3.14 Linux defaults to forkserver,
+which pickles the target and arguments): each Rigol function opens and closes its own
+connection under one `_deadline`; the LeCroy connection lives within one `acquire_shot()` call;
+no connection object is module-wide; scope state is the plain `AcqState` dataclass owned by
+the caller.
 """
 import logging
 import os

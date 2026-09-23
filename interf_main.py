@@ -1,8 +1,5 @@
 # coding: utf-8
 """Acquisition loop: acquire_shot() until stopped, one log line per shot. Linux only.
-
-Step 1 of the refactor (docs/refactor_step1.md): shot data is discarded after logging; the raw
-writer comes next.
 """
 import logging.handlers
 import os
