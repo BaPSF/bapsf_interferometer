@@ -25,7 +25,7 @@ dependencies = [
   "h5py",
   "matplotlib",
   "PyQt5",
-  # Rigol DHO800 driver (interf_main.py: from lab_scopes.rigol import RigolDHO800).
-  # Pinned to the 0.4.0 release: Rigol 12-bit/WORD full-depth hardening.
+  # LeCroy + Rigol drivers (interf_raw.py). 0.4.0 is the minimum: it has the Rigol 12-bit/WORD
+  # full-depth read and LeCroy arm_master_single / wait_for_stop_then_complete.
   "lab-scopes @ git+https://github.com/hjia94/lab_scopes.git@v0.4.0",
 ]
