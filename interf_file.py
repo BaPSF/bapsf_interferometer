@@ -14,7 +14,7 @@ import os
 import h5py
 
 from lab_scopes.io.lecroy_files import read_trc_data_simplified, read_trc_data_no_header
-from interf_raw import get_calibration_factor
+from interf_analysis import get_calibration_factor
 
 #===============================================================================================================================================
 #<o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o>

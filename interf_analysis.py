@@ -59,7 +59,7 @@ Tunable parameter
 Quick example
 -------------
     from lab_scopes.io.lecroy_files import read_trc_data_simplified
-    from interf_raw import phase_from_raw, get_calibration_factor
+    from interf_analysis import phase_from_raw, get_calibration_factor
 
     refch, tarr, *_ = read_trc_data_simplified("C1-interf-shot00001.trc")
     plach, _,   *_ = read_trc_data_simplified("C2-interf-shot00001.trc")
@@ -67,7 +67,7 @@ Quick example
     t_ms, phase = phase_from_raw(tarr, refch, plach)
     n_e = phase * get_calibration_factor(f_uwave=288e9, plasma_length=0.4)
 
-Running this module directly (`python interf_raw.py`) loads a hard-coded sample
+Running this module directly (`python interf_analysis.py`) loads a hard-coded sample
 shot, runs both methods, prints their wall-clock times, and overlays the
 results — useful as a smoke test.
 

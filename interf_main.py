@@ -31,7 +31,7 @@ import time
 import datetime
 import os
 
-from interf_raw import phase_from_raw, get_calibration_factor
+from interf_analysis import phase_from_raw, get_calibration_factor
 from interf_file import find_latest_shot_number, init_hdf5_file, create_sourcefile_dataset
 from lab_scopes.io.lecroy_files import read_trc_data_simplified, read_trc_data_no_header
 from lab_scopes.rigol import RigolDHO800

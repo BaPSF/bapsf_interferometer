@@ -91,8 +91,8 @@ import time
 import datetime
 
 from read_hdf5 import unpack_datarun_sequence
-from interf_raw import get_calibration_factor
-# interf_raw is the script used to analyze raw interferometer data and computes the phase
+from interf_analysis import get_calibration_factor
+# interf_analysis is the script used to analyze raw interferometer data and computes the phase
 # Future todo: save raw data as well
 #===============================================================================================================================================
 

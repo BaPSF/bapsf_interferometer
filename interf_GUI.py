@@ -22,7 +22,7 @@ import h5py
 import os
 import time
 
-from interf_raw import get_calibration_factor
+from interf_analysis import get_calibration_factor
 
 
 #===============================================================================================================================================

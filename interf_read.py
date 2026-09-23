@@ -30,7 +30,7 @@ import h5py
 import numpy as np
 import matplotlib.pyplot as plt
 import datetime
-from interf_raw import get_calibration_factor
+from interf_analysis import get_calibration_factor
 
 def get_interf_data(year, month, day, hour, minute, second, data_path):
 	"""
