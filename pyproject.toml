@@ -29,6 +29,14 @@ dependencies = [
   "lab-scopes @ git+https://github.com/hjia94/lab_scopes.git@v0.4.0",
 ]
 
+[project.optional-dependencies]
+test = ["pytest"]
+
 [tool.setuptools]
-# Flat layout with several top-level modules: setuptools refuses to auto-discover them.
+# Flat layout with several top-level modules: setuptools refuses to auto-discover them. The explicit
+# list also keeps interf_sim/ and tests/ out of the installed package.
 py-modules = ["interf_main", "interf_raw", "interf_analysis", "interf_file"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
