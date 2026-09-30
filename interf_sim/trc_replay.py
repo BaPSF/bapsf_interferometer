@@ -226,7 +226,7 @@ class _Transport:
 class FakeRigolDHO800:
 	"""Stands in for lab_scopes RigolDHO800 with no Rigol on the network: every connection fails."""
 
-	def __init__(self, ip, port=5555, timeout=5.0, verbose=True, deadline=None):
+	def __init__(self, ip, port=5555, timeout=5.0, verbose=True):
 		raise ScopeConnectionError(f"cannot connect to scope at {ip}:{port}: no simulated Rigol")
 
 

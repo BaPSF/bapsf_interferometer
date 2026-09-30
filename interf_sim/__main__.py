@@ -2,7 +2,7 @@
 import argparse
 from pathlib import Path
 
-from interf_sim.scopes import TRC_DIR, ReplayLeCroy, run_main, trc_shots
+from interf_sim.trc_replay import TRC_DIR, ReplayLeCroy, run_main, trc_shots
 
 LOG_DIR = Path(__file__).resolve().parent / "log"  # kept apart from the production log directory
 

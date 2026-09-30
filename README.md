@@ -73,7 +73,7 @@ A Rigol operation that hangs is cut off by `SIGALRM` at its deadline, so it cann
 python -m interf_sim --limit 20    # from the repo root; --help lists the options
 ```
 
-- The `.trc` directory is `TRC_DIR` in [interf_sim/scopes.py](interf_sim/scopes.py) (`D:/data/raw data` on the lab PC). On Linux, edit that line or pass `--trc-dir`.
+- The `.trc` directory is `TRC_DIR` in [interf_sim/trc_replay.py](interf_sim/trc_replay.py) (`D:/data/raw data` on the lab PC). On Linux, edit that line or pass `--trc-dir`.
 - Shots play in trigger-time order, because the file counter wraps. Indexing reads one header per shot: 5–20 s for 29k shots, depending on the disk cache. Each machine trigger, every `--period` s (default 3; 0 = as fast as files load), serves the next shot.
 - There is no Rigol: every shot has `missing["rigol"]`.
 - When the shots run out, the simulator sends SIGINT, so the Ctrl-C stop and release path runs. The log goes to `interf_sim/log/`.
@@ -82,21 +82,15 @@ python -m interf_sim --limit 20    # from the repo root; --help lists the option
 Downstream code can take the same `RawShot` objects that `acquire_shot` returns:
 
 ```python
-from interf_sim.scopes import ReplayLeCroy, iter_shots, trc_shots
+from interf_sim.trc_replay import ReplayLeCroy, iter_shots, trc_shots
 
 for shot in iter_shots(ReplayLeCroy(trc_shots()[:10])):
     samples, wavedesc = shot.lecroy["C1"]
 ```
 
-### Tests
-
-`pip install ".[test]"`, then `pytest` from the repo root. The tests use synthetic `.trc` files; the comparison with recorded files runs only where `TRC_DIR` exists.
-
-- `tests/test_sim_fakes.py` checks the fakes against lab_scopes: method signatures, and decoded samples compared with lab_scopes' `.trc` reader.
-- `tests/test_sim_acquisition.py` pins current acquisition behavior: shot order, Rigol backoff, a channel without data, and main's log line and shutdown. When a bench result changes `interf_raw` or `interf_main`, update the expectation there in the same change.
-- `FakeLeCroyScope` subclasses the real `LeCroyScope`, so decoding and validation are the driver's own. It raises `SimFault`, which `except Exception` does not catch, in two cases:
-  - `interf_raw` calls a driver method the fake does not override and that method reaches the scope. Override the method in the fake; the signature test then checks it against lab_scopes.
-  - A capture is read twice (same-shot rule 3).
+`FakeLeCroyScope` subclasses the real `LeCroyScope`, so decoding and validation are the driver's own. It raises `SimFault`, which `except Exception` does not catch, in two cases:
+- `interf_raw` calls a driver method the fake does not override and that method reaches the scope. Override the method in `FakeLeCroyScope`, keeping the lab_scopes signature.
+- A capture is read twice (same-shot rule 3).
 
 ## Files
 
@@ -107,7 +101,6 @@ for shot in iter_shots(ReplayLeCroy(trc_shots()[:10])):
 | [interf_analysis.py](interf_analysis.py) | Phase extraction (`phase_from_raw`, which uses the cross-spectral density; `phase_from_hilbert`, which is slower) and `get_calibration_factor` |
 | [interf_file.py](interf_file.py) | HDF5 schema and writers for the daily interferometer file (previous acquisition) |
 | [interf_sim/](interf_sim/) | Offline simulation: scope fakes that replay `.trc` files (not installed by `pip install .`) |
-| [tests/](tests/) | pytest suite for the fakes and for acquisition behavior on them |
 
 The live GUI will be re-implemented under EPICS. The HDF5 readers and the datarun merge scripts may return later on this branch.
 
