@@ -71,10 +71,12 @@ A Rigol operation that hangs is cut off by `SIGALRM` at its deadline, so it cann
 
 ```bash
 python -m interf_sim --limit 20    # from the repo root; --help lists the options
+python -m interf_sim --limit 20 --repeat-traces  # cycle available traces into 20 synthetic shots
 ```
 
 - The `.trc` directory is `TRC_DIR` in [interf_sim/trc_replay.py](interf_sim/trc_replay.py) (`D:/data/raw data` on the lab PC). On Linux, edit that line or pass `--trc-dir`.
 - Shots play in trigger-time order, because the file counter wraps. Indexing reads one header per shot: 5–20 s for 29k shots, depending on the disk cache. Each machine trigger, every `--period` s (default 3; 0 = as fast as files load), serves the next shot.
+- `--repeat-traces` requires `--limit`. It cycles the indexed shots until it has exactly that many entries, assigning consecutive counters from the first selected counter. The channel dictionaries refer to the original `.trc` files, so their recorded trigger timestamps do not change.
 - There is no Rigol: every shot has `missing["rigol"]`.
 - When the shots run out, the simulator sends SIGINT, so the Ctrl-C stop and release path runs. The log goes to `interf_sim/log/`.
 - Transfers take only the file read time, so `critical_path_s` is shorter than on the scopes. The logged `dt` follows the recorded trigger times, not `--period`.

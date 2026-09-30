@@ -2,7 +2,7 @@
 import argparse
 from pathlib import Path
 
-from interf_sim.trc_replay import TRC_DIR, ReplayLeCroy, run_main, trc_shots
+from interf_sim.trc_replay import TRC_DIR, ReplayLeCroy, repeat_trc_shots, run_main, trc_shots
 
 LOG_DIR = Path(__file__).resolve().parent / "log"  # kept apart from the production log directory
 
@@ -13,7 +13,11 @@ def main():
 	parser.add_argument("--period", type=float, default=3.0, help="s between machine triggers; 0 = as fast as files load (default: 3)")
 	parser.add_argument("--start-shot", type=int, help="file counter to start at (default: the earliest trigger)")
 	parser.add_argument("--limit", type=int, help="number of shots to serve (default: all)")
+	parser.add_argument("--repeat-traces", action="store_true",
+		help="cycle the available trace files for exactly --limit shots with consecutive counters")
 	args = parser.parse_args()
+	if args.repeat_traces and (args.limit is None or args.limit < 1):
+		parser.error("--repeat-traces requires --limit to be a positive integer")
 
 	shots = trc_shots(args.trc_dir)
 	if args.start_shot is not None:
@@ -21,7 +25,11 @@ def main():
 		if args.start_shot not in counters:
 			parser.error(f"no shot {args.start_shot} in {args.trc_dir}")
 		shots = shots[counters.index(args.start_shot):]
-	run_main(ReplayLeCroy(shots[:args.limit], args.period), LOG_DIR)
+	if args.repeat_traces:
+		shots = repeat_trc_shots(shots, args.limit)
+	else:
+		shots = shots[:args.limit]
+	run_main(ReplayLeCroy(shots, args.period), LOG_DIR)
 
 
 if __name__ == "__main__":
