@@ -301,8 +301,8 @@ def iter_shots(lecroy):
 			interf_raw.release_scopes()
 
 
-def run_main(lecroy, log_dir):
-	"""interf_main.main() unmodified on the fakes; returns after `lecroy` has served every shot.
+def run_main(lecroy, log_dir, raw_output=None):
+	"""Run interf_main.main() on the fakes; return after `lecroy` has served every shot.
 
 	Exhaustion sends SIGINT, as an operator's Ctrl-C, so main's stop and release path runs. The stop
 	flag and signal handlers main changes are restored, so it can run again in the same process.
@@ -312,7 +312,7 @@ def run_main(lecroy, log_dir):
 	try:
 		with simulated_scopes(lecroy), mock.patch.object(interf_main, "LOG_DIR", str(log_dir)), \
 				mock.patch.object(interf_main, "_stop", False):
-			interf_main.main()
+			interf_main.main(raw_output=raw_output)
 	finally:
 		for s, handler in handlers.items():
 			signal.signal(s, handler)

@@ -71,17 +71,19 @@ def _shot_line(shot, trig, prev_trig):
 	return " | ".join(parts)
 
 
-def _handle_shot(shot, prev_trig):
-	"""Log one shot; returns the trigger time the next shot's dt is measured from."""
+def _handle_shot(shot, prev_trig, raw_output=None):
+	"""Write and log one shot; return the trigger time used by the next shot."""
 	# Every channel of one capture shares a trigger; the first WAVEDESC stands for all.
 	trig = _trigger_time(next(iter(shot.lecroy.values()))[1]) if shot.lecroy else None
+	if raw_output is not None:
+		raw_output.write(shot)
 	log.log(logging.WARNING if shot.missing else logging.INFO, _shot_line(shot, trig, prev_trig))
 	# None after a shot without a trigger time, so the next dt prints "-" rather than spanning
 	# two captures and reading as a skipped shot.
 	return trig
 
 
-def main():
+def main(raw_output=None):
 	if not hasattr(signal, "setitimer"):
 		sys.exit("interf_main: Linux only (the Rigol deadline needs signal.setitimer)")
 	_setup_logging()
@@ -96,7 +98,7 @@ def main():
 			try:
 				shot = acquire_shot(state, stop_requested)
 				if shot is not None:
-					prev_trig = _handle_shot(shot, prev_trig)
+					prev_trig = _handle_shot(shot, prev_trig, raw_output)
 			except Exception:
 				# Scope errors are handled inside acquire_shot, so this is a bug. Log it and keep the
 				# loop, so an exit still restores the scopes.
