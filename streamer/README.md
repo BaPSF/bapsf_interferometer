@@ -79,7 +79,9 @@ each `io.buffer_drop`, including the dropped and incoming shot indexes.
 
 The consumer timing log records socket receives and output writes. Remote
 launches, reconnects, retries, SSH-certificate waits, and notification failures
-are also recorded when those features are enabled.
+are also recorded when those features are enabled. Receive and write records
+include both the consumer-local step and the payload's run-wide shot index so
+analysis remains aligned across consumer restarts.
 
 ## Keys and connection security
 
@@ -350,6 +352,34 @@ valid certificate. It resumes recovery after that replacement appears.
 Notification failures never interrupt output. Main-process failures are
 recorded as `notification.failed` timing events. The certificate monitor stops
 with the producer and does not itself open an SSH connection.
+
+## Analyzing a remote experiment
+
+Generate a point-in-time Markdown report from a remote-server configuration:
+
+```bash
+python -m streamer.analyze_remote_experiment \
+    streamer/conf/bobby_to_nersc_24h_20261001.conf \
+    bobby-nersc-report.md \
+    --total-shots 28800 \
+    --interval-seconds 3
+```
+
+An installed package also provides the equivalent `interf-stream-analyze`
+command. The analyzer derives local producer timing and stdout log names from
+the configured consumer logs; use `--producer-log` or `--producer-stdout` to
+override either path. `--total-shots` is optional for an ongoing acquisition,
+and the shot interval is inferred from the producer timing log when it is not
+specified.
+
+The report covers progress, failures, cadence and latency distributions,
+buffer occupancy, remote storage, process state, sampled raw payload volume,
+latency incidents, and an estimate of configured wire compression. It uses one
+multiplexed SSH connection for every remote read. To borrow a control
+connection owned by an active producer, pass `--ssh-control-path PATH` or set
+`BAPSF_INTERFEROMETER_SSH_CONTROL_PATH`; the analyzer does not close a borrowed
+connection. `--skip-compression` avoids re-encoding sampled arrays while still
+measuring their raw size.
 
 ## Running a consumer without ADIOS2
 
