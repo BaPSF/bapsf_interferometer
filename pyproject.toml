@@ -36,6 +36,7 @@ compression = ["blosc2>=4,<5"]
 
 [project.scripts]
 interf-stream-consumer = "streamer.consumer:main"
+interf-stream-analyze = "streamer.analyze_remote_experiment:main"
 
 [tool.setuptools]
 # Flat layout with several top-level modules: setuptools refuses to auto-discover them. The explicit
