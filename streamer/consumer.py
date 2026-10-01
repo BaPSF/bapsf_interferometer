@@ -166,6 +166,9 @@ def receive_steps(
             receive_duration = time.perf_counter() - receive_start
             if variables is None:
                 return
+            shot_index = None
+            if "shot_index" in variables:
+                shot_index = int(variables["shot_index"].reshape(-1)[0])
             receive_fields = {
                 "step": step,
                 "variables": list(variables),
@@ -173,6 +176,8 @@ def receive_steps(
                 "completed_at": receive_completed_at,
                 "duration_seconds": receive_duration,
             }
+            if shot_index is not None:
+                receive_fields["shot"] = shot_index
             timing_log.record("socket.receive", **receive_fields)
             timing_log.record("socket.receive_all", **receive_fields)
 
@@ -191,6 +196,7 @@ def receive_steps(
                 timing_log.record(
                     "io.write",
                     step=step,
+                    **({"shot": shot_index} if shot_index is not None else {}),
                     called_at=write_called_at,
                     duration_seconds=time.perf_counter() - write_start,
                     status="error",
@@ -200,6 +206,7 @@ def receive_steps(
             timing_log.record(
                 "io.write",
                 step=step,
+                **({"shot": shot_index} if shot_index is not None else {}),
                 called_at=write_called_at,
                 duration_seconds=time.perf_counter() - write_start,
                 status="ok",
