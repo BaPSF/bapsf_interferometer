@@ -29,7 +29,8 @@ from lab_scopes.lecroy import LeCroyNoDataError, LeCroyScope, LeCroyWavedesc, wa
 import interf_main
 import interf_raw
 
-TRC_DIR = Path("D:/data/raw data")  # recorded shots on this PC; on Linux edit this line or pass --trc-dir
+# TRC_DIR = Path("D:/data/raw data")  # recorded shots on this PC; on Linux edit this line or pass --trc-dir
+TRC_DIR = Path("/home/adios/shared/Software/LAPD/data")
 
 # LeCroy auto-save name <channel>-<title>-shot<counter>.trc. The counter wraps (the recording in
 # TRC_DIR runs 68015..99998, then 0..57507), so shots are ordered by trigger time, never by counter.
@@ -75,6 +76,24 @@ def trc_shots(directory=TRC_DIR):
 	return [(counter, files) for _, counter, files in keyed]
 
 
+def repeat_trc_shots(shots, limit):
+	"""Exactly `limit` synthetic shots made by cycling `shots` with consecutive counters.
+
+	The first synthetic counter is the first source counter. Each synthetic shot gets its own channel
+	dictionary, but its paths still refer to the source .trc files. The WAVEDESC trigger timestamps in
+	the files are unchanged.
+	"""
+	if not shots:
+		raise ValueError("cannot repeat an empty shot list")
+	if limit < 0:
+		raise ValueError("repeat limit cannot be negative")
+	first_counter = shots[0][0]
+	return [
+		(first_counter + i, dict(shots[i % len(shots)][1]))
+		for i in range(limit)
+	]
+
+
 def _wavedesc(content, path):
 	if len(content) < TRACE_DATA_OFFSET or content[:2] != b"#9" \
 			or content[TRC_BLOCK_PREFIX_BYTES:TRC_BLOCK_PREFIX_BYTES + 8] != b"WAVEDESC":
@@ -101,6 +120,7 @@ class ReplayLeCroy:
 		self.read = set()  # channels of `record` already acquired: same-shot rule 3 allows one read
 		self._armed_at = 0.0
 		self._clock0 = time.monotonic()
+		self._trigger_at = None
 
 	@property
 	def exhausted(self):
@@ -110,6 +130,17 @@ class ReplayLeCroy:
 		self.mode = mode
 		if mode == "SINGLE":
 			self._armed_at = time.monotonic()
+			if self.shot_period > 0:
+				n = math.ceil((self._armed_at - self._clock0) / self.shot_period)
+				self._trigger_at = self._clock0 + n * self.shot_period
+			else:
+				self._trigger_at = None
+
+	def time_until_trigger(self):
+		"""Seconds until the armed trigger; None when no timed trigger is pending."""
+		if self.mode != "SINGLE" or self.exhausted or self._trigger_at is None:
+			return None
+		return max(0.0, self._trigger_at - time.monotonic())
 
 	def update(self):
 		"""Capture a machine trigger that has occurred since the SINGLE arm."""
@@ -120,10 +151,8 @@ class ReplayLeCroy:
 			if notify is not None:
 				notify()
 			return
-		if self.shot_period > 0:
-			n = math.ceil((self._armed_at - self._clock0) / self.shot_period)
-			if time.monotonic() < self._clock0 + n * self.shot_period:
-				return
+		if self._trigger_at is not None and time.monotonic() < self._trigger_at:
+			return
 		counter, self.record = self.shots[len(self.captured)]
 		self.captured.append(counter)
 		self.read = set()
@@ -166,7 +195,13 @@ class FakeLeCroyScope(LeCroyScope):
 			lecroy = self.scope.live()
 			if lecroy.mode == "STOP" and lecroy.sweeps >= 1:
 				return True
-			time.sleep(poll)
+			left = t_end - time.monotonic()
+			if left <= 0:
+				break
+			until_trigger = lecroy.time_until_trigger()
+			# Wait for the absolute cadence deadline, not one full shot period after the
+			# preceding iteration. The timeout still bounds stop-request latency.
+			time.sleep(min(left, until_trigger) if until_trigger is not None else min(left, poll))
 		return False
 
 	def acquire(self, trace, seg=0, raw=False):
@@ -266,8 +301,8 @@ def iter_shots(lecroy):
 			interf_raw.release_scopes()
 
 
-def run_main(lecroy, log_dir):
-	"""interf_main.main() unmodified on the fakes; returns after `lecroy` has served every shot.
+def run_main(lecroy, log_dir, raw_output=None):
+	"""Run interf_main.main() on the fakes; return after `lecroy` has served every shot.
 
 	Exhaustion sends SIGINT, as an operator's Ctrl-C, so main's stop and release path runs. The stop
 	flag and signal handlers main changes are restored, so it can run again in the same process.
@@ -277,7 +312,7 @@ def run_main(lecroy, log_dir):
 	try:
 		with simulated_scopes(lecroy), mock.patch.object(interf_main, "LOG_DIR", str(log_dir)), \
 				mock.patch.object(interf_main, "_stop", False):
-			interf_main.main()
+			interf_main.main(raw_output=raw_output)
 	finally:
 		for s, handler in handlers.items():
 			signal.signal(s, handler)

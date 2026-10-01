@@ -24,12 +24,24 @@ dependencies = [
   "scipy",
   "h5py",
   "matplotlib",
+  "adios2",
+  "PyNaCl",
   # LeCroy + Rigol drivers (interf_raw.py). 0.4.0 is the minimum: it has the Rigol 12-bit/WORD
   # full-depth read and LeCroy arm_master_single / wait_for_stop_then_complete.
   "lab-scopes @ git+https://github.com/hjia94/lab_scopes.git@v0.4.0",
 ]
 
+[project.optional-dependencies]
+compression = ["blosc2>=4,<5"]
+
+[project.scripts]
+interf-stream-consumer = "streamer.consumer:main"
+
 [tool.setuptools]
 # Flat layout with several top-level modules: setuptools refuses to auto-discover them. The explicit
-# list also keeps interf_sim/ out of the installed package.
+# list keeps the flat modules explicit while installing both packages.
 py-modules = ["interf_main", "interf_raw", "interf_analysis", "interf_file"]
+packages = ["interf_sim", "streamer"]
+
+[tool.setuptools.package-data]
+streamer = ["conf/*.conf"]

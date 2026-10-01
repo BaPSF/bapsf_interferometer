@@ -63,21 +63,27 @@ A Rigol operation that hangs is cut off by `SIGALRM` at its deadline, so it cann
 - `missing`: `{"lecroy" | "rigol": reason}`. A missing Rigol has an empty data dict. `missing["lecroy"]` lists failed channels, and `lecroy` still holds the channels that were read;
 - `host_time` and `critical_path_s`.
 
-`interf_main.py` currently logs each shot and discards it.
+`interf_main.py` logs each shot and can optionally send it to a `RawOutput`
+object before logging. Its normal command-line entry point passes no output, so
+live acquisition behavior remains unchanged.
 
 ## Offline simulation
 
-`interf_sim/` runs the unmodified `interf_main` and `interf_raw` on recorded LeCroy `.trc` files, and contacts no scope. It replaces only the two lab_scopes driver classes that `interf_raw` imports, so a change to `interf_main` or `interf_raw` takes effect in the simulation without editing it.
+`interf_sim/` runs `interf_main` and `interf_raw` on recorded LeCroy `.trc` files, and contacts no scope. It replaces only the two lab_scopes driver classes that `interf_raw` imports, so a change to `interf_main` or `interf_raw` takes effect in the simulation without editing it.
 
 ```bash
 python -m interf_sim --limit 20    # from the repo root; --help lists the options
+python -m interf_sim --limit 20 --repeat-traces  # cycle available traces into 20 synthetic shots
+python -m interf_sim --raw-output raw.bp --limit 20  # write complete raw shots to BP5
 ```
 
 - The `.trc` directory is `TRC_DIR` in [interf_sim/trc_replay.py](interf_sim/trc_replay.py) (`D:/data/raw data` on the lab PC). On Linux, edit that line or pass `--trc-dir`.
 - Shots play in trigger-time order, because the file counter wraps. Indexing reads one header per shot: 5–20 s for 29k shots, depending on the disk cache. Each machine trigger, every `--period` s (default 3; 0 = as fast as files load), serves the next shot.
+- `--repeat-traces` requires `--limit`. It cycles the indexed shots until it has exactly that many entries, assigning consecutive counters from the first selected counter. The channel dictionaries refer to the original `.trc` files, so their recorded trigger timestamps do not change.
 - There is no Rigol: every shot has `missing["rigol"]`.
 - When the shots run out, the simulator sends SIGINT, so the Ctrl-C stop and release path runs. The log goes to `interf_sim/log/`.
 - Transfers take only the file read time, so `critical_path_s` is shorter than on the scopes. The logged `dt` follows the recorded trigger times, not `--period`.
+- `--raw-output` enables the integrated output package. It accepts a direct ADIOS output, an encrypted socket connection file, or a remote server configuration. See [streamer/README.md](streamer/README.md) for the payload and consumer commands.
 
 Downstream code can take the same `RawShot` objects that `acquire_shot` returns:
 
@@ -100,7 +106,8 @@ for shot in iter_shots(ReplayLeCroy(trc_shots()[:10])):
 | [interf_raw.py](interf_raw.py) | Same-shot raw acquisition from the LeCroy and the Rigol |
 | [interf_analysis.py](interf_analysis.py) | Phase extraction (`phase_from_raw`, which uses the cross-spectral density; `phase_from_hilbert`, which is slower) and `get_calibration_factor` |
 | [interf_file.py](interf_file.py) | HDF5 schema and writers for the daily interferometer file (previous acquisition) |
-| [interf_sim/](interf_sim/) | Offline simulation: scope fakes that replay `.trc` files (not installed by `pip install .`) |
+| [interf_sim/](interf_sim/) | Offline simulation: scope fakes that replay `.trc` files |
+| [streamer/](streamer/) | Buffered ADIOS/socket raw output, metadata encoding, consumer, security, compression, and remote restart support |
 
 The live GUI will be re-implemented under EPICS. The HDF5 readers and the datarun merge scripts may return later on this branch.
 
