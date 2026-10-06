@@ -17,6 +17,7 @@ from streamer.connection_security import (
 	decrypt_connection_info,
 	encrypt_connection_info,
 )
+from streamer import consumer
 from streamer.payload import decode_json, shot_variables
 from streamer.socket_protocol import receive_message, send_arrays
 
@@ -69,6 +70,27 @@ class MainIntegrationTests(unittest.TestCase):
 
 
 class TransportTests(unittest.TestCase):
+	def test_consumer_timing_records_include_payload_shot_index(self):
+		variables = {
+			"shot_index": np.array(42, dtype=np.uint64),
+			"samples": np.arange(3, dtype=np.int16),
+		}
+		timing_log = mock.Mock()
+		output = mock.Mock()
+		with mock.patch.object(
+			consumer,
+			"receive_message",
+			side_effect=(variables, None),
+		), mock.patch.object(
+			consumer,
+			"create_consumer_output",
+			return_value=output,
+		), mock.patch.object(consumer, "send_ack"), mock.patch("builtins.print"):
+			consumer.receive_steps(None, "out", "BP5", timing_log)
+
+		for call in timing_log.record.call_args_list:
+			self.assertEqual(call.kwargs["shot"], 42)
+
 	def test_generic_named_variables_round_trip_over_socket_protocol(self):
 		left, right = socket.socketpair()
 		try:
