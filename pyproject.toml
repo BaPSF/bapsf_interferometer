@@ -33,9 +33,13 @@ dependencies = [
 
 [project.optional-dependencies]
 compression = ["blosc2>=4,<5"]
+ioc = ["softioc>=4.7.2"]
+# CA clients, including the tests that read the IOC back over CA.
+clients = ["pyepics>=3.5.10"]
 
 [project.scripts]
 interf-stream-consumer = "streamer.consumer:main"
+diag-ioc = "diag_ioc.__main__:main"
 
 [tool.setuptools]
 # Flat layout with several top-level modules: setuptools refuses to auto-discover them. The explicit

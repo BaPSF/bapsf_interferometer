@@ -1,0 +1,30 @@
+# One diag_ioc instance per config: `systemctl enable --now diag-ioc@interferometer` runs
+# /etc/diag-ioc/interferometer.toml. User, group and paths below are placeholders.
+[Unit]
+Description=diag_ioc EPICS IOC (%i)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# Placeholder account. The acquisition user must be in this group to write to the unix link socket
+# (socket 0660 inside the 0750 runtime directory below).
+User=diag-ioc
+Group=diag-ioc
+# Placeholder checkout with its venv (pip install -e '.[ioc]').
+WorkingDirectory=/opt/bapsf_interferometer
+# EPICS_* settings, e.g. EPICS_CAS_INTF_ADDR_LIST, EPICS_PVAS_INTF_ADDR_LIST, EPICS_CA_MAX_ARRAY_BYTES.
+EnvironmentFile=-/etc/diag-ioc/%i.env
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/opt/bapsf_interferometer/.venv/bin/python -m diag_ioc --config /etc/diag-ioc/%i.toml
+# /run/diag-ioc/%i holds the link socket named by the config's listen = "unix:/run/diag-ioc/%i/link.sock".
+RuntimeDirectory=diag-ioc/%i
+RuntimeDirectoryMode=0750
+# SIGTERM: the IOC closes its listeners (removing the socket) and exits 0 within about a second.
+KillSignal=SIGTERM
+TimeoutStopSec=15
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

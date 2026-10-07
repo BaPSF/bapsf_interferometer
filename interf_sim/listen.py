@@ -13,6 +13,7 @@ import time
 import numpy as np
 
 from diag_ioc.link import LinkListener, address_arg
+from diag_ioc.outage import LOG_FORMAT
 from interf_analysis import analyze_shot
 from streamer.network_access import ipv4_network
 from streamer.payload import decode_json, shot_from_variables
@@ -51,7 +52,7 @@ def main(argv=None):
 	args = parser.parse_args(argv)
 	if args.ne_window_ms is not None and not args.ne_window_ms[0] < args.ne_window_ms[1]:
 		parser.error("--ne-window-ms: START must be before STOP")
-	logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s", stream=sys.stdout)
+	logging.basicConfig(level=logging.INFO, format=LOG_FORMAT, stream=sys.stdout)
 
 	def on_message(variables):
 		print(_shot_line(variables, args.analyze, args.ne_window_ms), flush=True)

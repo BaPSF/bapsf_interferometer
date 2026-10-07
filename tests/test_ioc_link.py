@@ -12,20 +12,11 @@ import numpy as np
 
 from diag_ioc.link import UNIX_PATH_MAX_BYTES, IocLink, LinkListener, parse_address
 from interf_sim.synthetic import make_raw_shot
+from ioc_harness import as_is, free_port, wait_for
 from streamer.network_access import create_tcp_listener
 from streamer.payload import shot_variables
 
 RECEIVE_TIMEOUT_S = 5.0
-
-
-def _free_port():
-	with socket.socket() as s:
-		s.bind(("127.0.0.1", 0))
-		return s.getsockname()[1]
-
-
-def _as_is(item, seq):  # IocLink encode for items that already are {name: array}
-	return item
 
 
 def _receive_while_writing(received, link, item):
@@ -115,7 +106,7 @@ class SizeCapTests(unittest.TestCase):
 	def test_oversized_message_drops_the_connection_and_later_shots_arrive(self):
 		received = queue.Queue()
 		with LinkListener("tcp:127.0.0.1:0", received.put, max_message_bytes=1000).start() as listener, \
-				IocLink(listener.address, encode=_as_is, retry_interval=0.05) as link:
+				IocLink(listener.address, encode=as_is, retry_interval=0.05) as link:
 			link.write({"big": np.zeros(2000, dtype=np.uint8)})
 			# A small shot can still be lost on the closed socket before the sender notices, so keep writing.
 			message = _receive_while_writing(received, link, {"small": np.zeros(10, dtype=np.uint8)})
@@ -124,7 +115,7 @@ class SizeCapTests(unittest.TestCase):
 
 class NoListenerTests(unittest.TestCase):
 	def test_writes_never_block_and_keep_only_the_newest(self):
-		with IocLink(f"tcp:127.0.0.1:{_free_port()}", encode=_as_is, retry_interval=60.0) as link:
+		with IocLink(f"tcp:127.0.0.1:{free_port()}", encode=as_is, retry_interval=60.0) as link:
 			t0 = time.perf_counter()
 			for i in range(100):
 				link.write({"i": np.array(i)})
@@ -135,14 +126,11 @@ class NoListenerTests(unittest.TestCase):
 			self.assertEqual(link.sent, 0)
 
 	def test_reconnects_when_the_listener_starts_late(self):
-		port = _free_port()
+		port = free_port()
 		received = queue.Queue()
-		with IocLink(f"tcp:127.0.0.1:{port}", encode=_as_is, retry_interval=0.1, connect_timeout=0.5) as link:
+		with IocLink(f"tcp:127.0.0.1:{port}", encode=as_is, retry_interval=0.1, connect_timeout=0.5) as link:
 			link.write({"x": np.arange(3)})
-			deadline = time.monotonic() + RECEIVE_TIMEOUT_S
-			while link.failed == 0:
-				self.assertLess(time.monotonic(), deadline, "first send did not fail")
-				time.sleep(0.01)
+			wait_for(lambda: link.failed, RECEIVE_TIMEOUT_S, "the first send to fail")
 			with LinkListener(f"tcp:127.0.0.1:{port}", received.put).start():
 				message = _receive_while_writing(received, link, {"x": np.arange(3)})
 				np.testing.assert_array_equal(message["x"], np.arange(3))
@@ -155,7 +143,7 @@ class CloseTests(unittest.TestCase):
 		accepted = []
 		threading.Thread(target=lambda: accepted.append(server.accept()[0]), daemon=True).start()
 		try:
-			link = IocLink(f"tcp:127.0.0.1:{server.getsockname()[1]}", encode=_as_is, send_timeout=30.0)
+			link = IocLink(f"tcp:127.0.0.1:{server.getsockname()[1]}", encode=as_is, send_timeout=30.0)
 			link.write({"big": np.zeros(64 << 20, dtype=np.uint8)})  # far beyond the socket buffers: sendall blocks
 			time.sleep(0.5)
 			if link.sent:  # Windows buffers all 64 MB on loopback, so no send is stuck for close() to unblock
@@ -169,7 +157,7 @@ class CloseTests(unittest.TestCase):
 				sock.close()
 
 	def test_write_after_close_raises(self):
-		link = IocLink(f"tcp:127.0.0.1:{_free_port()}")
+		link = IocLink(f"tcp:127.0.0.1:{free_port()}")
 		link.close()
 		with self.assertRaises(RuntimeError):
 			link.write(object())

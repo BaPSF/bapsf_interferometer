@@ -1,6 +1,7 @@
-"""Throttled logging of a persisting failure, shared by interf_main's outputs and the IOC link."""
+"""Logging shared by acquisition and the IOC: the line format, and throttled logging of a persisting failure."""
 import time
 
+LOG_FORMAT = "%(asctime)s %(levelname)s %(name)s: %(message)s"  # interf_main, diag_ioc and interf_sim.listen
 OUTAGE_LOG_INTERVAL_S = 300.0
 
 

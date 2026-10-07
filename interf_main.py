@@ -9,7 +9,7 @@ from pathlib import Path
 
 from lab_scopes.lecroy import LeCroyWavedesc, wavedesc_trigger_timestamp
 
-from diag_ioc.outage import Outage
+from diag_ioc.outage import LOG_FORMAT, Outage
 from interf_raw import AcqState, acquire_shot, release_scopes
 
 LOG_DIR = os.environ.get("INTERF_LOG_DIR", str(Path.home() / "data" / "log"))
@@ -35,7 +35,7 @@ def _setup_logging():
 	# Midnight rotation: ~29k lines/day, unattended for months.
 	file_handler = logging.handlers.TimedRotatingFileHandler(
 		os.path.join(LOG_DIR, "interf_acquire.log"), when="midnight", backupCount=30)
-	logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+	logging.basicConfig(level=logging.INFO, format=LOG_FORMAT,
 	                    handlers=[logging.StreamHandler(sys.stdout), file_handler])
 
 
