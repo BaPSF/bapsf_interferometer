@@ -25,6 +25,9 @@ _ACCEPT_RETRY_S = 1.0  # bounds the rate of a persistent accept() failure (e.g. 
 # (LeCroy 4 x 1M + Rigol 2 x 1M int16); 1 GiB leaves room for higher-resolution records
 # (4 x 50M LeCroy + 2 x 25M Rigol is ~0.5 GB) while refusing a corrupt or hostile size.
 MAX_MESSAGE_BYTES = 1 << 30
+# Longest unix socket path Linux accepts (sun_path holds 108 bytes with the terminating NUL). A longer
+# path would pass parse_address and then fail every bind and connect, so it is rejected here.
+UNIX_PATH_MAX_BYTES = 107
 
 
 def parse_address(text):
@@ -34,6 +37,9 @@ def parse_address(text):
 	"""
 	kind, _, rest = text.partition(":")
 	if kind == "unix" and rest:
+		size = len(os.fsencode(rest))
+		if size > UNIX_PATH_MAX_BYTES:
+			raise ValueError(f"link address {text!r}: the socket path is {size} bytes, over the {UNIX_PATH_MAX_BYTES}-byte limit")
 		return "unix", rest
 	if kind == "tcp":
 		host, _, port = rest.rpartition(":")

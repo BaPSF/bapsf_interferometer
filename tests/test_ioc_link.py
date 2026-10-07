@@ -1,5 +1,7 @@
+import os
 import queue
 import socket
+import sys
 import tempfile
 import threading
 import time
@@ -8,7 +10,7 @@ from pathlib import Path
 
 import numpy as np
 
-from diag_ioc.link import IocLink, LinkListener, parse_address
+from diag_ioc.link import UNIX_PATH_MAX_BYTES, IocLink, LinkListener, parse_address
 from interf_sim.synthetic import make_raw_shot
 from streamer.network_access import create_tcp_listener
 from streamer.payload import shot_variables
@@ -52,6 +54,24 @@ class ParseAddressTests(unittest.TestCase):
 		for text in ("", "unix:", "tcp:host", "tcp:host:", "tcp::5000", "tcp:host:x", "tcp:host:70000", "udp:h:1", "/tmp/x"):
 			with self.subTest(text=text), self.assertRaises(ValueError):
 				parse_address(text)
+
+	def test_unix_path_over_the_kernel_limit_is_rejected(self):
+		at_limit = "/tmp/" + "x" * (UNIX_PATH_MAX_BYTES - 5)
+		self.assertEqual(parse_address("unix:" + at_limit), ("unix", at_limit))
+		with self.assertRaises(ValueError):
+			parse_address("unix:" + at_limit + "x")
+		with self.assertRaises(ValueError):  # interf_main and interf_sim fail at startup, not on every send
+			IocLink("unix:" + at_limit + "x")
+
+	@unittest.skipUnless(sys.platform.startswith("linux"), "the 107-byte limit is Linux's (macOS allows 103)")
+	def test_a_socket_path_at_the_limit_binds(self):
+		with tempfile.TemporaryDirectory(dir="/tmp") as tmp:
+			name = UNIX_PATH_MAX_BYTES - len(os.fsencode(tmp)) - 1
+			if name < 1:
+				self.skipTest(f"temporary directory path too long: {tmp}")
+			path = f"{tmp}/{'s' * name}"
+			with LinkListener(f"unix:{path}", lambda variables: None).start():
+				self.assertTrue(Path(path).is_socket())
 
 
 class RoundTripTests(unittest.TestCase):
