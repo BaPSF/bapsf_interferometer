@@ -11,7 +11,7 @@ from interf_analysis import (FT_len, OFFSET_WINDOWS, analyze_shot, get_calibrati
                              rigol_trace)
 from interf_sim.synthetic import gaussian_phase, make_raw_shot, make_wavedesc, synthetic_shots, write_trc_shots
 from interf_sim.trc_replay import ReplayLeCroy, iter_shots, trc_shots
-from streamer.adios_io import ADIOS2_AVAILABLE, AdiosIO
+from streamer.adios_io import ADIOS2_AVAILABLE, AdiosIO, iter_steps, read_step
 from streamer.payload import SCHEMA_VERSION, shot_from_variables, shot_variables
 
 N = FT_len * 200
@@ -208,29 +208,35 @@ class PayloadRoundTripTests(unittest.TestCase):
 		                 (7, shot.host_time, shot.critical_path_s))
 
 	@unittest.skipUnless(ADIOS2_AVAILABLE, "adios2 is not installed")
-	def test_steps_read_from_a_multi_step_bp_file_decode(self):
-		import adios2
-
-		shots = [make_raw_shot(4096, DT, noise_v=0.01, host_time=HOST_TIME + 3 * i, rng=np.random.default_rng(i))
-		         for i in range(2)]
+	def test_archived_steps_with_changing_layout_decode(self):
+		# As in a real archive, the layout changes per step: record length and missing_json length
+		# vary, the Rigol is absent from odd steps, and C4 is absent from step 2.
+		layouts = [(8192, True), (4096, False), (8192, True), (6144, False)]
+		shots = [make_raw_shot(n, DT, noise_v=0.01, host_time=HOST_TIME + 3 * i, rigol=rigol, rng=np.random.default_rng(i))
+		         for i, (n, rigol) in enumerate(layouts)]
+		del shots[2].lecroy["C4"]
+		shots[2].missing["lecroy"] = "C4 LeCroyNoDataError: C4: no .trc file for this shot"
 		with tempfile.TemporaryDirectory() as tmp:
-			path = str(Path(tmp) / "raw.bp")
-			output = AdiosIO(SimpleNamespace(destination=path, engine="BP5", append_output=False))
+			path = Path(tmp) / "raw.bp"
+			output = AdiosIO(SimpleNamespace(destination=str(path), engine="BP5", append_output=False))
 			for i, shot in enumerate(shots):
 				output.write_data(shot_variables(shot, i))
 			output.close()
-			reader = adios2.FileReader(path)
-			try:
-				names = list(reader.available_variables())
-				steps = [{name: reader.read(name, step_selection=[i, 1]) for name in names} for i in range(len(shots))]
-			finally:
-				reader.close()
+			steps = list(iter_steps(path))
+			last = read_step(path, len(shots) - 1)
+			with self.assertRaises(IndexError):
+				read_step(path, len(shots))
+		self.assertEqual(len(steps), len(shots))
 		for i, (shot, variables) in enumerate(zip(shots, steps)):
 			with self.subTest(step=i):
 				decoded = shot_from_variables(variables)
-				self.assertEqual((decoded.shot_index, decoded.host_time), (i, shot.host_time))
+				self.assertEqual((decoded.shot_index, decoded.host_time, decoded.missing), (i, shot.host_time, shot.missing))
 				_assert_channels_equal(self, decoded.lecroy, shot.lecroy)
 				_assert_channels_equal(self, decoded.rigol, shot.rigol)
+				via_archive = analyze_shot(decoded)
+				for name, port in analyze_shot(shot).ports.items():
+					np.testing.assert_array_equal(via_archive.ports[name].ne, port.ne)
+		self.assertEqual(set(last), set(steps[-1]))
 
 	def test_unknown_schema_version_is_rejected(self):
 		variables = shot_variables(_shot(rigol=False), 0)

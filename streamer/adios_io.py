@@ -65,3 +65,32 @@ class AdiosIO(IO):
         if self._stream is not None:
             self._stream.close()
             self._stream = None
+
+
+def iter_steps(path):
+    """Yield each step of a raw-output BP file as {name: array}, as that step was written.
+
+    A step holds only its own variables (a channel or scope that was not read is absent) at its
+    own shapes (missing_json and record lengths change between steps). Prefer this to
+    adios2.FileReader.read(name, step_selection=[i, 1]): ADIOS2 counts step_selection per
+    variable, so a variable absent from earlier steps returns a later step's data, and a read
+    without an explicit count takes the variable's first shape.
+    """
+    if not ADIOS2_AVAILABLE:
+        raise RuntimeError("adios2 is not available")
+    with adios2.Stream(str(path), "r") as stream:
+        for _ in stream.steps():
+            yield {name: stream.read(name) for name in stream.available_variables()}
+
+
+def read_step(path, index):
+    """Step `index` (from 0) as {name: array}, like iter_steps; earlier steps are skipped unread."""
+    if not ADIOS2_AVAILABLE:
+        raise RuntimeError("adios2 is not available")
+    if index < 0:
+        raise IndexError(f"step {index}: index must be >= 0")
+    with adios2.Stream(str(path), "r") as stream:
+        for current, _ in enumerate(stream.steps()):
+            if current == index:
+                return {name: stream.read(name) for name in stream.available_variables()}
+    raise IndexError(f"{path} has no step {index}")
