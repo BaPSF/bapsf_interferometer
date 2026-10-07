@@ -9,23 +9,28 @@ for cross-checking.
 
 `python interf_analysis.py` runs both on a hard-coded .trc shot and overlays them (smoke test).
 
+analyze_shot() is the live path, raw scope codes of one shot -> per-port phase and density; the same
+call reproduces published results offline from the ADIOS archive.
+
 History: Patrick (2018-09) original CSD method, manual 2π fix-ups later automated
 (now np.unwrap), last edit 2020-09-13. Jia (2021-07-15) mlab.csd -> scipy.fft.
 Steve (2024-05-20) phase_from_hilbert. Jia (2024-05-23) CSD vectorization. Jia (2026-05-04)
 Hilbert cleanup and speed-up.
 """
 import math
+import time
+from dataclasses import dataclass
+
 import scipy
 import numpy as np
-import matplotlib.pyplot as plt
 from scipy import constants as const
 from scipy import signal
 
-from lab_scopes.io.lecroy_files import read_trc_data_simplified
-import time
+from lab_scopes.lecroy import LeCroyWavedesc
 
 #============================================================================
 FT_len = 512  # phase_from_raw window: larger -> finer frequency resolution, coarser time resolution
+CSD_SKIP_BINS = 10  # lowest FFT bins excluded from the CSD peak search, so DC is never the peak
 #============================================================================
 
 def get_calibration_factor(f_uwave = 288e9, plasma_length = 0.4):
@@ -122,9 +127,8 @@ def correlation_spectrogram(tarr, refch, plach, FT_len):
 	csd /= window_power  # Normalize by the sum of the window squared and FT_len
 
 	# Find the peak of the cross-spectral density
-	npts_to_ignore = 10                 # skip 10 initial points to avoid DC offset being the largest value
 	csd_abs = np.abs(csd)
-	adx = np.argmax(csd_abs[:, npts_to_ignore:], axis=1) + npts_to_ignore
+	adx = np.argmax(csd_abs[:, CSD_SKIP_BINS:], axis=1) + CSD_SKIP_BINS
 	row_index = np.arange(valid_segments)
 	csd_angle = np.angle(csd[row_index, adx])
 	csd_angle = np.where(csd_angle < 0, csd_angle + 2*math.pi, csd_angle)
@@ -133,14 +137,14 @@ def correlation_spectrogram(tarr, refch, plach, FT_len):
 	csd_mag[:valid_segments] = csd_abs[row_index, adx]
 	return ttt[:valid_segments]+tarr[0], -csd_ang[:valid_segments], csd_mag[:valid_segments]
 
-def phase_from_raw(tarr, refch, plach):
+def phase_from_raw(tarr, refch, plach, ft_len=FT_len):
 	'''
-	CSD phase at the peak bin of each FT_len-point Hanning window, unwrapped, minus the mean of
+	CSD phase at the peak bin of each ft_len-point Hanning window, unwrapped, minus the mean of
 	the first 5 windows (taken as pre-plasma). One point per window, at the window start.
 	'''
 	offset_range = range(5)
 
-	ttt, csd_ang, csd_mag = correlation_spectrogram(tarr, refch, plach, FT_len)
+	ttt, csd_ang, csd_mag = correlation_spectrogram(tarr, refch, plach, ft_len)
 
 	t_ms = ttt * 1000
 
@@ -200,11 +204,137 @@ def phase_from_hilbert(tarr, refch, plach):
 	return t_ms, dphi
 
 
+#============================================================================
+# Live analysis: one shot's raw scope codes -> per-port phase and density
+#============================================================================
+
+def lecroy_trace(samples, wavedesc):
+	'''(t_s, volts) of one LeCroy channel from its raw int16 codes and 346-byte WAVEDESC.'''
+	wd = LeCroyWavedesc(wavedesc)
+	volts = wd.wd.vertical_gain * np.asarray(samples, dtype=np.float64) - wd.wd.vertical_offset
+	t_s = wd.time_array
+	n = min(len(t_s), len(volts))  # guards a WAVEDESC whose sample count disagrees with the samples read
+	return t_s[:n], volts[:n]
+
+
+def rigol_trace(samples, metadata):
+	'''(t_s, volts) of one Rigol channel from its uint16 12-bit codes and RigolDHO800.read_channel() metadata.'''
+	codes = np.asarray(samples, dtype=np.float64)
+	volts = (codes - metadata["y_origin"] - metadata["y_reference"]) * metadata["y_increment"]
+	t_s = metadata["x_origin"] + (np.arange(codes.size) - metadata["x_reference"]) * metadata["x_increment"]
+	return t_s, volts
+
+
+_TRACES = {"lecroy": lecroy_trace, "rigol": rigol_trace}
+
+
+@dataclass(frozen=True)
+class Port:
+	name: str
+	scope: str  # "lecroy" | "rigol": the shot attribute holding its channels
+	ref_ch: str
+	plasma_ch: str
+	freq_hz: float
+
+
+# Also the frequencies of interf_file's phase groups. P40's channels repeat the defaults of
+# interf_raw.RIGOL_REF_CH / RIGOL_PLA_CH, which are env-configurable there; a caller with other
+# channels passes its own `ports`.
+PORTS = (
+	Port("P20", "lecroy", "C1", "C2", 288e9),
+	Port("P29", "lecroy", "C3", "C4", 282e9),
+	Port("P40", "rigol", "C1", "C2", 288e9),
+)
+
+
+@dataclass
+class PortResult:
+	name: str
+	t_ms: np.ndarray  # window starts on the scope's time axis
+	phase: np.ndarray  # rad
+	ne: np.ndarray  # m^-3, path-averaged (see get_calibration_factor): phase * cal
+	# Mean of the undecimated ne over analyze_shot's ne_window_ms; nan when the port is missing, no window
+	# is set, or the trace does not span the whole window (a partial span would bias the mean).
+	ne_mean: float
+	cal: float  # m^-3/rad
+	freq_hz: float
+	decimation: int  # stride applied to t_ms, phase and ne
+	missing: str | None  # reason the port has no data; the arrays are then empty
+
+
+@dataclass
+class ShotResult:
+	shot_index: int | None  # link sequence number; None for an interf_raw.RawShot
+	host_time: float
+	critical_path_s: float
+	acq_missing: dict[str, str]  # shot.missing as acquired
+	ports: dict[str, PortResult]
+	analysis_s: float
+
+
+def analyze_shot(shot, ports=PORTS, plasma_length=0.4, ft_len=FT_len, max_points=None, ne_window_ms=None):
+	'''ShotResult of an interf_raw.RawShot or streamer.payload.DecodedShot.
+
+	Never raises on bad data: a port whose channels are absent or whose analysis fails is returned
+	with `missing` set, and the other ports are unaffected. Above `max_points` per port, arrays are
+	kept every k-th point, k = ceil(n / max_points). ne_window_ms = (start, stop) on every port's
+	time axis (trigger-relative on both scopes) sets PortResult.ne_mean; ValueError if start >= stop.
+	'''
+	if ne_window_ms is not None and not ne_window_ms[0] < ne_window_ms[1]:
+		raise ValueError(f"ne_window_ms {ne_window_ms}: start must be before stop")
+	t0 = time.perf_counter()
+	results = {p.name: _analyze_port(shot, p, plasma_length, ft_len, max_points, ne_window_ms) for p in ports}
+	return ShotResult(getattr(shot, "shot_index", None), shot.host_time, shot.critical_path_s,
+	                  dict(shot.missing), results, time.perf_counter() - t0)
+
+
+def _analyze_port(shot, port, plasma_length, ft_len, max_points, ne_window_ms):
+	cal = get_calibration_factor(port.freq_hz, plasma_length)
+	channels = getattr(shot, port.scope)
+	absent = [ch for ch in (port.ref_ch, port.plasma_ch) if ch not in channels]
+	if absent:
+		reason = shot.missing.get(port.scope)
+		if reason is None:
+			# Data on the scope but not on these channels: a port/channel mapping mismatch, not an outage.
+			reason = f"{'/'.join(absent)} not acquired" + (f"; {port.scope} has {', '.join(channels)}" if channels else "")
+		return _missing_port(port, cal, reason)
+	try:
+		trace = _TRACES[port.scope]
+		t_s, ref = trace(*channels[port.ref_ch])
+		_, pla = trace(*channels[port.plasma_ch])
+		# Mean removed per channel as main's (bench-validated) read_lecroy/read_rigol did before phase_from_raw.
+		ref, pla = ref - ref.mean(), pla - pla.mean()
+		n = min(len(ref), len(pla))
+		t_ms, phase = phase_from_raw(t_s[:n], ref[:n], pla[:n], ft_len)
+	except Exception as e:
+		return _missing_port(port, cal, f"analysis error: {type(e).__name__}: {e}")
+	ne = phase * cal
+	ne_mean = _window_mean(t_ms, ne, ne_window_ms)
+	k = 1
+	if max_points is not None and ne.size > max_points:
+		k = math.ceil(ne.size / max_points)
+		t_ms, phase, ne = t_ms[::k], phase[::k], ne[::k]
+	return PortResult(port.name, t_ms, phase, ne, ne_mean, cal, port.freq_hz, k, None)
+
+
+def _window_mean(t_ms, ne, window_ms):
+	if window_ms is None or t_ms.size == 0 or t_ms[0] > window_ms[0] or t_ms[-1] < window_ms[1]:
+		return math.nan
+	inside = (t_ms >= window_ms[0]) & (t_ms <= window_ms[1])
+	return float(ne[inside].mean()) if inside.any() else math.nan  # none inside: window narrower than the point spacing
+
+
+def _missing_port(port, cal, reason):
+	return PortResult(port.name, np.empty(0), np.empty(0), np.empty(0), math.nan, cal, port.freq_hz, 1, reason)
+
+
 #===============================================================================================================================================
 #<o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o>
 #===============================================================================================================================================
 
 if __name__ == '__main__':
+	import matplotlib.pyplot as plt
+	from lab_scopes.io.lecroy_files import read_trc_data_simplified
 
 	ifn = r"E:\interferometer\raw data\C1-interf-shot57507.trc"
 	refch, tarr, vertical_gain, vertical_offset = read_trc_data_simplified(ifn)

@@ -12,7 +12,9 @@ import time
 import os
 import h5py
 
-from interf_analysis import get_calibration_factor
+from interf_analysis import PORTS, get_calibration_factor
+
+_FREQ_HZ = {port.name: port.freq_hz for port in PORTS}  # one source, so the HDF5 cal attribute matches live ne
 
 #===============================================================================================================================================
 #<o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o> <o>
@@ -52,9 +54,9 @@ def init_hdf5_file(file_name):
 
 		_set_attr_if_missing(f, 'description', "Interferometer data. Datasets in each group are named by timestamp of when data was acquired. Timestamps are saved as seconds since epoch January 1, 1970, 00:00:00 (UTC). See each individual group description and attribute for more info.")
 
-		_ensure_phase_group(f, "phase_p20", "Phase data for interferometer at port 20. Attribute calibration factor assumes 40cm plasma length.", 288e9)
-		_ensure_phase_group(f, "phase_p29", "Phase data for interferometer at port 29. Attribute calibration factor assumes 40cm plasma length.", 282e9)
-		_ensure_phase_group(f, "phase_p40", "Phase data for interferometer at port 40 (Rigol DHO scope). Attribute calibration factor assumes 40cm plasma length.", 288e9)
+		_ensure_phase_group(f, "phase_p20", "Phase data for interferometer at port 20. Attribute calibration factor assumes 40cm plasma length.", _FREQ_HZ["P20"])
+		_ensure_phase_group(f, "phase_p29", "Phase data for interferometer at port 29. Attribute calibration factor assumes 40cm plasma length.", _FREQ_HZ["P29"])
+		_ensure_phase_group(f, "phase_p40", "Phase data for interferometer at port 40 (Rigol DHO scope). Attribute calibration factor assumes 40cm plasma length.", _FREQ_HZ["P40"])
 		_ensure_time_group(f, "time_array", "Time array for interferometer data in milliseconds.")
 		_ensure_time_group(f, "time_array_p40", "Time array for phase_p40 (Rigol). Independent of time_array which is LeCroy.")
 

@@ -51,7 +51,8 @@ to interpret them:
 Unavailable channels are omitted rather than replaced by fabricated arrays.
 They remain described by `missing_json`, and a variable can first appear in a
 later step when a scope recovers. `streamer.payload.decode_json()` decodes the
-JSON byte-array variables.
+JSON byte-array variables, and `streamer.payload.shot_from_variables()` rebuilds
+a whole step as a `DecodedShot` that `interf_analysis.analyze_shot()` accepts.
 
 Every non-scalar ADIOS variable is a single-process global array. Its global
 shape and count equal the payload array shape, and its start is zero in every

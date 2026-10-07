@@ -85,6 +85,13 @@ python -m interf_sim --raw-output raw.bp --limit 20  # write complete raw shots 
 - Transfers take only the file read time, so `critical_path_s` is shorter than on the scopes. The logged `dt` follows the recorded trigger times, not `--period`.
 - `--raw-output` enables the integrated output package. It accepts a direct ADIOS output, an encrypted socket connection file, or a remote server configuration. See [streamer/README.md](streamer/README.md) for the payload and consumer commands.
 
+Without recorded shots, generate synthetic ones with a known phase (a Gaussian bump of about 6 rad), then replay them with `--trc-dir`:
+
+```bash
+python -m interf_sim.synthetic /tmp/synth --shots 20   # --help lists samples, dt, IF, period, noise
+python -m interf_sim --trc-dir /tmp/synth --period 0
+```
+
 Downstream code can take the same `RawShot` objects that `acquire_shot` returns:
 
 ```python
@@ -104,9 +111,9 @@ for shot in iter_shots(ReplayLeCroy(trc_shots()[:10])):
 |---|---|
 | [interf_main.py](interf_main.py) | Acquisition entry point: loop, logging, and Ctrl-C/SIGTERM handling |
 | [interf_raw.py](interf_raw.py) | Same-shot raw acquisition from the LeCroy and the Rigol |
-| [interf_analysis.py](interf_analysis.py) | Phase extraction (`phase_from_raw`, which uses the cross-spectral density; `phase_from_hilbert`, which is slower) and `get_calibration_factor` |
+| [interf_analysis.py](interf_analysis.py) | Phase extraction (`phase_from_raw`, which uses the cross-spectral density; `phase_from_hilbert`, which is slower), `get_calibration_factor`, and `analyze_shot`, which turns one raw shot into per-port phase and density (P20, P29, P40) |
 | [interf_file.py](interf_file.py) | HDF5 schema and writers for the daily interferometer file (previous acquisition) |
-| [interf_sim/](interf_sim/) | Offline simulation: scope fakes that replay `.trc` files |
+| [interf_sim/](interf_sim/) | Offline simulation: scope fakes that replay `.trc` files, and `synthetic.py`, which generates shots with a known phase |
 | [streamer/](streamer/) | Buffered ADIOS/socket raw output, metadata encoding, consumer, security, compression, and remote restart support |
 
 The live GUI will be re-implemented under EPICS. The HDF5 readers and the datarun merge scripts may return later on this branch.
