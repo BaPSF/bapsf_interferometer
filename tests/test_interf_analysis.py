@@ -1,4 +1,6 @@
 import math
+import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -18,6 +20,7 @@ N = FT_len * 200
 DT = 1e-8
 PHASE = gaussian_phase(N * DT / 2, N * DT / 8)
 HOST_TIME = 1_700_000_000.25
+REPO_ROOT = Path(__file__).resolve().parent.parent
 WINDOW_MS = (0.4, 0.6)  # around the bump centre of the 1.024 ms record
 
 
@@ -216,27 +219,55 @@ class PayloadRoundTripTests(unittest.TestCase):
 		         for i, (n, rigol) in enumerate(layouts)]
 		del shots[2].lecroy["C4"]
 		shots[2].missing["lecroy"] = "C4 LeCroyNoDataError: C4: no .trc file for this shot"
+		for engine in ("BP5", "BP4"):  # BP4 keeps a variable's selection from step to step
+			with self.subTest(engine=engine):
+				with tempfile.TemporaryDirectory() as tmp:
+					path = Path(tmp) / "raw.bp"
+					output = AdiosIO(SimpleNamespace(destination=str(path), engine=engine, append_output=False))
+					for i, shot in enumerate(shots):
+						output.write_data(shot_variables(shot, i))
+					output.close()
+					steps = list(iter_steps(path))
+					last = read_step(path, len(shots) - 1)
+					with self.assertRaises(IndexError):
+						read_step(path, len(shots))
+				self.assertEqual(len(steps), len(shots))
+				for i, (shot, variables) in enumerate(zip(shots, steps)):
+					with self.subTest(step=i):
+						decoded = shot_from_variables(variables)
+						self.assertEqual((decoded.shot_index, decoded.host_time, decoded.missing),
+						                 (i, shot.host_time, shot.missing))
+						_assert_channels_equal(self, decoded.lecroy, shot.lecroy)
+						_assert_channels_equal(self, decoded.rigol, shot.rigol)
+						via_archive = analyze_shot(decoded)
+						for name, port in analyze_shot(shot).ports.items():
+							np.testing.assert_array_equal(via_archive.ports[name].ne, port.ne)
+				self.assertEqual(set(last), set(steps[-1]))
+
+	@unittest.skipUnless(ADIOS2_AVAILABLE, "adios2 is not installed")
+	def test_reading_stops_at_the_last_step_of_a_file_not_closed(self):
+		# While acquisition runs, or after it died without closing the file, the end of the file is
+		# never marked: reading must return the steps written so far, not wait for the next one. A
+		# wait holds the GIL, so the reader runs in a subprocess, where a regression times out.
+		reader = ("import sys\n"
+		          "from streamer.adios_io import iter_steps, read_step\n"
+		          "from streamer.payload import shot_from_variables\n"
+		          "print([shot_from_variables(variables).shot_index for variables in iter_steps(sys.argv[1])])\n"
+		          "try:\n"
+		          "    read_step(sys.argv[1], 2)\n"
+		          "except IndexError:\n"
+		          "    print('IndexError')\n")
 		with tempfile.TemporaryDirectory() as tmp:
 			path = Path(tmp) / "raw.bp"
 			output = AdiosIO(SimpleNamespace(destination=str(path), engine="BP5", append_output=False))
-			for i, shot in enumerate(shots):
-				output.write_data(shot_variables(shot, i))
-			output.close()
-			steps = list(iter_steps(path))
-			last = read_step(path, len(shots) - 1)
-			with self.assertRaises(IndexError):
-				read_step(path, len(shots))
-		self.assertEqual(len(steps), len(shots))
-		for i, (shot, variables) in enumerate(zip(shots, steps)):
-			with self.subTest(step=i):
-				decoded = shot_from_variables(variables)
-				self.assertEqual((decoded.shot_index, decoded.host_time, decoded.missing), (i, shot.host_time, shot.missing))
-				_assert_channels_equal(self, decoded.lecroy, shot.lecroy)
-				_assert_channels_equal(self, decoded.rigol, shot.rigol)
-				via_archive = analyze_shot(decoded)
-				for name, port in analyze_shot(shot).ports.items():
-					np.testing.assert_array_equal(via_archive.ports[name].ne, port.ne)
-		self.assertEqual(set(last), set(steps[-1]))
+			try:
+				for i in range(2):
+					output.write_data(shot_variables(_shot(rigol=False), i))
+				done = subprocess.run([sys.executable, "-c", reader, str(path)], cwd=REPO_ROOT, capture_output=True,
+				                      text=True, timeout=30)
+			finally:
+				output.close()
+		self.assertEqual(done.stdout.splitlines(), ["[0, 1]", "IndexError"], done.stderr)
 
 	def test_unknown_schema_version_is_rejected(self):
 		variables = shot_variables(_shot(rigol=False), 0)

@@ -158,7 +158,9 @@ class CloseTests(unittest.TestCase):
 			link = IocLink(f"tcp:127.0.0.1:{server.getsockname()[1]}", encode=_as_is, send_timeout=30.0)
 			link.write({"big": np.zeros(64 << 20, dtype=np.uint8)})  # far beyond the socket buffers: sendall blocks
 			time.sleep(0.5)
-			self.assertEqual(link.sent, 0)
+			if link.sent:  # Windows buffers all 64 MB on loopback, so no send is stuck for close() to unblock
+				link.close(timeout=0.5)
+				self.skipTest("the OS buffered the whole message, so a stuck send cannot be set up here")
 			t0 = time.monotonic()
 			link.close(timeout=0.5)
 			self.assertLess(time.monotonic() - t0, 0.5 + 1.0 + 0.5)  # timeout + shutdown join + slack
