@@ -73,12 +73,19 @@ class DecodedShot:
 	rigol: dict[str, tuple[np.ndarray, dict]]
 
 
+def _scalar(value):
+	# .item(), not int()/float(): adios2 FileReader.read(..., step_selection=...) returns a scalar as
+	# shape (1,), and int()/float() of an ndim > 0 array is deprecated in NumPy (it failed the cloud
+	# test). .item() takes shape () or (1,) and raises ValueError for anything larger.
+	return np.asarray(value).item()
+
+
 def shot_from_variables(variables):
 	"""Inverse of :func:`shot_variables`; channel names come back upper case.
 
 	Raises ValueError for a schema_version this code does not know.
 	"""
-	version = int(variables["schema_version"])
+	version = int(_scalar(variables["schema_version"]))
 	if version != SCHEMA_VERSION:
 		raise ValueError(f"unsupported schema_version {version} (expected {SCHEMA_VERSION})")
 	lecroy, rigol = {}, {}
@@ -94,9 +101,9 @@ def shot_from_variables(variables):
 			rigol[channel.upper()] = (samples, decode_json(variables[f"rigol_{channel}_metadata_json"]))
 	return DecodedShot(
 		schema_version=version,
-		shot_index=int(variables["shot_index"]),
-		host_time=float(variables["host_time"]),
-		critical_path_s=float(variables["critical_path_s"]),
+		shot_index=int(_scalar(variables["shot_index"])),
+		host_time=float(_scalar(variables["host_time"])),
+		critical_path_s=float(_scalar(variables["critical_path_s"])),
 		missing=decode_json(variables["missing_json"]),
 		lecroy=lecroy,
 		rigol=rigol,

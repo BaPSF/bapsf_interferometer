@@ -31,6 +31,7 @@ from lab_scopes.lecroy import LeCroyWavedesc
 #============================================================================
 FT_len = 512  # phase_from_raw window: larger -> finer frequency resolution, coarser time resolution
 CSD_SKIP_BINS = 10  # lowest FFT bins excluded from the CSD peak search, so DC is never the peak
+OFFSET_WINDOWS = 5  # phase_from_raw subtracts the mean of this many leading windows (taken as pre-plasma)
 #============================================================================
 
 def get_calibration_factor(f_uwave = 288e9, plasma_length = 0.4):
@@ -140,9 +141,9 @@ def correlation_spectrogram(tarr, refch, plach, FT_len):
 def phase_from_raw(tarr, refch, plach, ft_len=FT_len):
 	'''
 	CSD phase at the peak bin of each ft_len-point Hanning window, unwrapped, minus the mean of
-	the first 5 windows (taken as pre-plasma). One point per window, at the window start.
+	the first OFFSET_WINDOWS windows (taken as pre-plasma). One point per window, at the window start.
 	'''
-	offset_range = range(5)
+	offset_range = range(OFFSET_WINDOWS)
 
 	ttt, csd_ang, csd_mag = correlation_spectrogram(tarr, refch, plach, ft_len)
 
@@ -275,10 +276,11 @@ class ShotResult:
 def analyze_shot(shot, ports=PORTS, plasma_length=0.4, ft_len=FT_len, max_points=None, ne_window_ms=None):
 	'''ShotResult of an interf_raw.RawShot or streamer.payload.DecodedShot.
 
-	Never raises on bad data: a port whose channels are absent or whose analysis fails is returned
-	with `missing` set, and the other ports are unaffected. Above `max_points` per port, arrays are
-	kept every k-th point, k = ceil(n / max_points). ne_window_ms = (start, stop) on every port's
-	time axis (trigger-relative on both scopes) sets PortResult.ne_mean; ValueError if start >= stop.
+	Never raises on bad data: a port whose channels are absent, flat or too short, or whose analysis
+	fails, is returned with `missing` set, and the other ports are unaffected. Above `max_points`
+	per port, arrays are kept every k-th point, k = ceil(n / max_points). ne_window_ms = (start, stop)
+	on every port's time axis (trigger-relative on both scopes) sets PortResult.ne_mean; ValueError
+	if start >= stop.
 	'''
 	if ne_window_ms is not None and not ne_window_ms[0] < ne_window_ms[1]:
 		raise ValueError(f"ne_window_ms {ne_window_ms}: start must be before stop")
@@ -302,12 +304,16 @@ def _analyze_port(shot, port, plasma_length, ft_len, max_points, ne_window_ms):
 		trace = _TRACES[port.scope]
 		t_s, ref = trace(*channels[port.ref_ch])
 		_, pla = trace(*channels[port.plasma_ch])
-		# Mean removed per channel as main's (bench-validated) read_lecroy/read_rigol did before phase_from_raw.
-		ref, pla = ref - ref.mean(), pla - pla.mean()
 		n = min(len(ref), len(pla))
-		t_ms, phase = phase_from_raw(t_s[:n], ref[:n], pla[:n], ft_len)
+		unusable = _unusable(port, ref, pla, n, ft_len)
+		if unusable is None:
+			# Mean removed per channel as main's (bench-validated) read_lecroy/read_rigol did before phase_from_raw.
+			ref, pla = ref - ref.mean(), pla - pla.mean()
+			t_ms, phase = phase_from_raw(t_s[:n], ref[:n], pla[:n], ft_len)
 	except Exception as e:
 		return _missing_port(port, cal, f"analysis error: {type(e).__name__}: {e}")
+	if unusable is not None:
+		return _missing_port(port, cal, unusable)
 	ne = phase * cal
 	ne_mean = _window_mean(t_ms, ne, ne_window_ms)
 	k = 1
@@ -315,6 +321,23 @@ def _analyze_port(shot, port, plasma_length, ft_len, max_points, ne_window_ms):
 		k = math.ceil(ne.size / max_points)
 		t_ms, phase, ne = t_ms[::k], phase[::k], ne[::k]
 	return PortResult(port.name, t_ms, phase, ne, ne_mean, cal, port.freq_hz, k, None)
+
+
+def _unusable(port, ref, pla, n, ft_len):
+	'''Why a decoded channel pair cannot be analyzed, or None. Exact checks only.
+
+	Not caught: a disconnected input that still delivers noise reads as a valid (meaningless) phase.
+	That needs a signal-to-noise check, deferred until it can be calibrated on real scope data.
+	'''
+	# correlation_spectrogram drops the last full window when n is a multiple of ft_len, so the
+	# OFFSET_WINDOWS windows phase_from_raw averages need n strictly above their length.
+	if n <= OFFSET_WINDOWS * ft_len:
+		return f"trace too short: {n} samples, need > {OFFSET_WINDOWS * ft_len}"
+	# Identical codes throughout: a dead channel would otherwise give phase 0, published as a valid density of 0.
+	flat = [ch for ch, volts in ((port.ref_ch, ref), (port.plasma_ch, pla)) if np.ptp(volts) == 0]
+	if flat:
+		return f"{'/'.join(flat)} flat (no signal)"
+	return None
 
 
 def _window_mean(t_ms, ne, window_ms):

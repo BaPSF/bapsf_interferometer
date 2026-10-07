@@ -93,8 +93,11 @@ Without recorded shots, generate synthetic ones with a known phase (a Gaussian b
 
 ```bash
 python -m interf_sim.synthetic /tmp/synth --shots 20   # --help lists samples, dt, IF, period, noise
+python -m interf_sim.synthetic /tmp/dead --shots 5 --flat C2   # C2 dead: P20 is reported missing ("C2 flat (no signal)")
 python -m interf_sim --trc-dir /tmp/synth --period 0
 ```
+
+`analyze_shot` reports a port missing, with its reason, when a channel is absent, flat (every code identical, e.g. a dead input), or too short for the 5 leading windows the phase offset needs. A disconnected input that still delivers noise is not detected yet; that needs a signal-to-noise check calibrated on real scope data.
 
 Downstream code can take the same `RawShot` objects that `acquire_shot` returns:
 

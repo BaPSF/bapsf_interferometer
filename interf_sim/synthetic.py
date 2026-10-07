@@ -82,12 +82,14 @@ def _rigol_codes(volts):
 	return np.clip(np.rint(codes), 0, 4095).astype(np.uint16)
 
 
-def make_raw_shot(n=SAMPLES, dt=DT, f_if=IF_HZ, phase=None, noise_v=0.0, host_time=None, rigol=True, rng=None):
+def make_raw_shot(n=SAMPLES, dt=DT, f_if=IF_HZ, phase=None, noise_v=0.0, host_time=None, rigol=True, rng=None,
+                  flat=()):
 	"""interf_raw.RawShot with every channel of interf_analysis.PORTS, all ports carrying φ.
 
 	phase: callable φ(t_s), or None for default_phase over the LeCroy record, which starts at t = 0.
 	The Rigol record (n // 4 points) spans the same window. Without `rigol`, missing["rigol"] is set
 	and rigol is {}, as interf_raw reports a failed Rigol. The WAVEDESC trigger time is host_time.
+	`flat` names LeCroy channels written as constant code 0, a dead input (ValueError for others).
 	"""
 	host_time = time.time() if host_time is None else host_time
 	rng = rng or np.random.default_rng()
@@ -107,6 +109,10 @@ def make_raw_shot(n=SAMPLES, dt=DT, f_if=IF_HZ, phase=None, noise_v=0.0, host_ti
 			ref, pla = heterodyne(t_rigol, f_if, phase, noise_v=noise_v, rng=rng)
 			rigol_data[port.ref_ch] = (_rigol_codes(ref), metadata)
 			rigol_data[port.plasma_ch] = (_rigol_codes(pla), dict(metadata))
+	for ch in flat:
+		if ch not in lecroy:
+			raise ValueError(f"flat channel {ch!r} is not one of the LeCroy channels {sorted(lecroy)}")
+		lecroy[ch] = (np.zeros(n, dtype=np.int16), wavedesc)
 	if not rigol:
 		missing["rigol"] = "synthetic shot without Rigol"
 	return RawShot(host_time, lecroy, rigol_data, missing, 0.0)
@@ -147,6 +153,9 @@ def main(argv=None):
 	parser.add_argument("--noise", type=float, default=0.01, help="V rms per channel (default: 0.01)")
 	parser.add_argument("--first-counter", type=int, default=0)
 	parser.add_argument("--seed", type=int, help="noise seed (default: random)")
+	parser.add_argument("--flat", action="append", default=[], metavar="CH",
+		choices=[ch for p in PORTS if p.scope == "lecroy" for ch in (p.ref_ch, p.plasma_ch)],
+		help="write this LeCroy channel as a constant (dead input), so its port is reported missing; repeatable")
 	args = parser.parse_args(argv)
 	bin_ = args.if_hz * args.dt * FT_len
 	if not CSD_SKIP_BINS < bin_ < FT_len / 2:
@@ -154,7 +163,7 @@ def main(argv=None):
 
 	args.outdir.mkdir(parents=True, exist_ok=True)
 	shots = synthetic_shots(args.shots, args.period, n=args.samples, dt=args.dt, f_if=args.if_hz, noise_v=args.noise,
-	                        rigol=False, rng=np.random.default_rng(args.seed))  # .trc replay never has a Rigol
+	                        rigol=False, rng=np.random.default_rng(args.seed), flat=args.flat)  # .trc replay never has a Rigol
 	write_trc_shots(args.outdir, _progress(shots, args.shots), args.first_counter)
 
 

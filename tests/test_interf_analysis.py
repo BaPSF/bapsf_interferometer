@@ -1,13 +1,17 @@
 import math
 import tempfile
 import unittest
+from pathlib import Path
+from types import SimpleNamespace
 
 import numpy as np
 from lab_scopes.lecroy import LeCroyWavedesc, wavedesc_trigger_timestamp
 
-from interf_analysis import FT_len, analyze_shot, get_calibration_factor, lecroy_trace, phase_from_raw, rigol_trace
+from interf_analysis import (FT_len, OFFSET_WINDOWS, analyze_shot, get_calibration_factor, lecroy_trace, phase_from_raw,
+                             rigol_trace)
 from interf_sim.synthetic import gaussian_phase, make_raw_shot, make_wavedesc, synthetic_shots, write_trc_shots
 from interf_sim.trc_replay import ReplayLeCroy, iter_shots, trc_shots
+from streamer.adios_io import ADIOS2_AVAILABLE, AdiosIO
 from streamer.payload import SCHEMA_VERSION, shot_from_variables, shot_variables
 
 N = FT_len * 200
@@ -148,6 +152,26 @@ class AnalyzeShotTests(unittest.TestCase):
 		self.assertTrue(result.ports["P20"].missing.startswith("analysis error: "))
 		self.assertIsNone(result.ports["P29"].missing)
 
+	def test_flat_channel_marks_only_its_port_missing(self):
+		for channel, port, other in (("C2", "P20", "P29"), ("C1", "P20", "P29"), ("C4", "P29", "P20")):
+			with self.subTest(flat=channel):
+				result = analyze_shot(_shot(flat=[channel]), ne_window_ms=WINDOW_MS)
+				self.assertEqual(result.ports[port].missing, f"{channel} flat (no signal)")
+				self.assertEqual(result.ports[port].ne.size, 0)
+				self.assertTrue(math.isnan(result.ports[port].ne_mean))
+				self.assertIsNone(result.ports[other].missing)
+				self.assertIsNone(result.ports["P40"].missing)
+
+	def test_too_short_trace_has_a_clear_reason(self):
+		limit = OFFSET_WINDOWS * FT_len  # 2560
+		short = make_raw_shot(2048, DT, noise_v=0.01, host_time=HOST_TIME, rng=np.random.default_rng(0))
+		self.assertEqual(analyze_shot(short).ports["P20"].missing, f"trace too short: 2048 samples, need > {limit}")
+		# The bound is exact: one sample more gives OFFSET_WINDOWS full windows.
+		just_enough = make_raw_shot(limit + 1, DT, noise_v=0.01, host_time=HOST_TIME, rng=np.random.default_rng(0))
+		port = analyze_shot(just_enough).ports["P20"]
+		self.assertIsNone(port.missing)
+		self.assertEqual(port.t_ms.size, OFFSET_WINDOWS)
+
 	def test_max_points_strides_the_arrays(self):
 		full = self.result.ports["P20"]
 		port = analyze_shot(self.shot, max_points=30, ne_window_ms=WINDOW_MS).ports["P20"]
@@ -173,6 +197,40 @@ class PayloadRoundTripTests(unittest.TestCase):
 		self.assertEqual(via_payload.shot_index, 7)
 		for name, port in direct.ports.items():
 			np.testing.assert_array_equal(via_payload.ports[name].ne, port.ne)
+
+	def test_scalars_of_shape_one_decode(self):
+		shot = _shot()
+		variables = shot_variables(shot, 7)
+		for name in ("schema_version", "shot_index", "host_time", "critical_path_s"):
+			variables[name] = variables[name].reshape(1)  # as adios2 FileReader returns them
+		decoded = shot_from_variables(variables)
+		self.assertEqual((decoded.shot_index, decoded.host_time, decoded.critical_path_s),
+		                 (7, shot.host_time, shot.critical_path_s))
+
+	@unittest.skipUnless(ADIOS2_AVAILABLE, "adios2 is not installed")
+	def test_steps_read_from_a_multi_step_bp_file_decode(self):
+		import adios2
+
+		shots = [make_raw_shot(4096, DT, noise_v=0.01, host_time=HOST_TIME + 3 * i, rng=np.random.default_rng(i))
+		         for i in range(2)]
+		with tempfile.TemporaryDirectory() as tmp:
+			path = str(Path(tmp) / "raw.bp")
+			output = AdiosIO(SimpleNamespace(destination=path, engine="BP5", append_output=False))
+			for i, shot in enumerate(shots):
+				output.write_data(shot_variables(shot, i))
+			output.close()
+			reader = adios2.FileReader(path)
+			try:
+				names = list(reader.available_variables())
+				steps = [{name: reader.read(name, step_selection=[i, 1]) for name in names} for i in range(len(shots))]
+			finally:
+				reader.close()
+		for i, (shot, variables) in enumerate(zip(shots, steps)):
+			with self.subTest(step=i):
+				decoded = shot_from_variables(variables)
+				self.assertEqual((decoded.shot_index, decoded.host_time), (i, shot.host_time))
+				_assert_channels_equal(self, decoded.lecroy, shot.lecroy)
+				_assert_channels_equal(self, decoded.rigol, shot.rigol)
 
 	def test_unknown_schema_version_is_rejected(self):
 		variables = shot_variables(_shot(rigol=False), 0)
