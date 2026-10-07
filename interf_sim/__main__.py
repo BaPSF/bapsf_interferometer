@@ -40,7 +40,7 @@ def main():
 
 	Path(raw_output_settings.timing_log).parent.mkdir(parents=True, exist_ok=True)
 	with RawOutput(raw_output_settings) as raw_output:
-		run_main(ReplayLeCroy(shots, args.period), LOG_DIR, raw_output=raw_output)
+		run_main(ReplayLeCroy(shots, args.period), LOG_DIR, outputs=[raw_output])
 		if raw_output.dropped_shots:
 			print(f"Dropped raw output shots: {raw_output.dropped_shots}")
 

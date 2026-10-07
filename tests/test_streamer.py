@@ -64,8 +64,43 @@ class MainIntegrationTests(unittest.TestCase):
 			"log",
 			side_effect=lambda *args: events.append("log"),
 		):
-			self.assertIsNone(interf_main._handle_shot(shot, None, raw_output))
+			self.assertIsNone(interf_main._handle_shot(shot, None, [raw_output]))
 		self.assertEqual(events, ["write", "log"])
+
+	def test_failing_output_does_not_stop_later_outputs_or_log(self):
+		events = []
+		broken = mock.Mock()
+		broken.write.side_effect = OSError("disk full")
+		healthy = mock.Mock()
+		healthy.write.side_effect = lambda shot: events.append("write")
+		shot = RawShot(1.0, {}, {}, {}, 0.1)
+		with mock.patch.object(interf_main.log, "log", side_effect=lambda *args: events.append("log")), \
+				mock.patch.object(interf_main.log, "exception") as exception, \
+				mock.patch.object(interf_main.log, "warning") as warning, \
+				mock.patch.object(interf_main.log, "info") as info:
+			interf_main._handle_shot(shot, None, [broken, healthy])
+			interf_main._handle_shot(shot, None, [broken, healthy])
+			broken.write.side_effect = None
+			interf_main._handle_shot(shot, None, [broken, healthy])
+		self.assertEqual(events, ["write", "log"] * 3)
+		exception.assert_called_once()  # traceback on the first failure only
+		warning.assert_not_called()  # the throttled repeat waits _OUTPUT_WARN_INTERVAL_S
+		info.assert_called_once()  # recovery
+
+	def test_repeated_output_failure_warns_with_count(self):
+		broken = mock.Mock()
+		broken.write.side_effect = OSError("disk full")
+		shot = RawShot(1.0, {}, {}, {}, 0.1)
+		with mock.patch.object(interf_main, "_OUTPUT_WARN_INTERVAL_S", 0.0), \
+				mock.patch.object(interf_main.log, "log"), \
+				mock.patch.object(interf_main.log, "exception"), \
+				mock.patch.object(interf_main.log, "warning") as warning:
+			for _ in range(3):
+				interf_main._handle_shot(shot, None, [broken])
+		messages = [c.args[0] % c.args[1:] for c in warning.call_args_list]
+		self.assertEqual(len(messages), 2)
+		self.assertIn(" 2 shots", messages[0])
+		self.assertIn(" 3 shots", messages[1])
 
 
 class TransportTests(unittest.TestCase):

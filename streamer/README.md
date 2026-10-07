@@ -7,8 +7,10 @@ by `interf_main`.
 
 Raw output is opt-in. Without `--raw-output`, `python -m interf_sim` and the
 live `python interf_main.py` entry point retain their previous behavior. The
-live entry point currently passes `raw_output=None`; a future live-output CLI
-can construct the same `RawOutput` used by the simulator.
+live entry point currently passes no outputs; a future live-output CLI can
+pass the same `RawOutput` used by the simulator in `main(outputs=[...])`. A
+failing output is logged and skipped without affecting other outputs or the
+shot log line.
 
 ## Output destinations
 
