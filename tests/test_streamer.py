@@ -1,3 +1,4 @@
+import dataclasses
 import json
 import socket
 import tempfile
@@ -10,6 +11,7 @@ import numpy as np
 import nacl.public
 
 import interf_main
+from diag_ioc import outage
 from interf_raw import RawShot
 from streamer.adios_io import ADIOS2_AVAILABLE, AdiosIO
 from streamer.connection_security import (
@@ -54,6 +56,9 @@ class PayloadTests(unittest.TestCase):
 
 
 class MainIntegrationTests(unittest.TestCase):
+	def setUp(self):
+		interf_main._outages.clear()  # main() does this per run; these tests call _handle_shot directly
+
 	def test_handle_shot_writes_before_logging(self):
 		events = []
 		raw_output = mock.Mock()
@@ -75,7 +80,6 @@ class MainIntegrationTests(unittest.TestCase):
 		healthy.write.side_effect = lambda shot: events.append("write")
 		shot = RawShot(1.0, {}, {}, {}, 0.1)
 		with mock.patch.object(interf_main.log, "log", side_effect=lambda *args: events.append("log")), \
-				mock.patch.object(interf_main.log, "exception") as exception, \
 				mock.patch.object(interf_main.log, "warning") as warning, \
 				mock.patch.object(interf_main.log, "info") as info:
 			interf_main._handle_shot(shot, None, [broken, healthy])
@@ -83,24 +87,50 @@ class MainIntegrationTests(unittest.TestCase):
 			broken.write.side_effect = None
 			interf_main._handle_shot(shot, None, [broken, healthy])
 		self.assertEqual(events, ["write", "log"] * 3)
-		exception.assert_called_once()  # traceback on the first failure only
-		warning.assert_not_called()  # the throttled repeat waits _OUTPUT_WARN_INTERVAL_S
+		warning.assert_called_once()  # the outage start; the repeat waits OUTAGE_LOG_INTERVAL_S
+		self.assertTrue(warning.call_args.kwargs["exc_info"])  # with the traceback
 		info.assert_called_once()  # recovery
+
+	def test_unhashable_output_is_isolated_and_recovers(self):
+		@dataclasses.dataclass
+		class ListOutput:  # eq=True (the default) sets __hash__ = None
+			fail: bool = True
+			written: list = dataclasses.field(default_factory=list)
+
+			def write(self, shot):
+				if self.fail:
+					raise OSError("disk full")
+				self.written.append(shot)
+
+		output = ListOutput()
+		with self.assertRaises(TypeError):
+			hash(output)
+		events = []
+		shot = RawShot(1.0, {}, {}, {}, 0.1)
+		with mock.patch.object(interf_main.log, "log", side_effect=lambda *args: events.append("log")), \
+				mock.patch.object(interf_main.log, "warning") as warning, \
+				mock.patch.object(interf_main.log, "info") as info:
+			interf_main._handle_shot(shot, None, [output])
+			output.fail = False
+			interf_main._handle_shot(shot, None, [output])
+		self.assertEqual(events, ["log", "log"])  # the shot line survived the failing write
+		self.assertEqual(output.written, [shot])
+		warning.assert_called_once()
+		info.assert_called_once()
 
 	def test_repeated_output_failure_warns_with_count(self):
 		broken = mock.Mock()
 		broken.write.side_effect = OSError("disk full")
 		shot = RawShot(1.0, {}, {}, {}, 0.1)
-		with mock.patch.object(interf_main, "_OUTPUT_WARN_INTERVAL_S", 0.0), \
+		with mock.patch.object(outage, "OUTAGE_LOG_INTERVAL_S", 0.0), \
 				mock.patch.object(interf_main.log, "log"), \
-				mock.patch.object(interf_main.log, "exception"), \
 				mock.patch.object(interf_main.log, "warning") as warning:
 			for _ in range(3):
 				interf_main._handle_shot(shot, None, [broken])
 		messages = [c.args[0] % c.args[1:] for c in warning.call_args_list]
-		self.assertEqual(len(messages), 2)
-		self.assertIn(" 2 shots", messages[0])
-		self.assertIn(" 3 shots", messages[1])
+		self.assertEqual(len(messages), 3)  # start, then one per (zero-length) interval
+		self.assertIn("2 failures", messages[1])
+		self.assertIn("3 failures", messages[2])
 
 
 class TransportTests(unittest.TestCase):
@@ -120,6 +150,16 @@ class TransportTests(unittest.TestCase):
 		self.assertEqual(set(actual), set(expected))
 		for name in expected:
 			np.testing.assert_array_equal(actual[name], expected[name])
+
+	def test_message_over_max_bytes_is_refused_before_reading_payload(self):
+		left, right = socket.socketpair()
+		try:
+			send_arrays(left, [("a", np.zeros(60, dtype=np.uint8)), ("b", np.zeros(50, dtype=np.uint8))])
+			with self.assertRaises(ValueError):
+				receive_message(right, max_bytes=100)
+		finally:
+			left.close()
+			right.close()
 
 	def test_connection_information_remains_encrypted(self):
 		private_key = nacl.public.PrivateKey.generate()

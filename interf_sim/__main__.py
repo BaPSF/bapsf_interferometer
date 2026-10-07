@@ -1,7 +1,9 @@
 """Run interf_main.main() on recorded .trc shots; no scope is contacted. Run from the repo root."""
 import argparse
+import contextlib
 from pathlib import Path
 
+from diag_ioc.link import IocLink, address_arg
 from interf_sim.trc_replay import TRC_DIR, ReplayLeCroy, repeat_trc_shots, run_main, trc_shots
 from streamer import RawOutput
 from streamer.arguments import add_raw_output_arguments, settings_from_args
@@ -18,6 +20,8 @@ def main():
 	parser.add_argument("--limit", type=int, help="number of shots to serve (default: all)")
 	parser.add_argument("--repeat-traces", action="store_true",
 		help="cycle the available trace files for exactly --limit shots with consecutive counters")
+	parser.add_argument("--ioc-link", metavar="ADDRESS", type=address_arg,
+		help="also send each shot to a diag_ioc listener at unix:/path or tcp:host:port (as INTERF_IOC_LINK does live)")
 	add_raw_output_arguments(parser, RAW_OUTPUT_TIMING_LOG)
 	args = parser.parse_args()
 	if args.repeat_traces and (args.limit is None or args.limit < 1):
@@ -34,15 +38,18 @@ def main():
 	else:
 		shots = shots[:args.limit]
 	raw_output_settings = settings_from_args(args)
-	if raw_output_settings is None:
-		run_main(ReplayLeCroy(shots, args.period), LOG_DIR)
-		return
-
-	Path(raw_output_settings.timing_log).parent.mkdir(parents=True, exist_ok=True)
-	with RawOutput(raw_output_settings) as raw_output:
-		run_main(ReplayLeCroy(shots, args.period), LOG_DIR, outputs=[raw_output])
-		if raw_output.dropped_shots:
+	raw_output = link = None
+	with contextlib.ExitStack() as stack:
+		if raw_output_settings is not None:
+			Path(raw_output_settings.timing_log).parent.mkdir(parents=True, exist_ok=True)
+			raw_output = stack.enter_context(RawOutput(raw_output_settings))
+		if args.ioc_link is not None:
+			link = stack.enter_context(IocLink(args.ioc_link))
+		run_main(ReplayLeCroy(shots, args.period), LOG_DIR, outputs=[o for o in (raw_output, link) if o is not None])
+		if raw_output is not None and raw_output.dropped_shots:
 			print(f"Dropped raw output shots: {raw_output.dropped_shots}")
+	if link is not None:  # after close(), which delivers what was still queued
+		print(f"IOC link: sent {link.sent}, dropped {link.dropped}, failed {link.failed}")
 
 
 if __name__ == "__main__":

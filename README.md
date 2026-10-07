@@ -37,11 +37,12 @@ LECROY_IP=<address> python interf_main.py
 
 ### Configuration
 
-Each variable is read from the environment at import; unset means the default. The first is in [interf_main.py](interf_main.py), the rest in [interf_raw.py](interf_raw.py).
+Each variable is read from the environment at startup; unset means the default. The first two are in [interf_main.py](interf_main.py), the rest in [interf_raw.py](interf_raw.py).
 
 | Variable | Default | Meaning |
 |---|---|---|
 | `INTERF_LOG_DIR` | `~/data/log` | Log directory |
+| `INTERF_IOC_LINK` | unset | `unix:/path` or `tcp:host:port` of a `diag_ioc` listener. When set, every shot is also sent there for live analysis; unset, acquisition runs exactly as before |
 | `LECROY_IP` | `10.10.10.10` | **Placeholder; set it** |
 | `LECROY_CHANNELS` | `C1,C2,C3,C4` | Channels read, comma-separated. The first one carries the sweep counter used to detect a fresh capture |
 | `LECROY_TIMEOUT` | 5 s | VICP socket timeout |
@@ -63,9 +64,9 @@ A Rigol operation that hangs is cut off by `SIGALRM` at its deadline, so it cann
 - `missing`: `{"lecroy" | "rigol": reason}`. A missing Rigol has an empty data dict. `missing["lecroy"]` lists failed channels, and `lecroy` still holds the channels that were read;
 - `host_time` and `critical_path_s`.
 
-`interf_main.py` logs each shot and can optionally send it to a `RawOutput`
-object before logging. Its normal command-line entry point passes no output, so
-live acquisition behavior remains unchanged.
+`interf_main.main(outputs)` writes each shot to every output, then logs it. A failing output is logged (traceback when it starts failing, a count every 5 min, a line on recovery) and never stops the other outputs or the loop. The command-line entry point passes no output unless `INTERF_IOC_LINK` is set.
+
+With `INTERF_IOC_LINK`, the output is an `IocLink` ([diag_ioc/link.py](diag_ioc/link.py)). Its `write()` only queues the shot; a background thread encodes and sends it. It is latest-wins: it keeps at most the 2 newest unsent shots, never blocks acquisition, and does not resend a shot lost during an outage (the raw archive is the complete record). An outage is logged when it starts, every 5 min, and on recovery with the number of shots not delivered; reconnection is retried every 5 s.
 
 ## Offline simulation
 
@@ -75,7 +76,10 @@ live acquisition behavior remains unchanged.
 python -m interf_sim --limit 20    # from the repo root; --help lists the options
 python -m interf_sim --limit 20 --repeat-traces  # cycle available traces into 20 synthetic shots
 python -m interf_sim --raw-output raw.bp --limit 20  # write complete raw shots to BP5
+python -m interf_sim --ioc-link unix:/tmp/interf.sock --limit 20  # also send shots to a live-analysis listener
 ```
+
+`python -m interf_sim.listen ADDRESS [--analyze] [--ne-window-ms START STOP]` is a development listener for `--ioc-link` and `INTERF_IOC_LINK`. It prints one line per shot received, and with `--analyze` adds each port's points and density, or the reason the port is missing. Use `tcp:127.0.0.1:PORT` where unix sockets are unavailable.
 
 - The `.trc` directory is `TRC_DIR` in [interf_sim/trc_replay.py](interf_sim/trc_replay.py) (`D:/data/raw data` on the lab PC). On Linux, edit that line or pass `--trc-dir`.
 - Shots play in trigger-time order, because the file counter wraps. Indexing reads one header per shot: 5–20 s for 29k shots, depending on the disk cache. Each machine trigger, every `--period` s (default 3; 0 = as fast as files load), serves the next shot.
@@ -113,7 +117,8 @@ for shot in iter_shots(ReplayLeCroy(trc_shots()[:10])):
 | [interf_raw.py](interf_raw.py) | Same-shot raw acquisition from the LeCroy and the Rigol |
 | [interf_analysis.py](interf_analysis.py) | Phase extraction (`phase_from_raw`, which uses the cross-spectral density; `phase_from_hilbert`, which is slower), `get_calibration_factor`, and `analyze_shot`, which turns one raw shot into per-port phase and density (P20, P29, P40) |
 | [interf_file.py](interf_file.py) | HDF5 schema and writers for the daily interferometer file (previous acquisition) |
-| [interf_sim/](interf_sim/) | Offline simulation: scope fakes that replay `.trc` files, and `synthetic.py`, which generates shots with a known phase |
+| [interf_sim/](interf_sim/) | Offline simulation: scope fakes that replay `.trc` files, `synthetic.py`, which generates shots with a known phase, and `listen.py`, a development listener for the IOC link |
+| [diag_ioc/](diag_ioc/) | Live-analysis host, free of EPICS imports outside the IOC itself. So far `link.py`, the latest-wins shot link from acquisition (`IocLink`) to the IOC (`LinkListener`, which refuses a message announcing more than `MAX_MESSAGE_BYTES` = 1 GiB, about 80× today's shot), and `outage.py`, which logs a persisting failure when it starts, every 5 min, and on recovery (used by the link and by `interf_main`'s outputs) |
 | [streamer/](streamer/) | Buffered ADIOS/socket raw output, metadata encoding, consumer, security, compression, and remote restart support |
 
 The live GUI will be re-implemented under EPICS. The HDF5 readers and the datarun merge scripts may return later on this branch.

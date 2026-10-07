@@ -5,15 +5,14 @@ import os
 import signal
 import sys
 import time
-import weakref
 from pathlib import Path
 
 from lab_scopes.lecroy import LeCroyWavedesc, wavedesc_trigger_timestamp
 
+from diag_ioc.outage import Outage
 from interf_raw import AcqState, acquire_shot, release_scopes
 
 LOG_DIR = os.environ.get("INTERF_LOG_DIR", str(Path.home() / "data" / "log"))
-_OUTPUT_WARN_INTERVAL_S = 300.0
 
 log = logging.getLogger("interf_main")
 _stop = False
@@ -73,42 +72,25 @@ def _shot_line(shot, trig, prev_trig):
 	return " | ".join(parts)
 
 
-class _OutputOutage:
-	"""One output's run of failed writes: traceback at the start, a count every _OUTPUT_WARN_INTERVAL_S, info at the end."""
-
-	def __init__(self):
-		self.count = 0
-		self.since = self.logged = time.monotonic()
-
-	def failed(self, output):
-		self.count += 1
-		now = time.monotonic()
-		if self.count == 1:
-			log.exception("output %r failed; acquisition continues without it", output)
-		elif now - self.logged >= _OUTPUT_WARN_INTERVAL_S:
-			self.logged = now
-			log.warning("output %r still failing: %d shots in %.0f s", output, self.count, now - self.since)
-
-	def ended(self, output):
-		log.info("output %r recovered after %d failed shots in %.0f s",
-		         output, self.count, time.monotonic() - self.since)
-
-
-# Holds only outputs in an outage. Weak keys: an output dropped mid-outage must not hand its
-# state to a later object at the same id().
-_outages = weakref.WeakKeyDictionary()
+# {id(output): (output, Outage)} for outputs in an outage. Keyed by id() so any object can be an
+# output (a plain @dataclass is unhashable); the strong reference keeps the id from being reused
+# by another object while its entry exists.
+_outages = {}
 
 
 def _write_outputs(shot, outputs):
 	for output in outputs:
 		try:
 			output.write(shot)
-		except Exception:
+		except Exception as e:
 			# Isolated so one broken output cannot stop the others, the shot log line, or the loop.
-			_outages.setdefault(output, _OutputOutage()).failed(output)
+			entry = _outages.get(id(output))
+			if entry is None:
+				entry = _outages[id(output)] = (output, Outage(log, f"output {output!r}"))
+			entry[1].failed(e, "acquisition continues without it", exc_info=True)
 		else:
-			if (outage := _outages.pop(output, None)) is not None:
-				outage.ended(output)
+			if (entry := _outages.pop(id(output), None)) is not None:
+				entry[1].ended()
 
 
 def _handle_shot(shot, prev_trig, outputs=()):
@@ -123,10 +105,7 @@ def _handle_shot(shot, prev_trig, outputs=()):
 
 
 def main(outputs=()):
-	"""Acquire until stopped; each shot goes to every `outputs` item's write(shot). The caller closes them.
-
-	Outputs must be hashable and weak-referenceable (outage tracking keys on them).
-	"""
+	"""Acquire until stopped; each shot goes to every `outputs` item's write(shot). The caller closes them."""
 	if not hasattr(signal, "setitimer"):
 		sys.exit("interf_main: Linux only (the Rigol deadline needs signal.setitimer)")
 	_setup_logging()
@@ -156,4 +135,10 @@ def main(outputs=()):
 
 
 if __name__ == "__main__":
-	main()
+	ioc_link = os.environ.get("INTERF_IOC_LINK")  # unix:/path or tcp:host:port of the diag_ioc listener
+	if ioc_link:
+		from diag_ioc.link import IocLink  # no EPICS library: diag_ioc's __init__ keeps it that way
+		with IocLink(ioc_link) as link:
+			main(outputs=[link])
+	else:
+		main()

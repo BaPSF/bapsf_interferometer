@@ -39,9 +39,9 @@ interf-stream-consumer = "streamer.consumer:main"
 
 [tool.setuptools]
 # Flat layout with several top-level modules: setuptools refuses to auto-discover them. The explicit
-# list keeps the flat modules explicit while installing both packages.
+# lists name every module and package; a new one must be added here.
 py-modules = ["interf_main", "interf_raw", "interf_analysis", "interf_file"]
-packages = ["interf_sim", "streamer"]
+packages = ["diag_ioc", "interf_sim", "streamer"]
 
 [tool.setuptools.package-data]
 streamer = ["conf/*.conf"]
