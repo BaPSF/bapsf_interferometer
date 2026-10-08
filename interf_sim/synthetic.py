@@ -18,6 +18,7 @@ from lab_scopes.lecroy.wavedesc import WAVEDESC_FMT, WAVEDESC_SIZE
 
 from interf_analysis import CSD_SKIP_BINS, FT_len, PORTS
 from interf_raw import RawShot
+from interf_shot import local_time, shot_date
 
 SAMPLES = 1 << 20
 DT = 1e-8  # s
@@ -39,10 +40,11 @@ def make_wavedesc(n, dt, t0=0.0, gain=LECROY_GAIN, offset=0.0, trigger_time=None
 	fields = dict(wave_descriptor=WAVEDESC_SIZE, comm_order=1, record_type=0, processing_done=0,
 	              sweeps_per_acq=1, horiz_interval=dt, horiz_offset=t0, vertical_gain=gain, vertical_offset=offset)
 	if trigger_time is not None:
-		# gmtime because wavedesc_trigger_timestamp() reads the fields back with calendar.timegm.
-		tm = time.gmtime(trigger_time)
-		fields.update(tt_second=tm.tm_sec + trigger_time % 1, tt_minute=tm.tm_min, tt_hours=tm.tm_hour,
-		              tt_days=tm.tm_mday, tt_months=tm.tm_mon, tt_year=tm.tm_year)
+		# The scope's LA wall clock, as wavedesc_trigger_timestamp() reads it back. In the hour repeated when DST
+		# ends, both occurrences write the same fields, as on the scope.
+		local = local_time(trigger_time)
+		fields.update(tt_second=local.second + trigger_time % 1, tt_minute=local.minute, tt_hours=local.hour,
+		              tt_days=local.day, tt_months=local.month, tt_year=local.year)
 	return struct.pack(WAVEDESC_FMT, *desc.wd._replace(**fields))
 
 
@@ -83,13 +85,15 @@ def _rigol_codes(volts):
 
 
 def make_raw_shot(n=SAMPLES, dt=DT, f_if=IF_HZ, phase=None, noise_v=0.0, host_time=None, rigol=True, rng=None,
-                  flat=()):
+                  flat=(), shot_number=None):
 	"""interf_raw.RawShot with every channel of interf_analysis.PORTS, all ports carrying φ.
 
 	phase: callable φ(t_s), or None for default_phase over the LeCroy record, which starts at t = 0.
 	The Rigol record (n // 4 points) spans the same window. Without `rigol`, missing["rigol"] is set
 	and rigol is {}, as interf_raw reports a failed Rigol. The WAVEDESC trigger time is host_time.
 	`flat` names LeCroy channels written as constant code 0, a dead input (ValueError for others).
+	With `shot_number`, the shot carries the identity interf_main would assign: shot_time = host_time
+	from the trigger, and its LA date. Without it the identity fields stay None, as interf_raw returns them.
 	"""
 	host_time = time.time() if host_time is None else host_time
 	rng = rng or np.random.default_rng()
@@ -115,7 +119,11 @@ def make_raw_shot(n=SAMPLES, dt=DT, f_if=IF_HZ, phase=None, noise_v=0.0, host_ti
 		lecroy[ch] = (np.zeros(n, dtype=np.int16), wavedesc)
 	if not rigol:
 		missing["rigol"] = "synthetic shot without Rigol"
-	return RawShot(host_time, lecroy, rigol_data, missing, 0.0)
+	shot = RawShot(host_time, lecroy, rigol_data, missing, 0.0)
+	if shot_number is not None:
+		shot.shot_date, shot.shot_number = shot_date(host_time), shot_number
+		shot.shot_time, shot.time_source = host_time, "trigger"
+	return shot
 
 
 def synthetic_shots(count, period=PERIOD_S, start_time=None, **shot_kw):

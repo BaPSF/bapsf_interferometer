@@ -16,9 +16,9 @@ from dataclasses import dataclass, field, fields
 
 from diag_ioc.link import LinkListener, parse_address
 from diag_ioc.module import ShotPipeline
+from diag_ioc.network import ipv4_network
 from diag_ioc.outage import Outage
 from diag_ioc.records import INVALID_ALARM, MAJOR_ALARM, SOFT_ALARM, UDF_ALARM, fit_text
-from streamer.network_access import ipv4_network
 
 log = logging.getLogger(__name__)
 
@@ -137,7 +137,7 @@ class StatusRecords:
 			self.connected = builder.boolIn("STAT:CONNECTED", ZNAM="no", ONAM="yes", ZSV="MINOR", DESC="a sender is connected")
 		self.stale = builder.boolIn("STAT:STALE", ZNAM="fresh", ONAM="stale", OSV="MAJOR", DESC="no shot within stale_seconds")
 		self.age = builder.aIn("STAT:AGE_S", EGU="s", PREC=1, DESC="time since the last shot arrived")
-		# IOC-side only: shots IocLink drops on the sender show as gaps in the payload's shot_index instead.
+		# IOC-side only: shots lost before the IOC (IocLink drops, link outages) show as gaps in the shot number instead.
 		self.dropped = builder.longIn("STAT:DROPPED", DESC="shots dropped by the IOC mailbox")
 		self.analysis = builder.aIn("STAT:ANALYSIS_S", EGU="s", PREC=3, DESC="analyze + publish time, last shot")
 		self.error = builder.longStringIn("STAT:ERROR", length=ERROR_TEXT_BYTES, DESC="last analysis error")

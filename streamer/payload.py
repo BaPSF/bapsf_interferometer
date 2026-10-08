@@ -1,8 +1,7 @@
-"""Convert an acquired :class:`interf_raw.RawShot` to transport variables and back."""
+"""Convert an acquired :class:`interf_raw.RawShot` to transport variables."""
 
 import base64
 import json
-from dataclasses import dataclass
 
 import numpy as np
 
@@ -59,52 +58,3 @@ def shot_variables(shot, shot_index):
 		data[f"{prefix}_samples"] = np.require(samples, requirements=("C", "A", "O"))
 		data[f"{prefix}_metadata_json"] = encode_json(metadata)
 	return data
-
-
-@dataclass
-class DecodedShot:
-	"""A shot rebuilt by :func:`shot_from_variables`; `lecroy`, `rigol` and `missing` are laid out as in RawShot."""
-	schema_version: int
-	shot_index: int
-	host_time: float
-	critical_path_s: float
-	missing: dict[str, str]
-	lecroy: dict[str, tuple[np.ndarray, bytes]]
-	rigol: dict[str, tuple[np.ndarray, dict]]
-
-
-def _scalar(value):
-	# .item(), not int()/float(): adios2 FileReader.read(..., step_selection=...) returns a scalar as
-	# shape (1,), and int()/float() of an ndim > 0 array is deprecated in NumPy (it failed the cloud
-	# test). .item() takes shape () or (1,) and raises ValueError for anything larger.
-	return np.asarray(value).item()
-
-
-def shot_from_variables(variables):
-	"""Inverse of :func:`shot_variables`; channel names come back upper case.
-
-	Raises ValueError for a schema_version this code does not know.
-	"""
-	version = int(_scalar(variables["schema_version"]))
-	if version != SCHEMA_VERSION:
-		raise ValueError(f"unsupported schema_version {version} (expected {SCHEMA_VERSION})")
-	lecroy, rigol = {}, {}
-	for name, samples in variables.items():
-		scope, _, rest = name.partition("_")
-		if not rest.endswith("_samples"):
-			continue
-		channel = rest.removesuffix("_samples")
-		if scope == "lecroy":
-			wavedesc = np.asarray(variables[f"lecroy_{channel}_wavedesc"], dtype=np.uint8).tobytes()
-			lecroy[channel.upper()] = (samples, wavedesc)
-		elif scope == "rigol":
-			rigol[channel.upper()] = (samples, decode_json(variables[f"rigol_{channel}_metadata_json"]))
-	return DecodedShot(
-		schema_version=version,
-		shot_index=int(_scalar(variables["shot_index"])),
-		host_time=float(_scalar(variables["host_time"])),
-		critical_path_s=float(_scalar(variables["critical_path_s"])),
-		missing=decode_json(variables["missing_json"]),
-		lecroy=lecroy,
-		rigol=rigol,
-	)

@@ -3,6 +3,7 @@ import argparse
 import contextlib
 from pathlib import Path
 
+import interf_payload
 from diag_ioc.link import IocLink, address_arg
 from interf_sim.trc_replay import TRC_DIR, ReplayLeCroy, repeat_trc_shots, run_main, trc_shots
 from streamer import RawOutput
@@ -44,7 +45,7 @@ def main():
 			Path(raw_output_settings.timing_log).parent.mkdir(parents=True, exist_ok=True)
 			raw_output = stack.enter_context(RawOutput(raw_output_settings))
 		if args.ioc_link is not None:
-			link = stack.enter_context(IocLink(args.ioc_link))
+			link = stack.enter_context(IocLink(args.ioc_link, encode=interf_payload.encode))
 		run_main(ReplayLeCroy(shots, args.period), LOG_DIR, outputs=[o for o in (raw_output, link) if o is not None])
 		if raw_output is not None and raw_output.dropped_shots:
 			print(f"Dropped raw output shots: {raw_output.dropped_shots}")

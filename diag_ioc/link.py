@@ -1,8 +1,8 @@
 """Shot transport from acquisition to a diag_ioc module: IocLink sends, LinkListener receives.
 
 Latest-wins on purpose: the live path never blocks acquisition and never replays a backlog;
-completeness is the ADIOS archive's job. Framing is streamer.socket_protocol without
-authentication, so listen only on a unix socket or an allow-listed TCP address.
+completeness is the ADIOS archive's job. The framing (diag_ioc.framing) has no authentication,
+so listen only on a unix socket or an allow-listed TCP address.
 """
 import argparse
 import logging
@@ -13,9 +13,9 @@ import threading
 import time
 from collections import deque
 
+from diag_ioc.framing import receive_message, send_arrays, send_end
+from diag_ioc.network import accept_from_allowed_network, create_tcp_listener, ipv4_network
 from diag_ioc.outage import Outage
-from streamer.network_access import accept_from_allowed_network, create_tcp_listener, ipv4_network
-from streamer.socket_protocol import receive_message, send_arrays, send_end
 
 log = logging.getLogger(__name__)
 
@@ -60,16 +60,16 @@ def address_arg(text):
 class IocLink:
 	"""Latest-wins shot sender: write() returns at once and never raises for link problems.
 
-	A daemon thread connects lazily, encodes and sends. Counters: `dropped` = replaced in the queue
-	by newer shots (also during an outage), `failed` = taken for sending but not delivered, `sent`.
-	Each write() gets the next seq (from 0 per IocLink), passed to encode; shot_variables stores it as
-	shot_index, so gaps there are lost shots. A custom encode that drops seq hides the losses.
+	A daemon thread connects lazily, encodes (`encode(item) -> {name: array}`) and sends. Counters:
+	`dropped` = replaced in the queue by newer shots (also during an outage), `failed` = taken for
+	sending but not delivered, `sent`. The link numbers nothing: a receiver sees lost shots only as
+	gaps in an identity the item carries (interf_payload's shot_number).
 	"""
 
-	def __init__(self, address, encode=None, depth=2, retry_interval=5.0, connect_timeout=2.0, send_timeout=10.0):
+	def __init__(self, address, encode, depth=2, retry_interval=5.0, connect_timeout=2.0, send_timeout=10.0):
 		self.address = address
 		self._kind, self._target = parse_address(address)
-		self._encode = encode  # (item, seq) -> {name: array}; None: streamer.payload.shot_variables
+		self._encode = encode
 		self._depth = depth
 		self._retry_interval = retry_interval
 		self._connect_timeout = connect_timeout
@@ -77,7 +77,6 @@ class IocLink:
 		self._queue = deque()
 		self._cond = threading.Condition()
 		self._closing = False
-		self._seq = 0
 		self._dropped = self._sent = self._failed = 0
 		self._sock = None
 		self._outage = Outage(log, f"IOC link {address}")  # used by the sender thread only
@@ -104,8 +103,7 @@ class IocLink:
 			if len(self._queue) == self._depth:
 				self._queue.popleft()
 				self._dropped += 1
-			self._queue.append((self._seq, item))
-			self._seq += 1
+			self._queue.append(item)
 			self._cond.notify()
 
 	def close(self, timeout=None):
@@ -138,9 +136,6 @@ class IocLink:
 		self.close()
 
 	def _run(self):
-		if self._encode is None:
-			from streamer.payload import shot_variables  # lazy: keeps importing this module cheap
-			self._encode = shot_variables
 		try:
 			while True:
 				with self._cond:
@@ -148,8 +143,8 @@ class IocLink:
 						self._cond.wait()
 					if not self._queue:
 						return
-					seq, item = self._queue.popleft()
-				if not self._deliver(seq, item):
+					item = self._queue.popleft()
+				if not self._deliver(item):
 					with self._cond:
 						if self._closing:
 							self._failed += len(self._queue)
@@ -159,12 +154,12 @@ class IocLink:
 		finally:
 			self._disconnect(graceful=True)
 
-	def _deliver(self, seq, item):
+	def _deliver(self, item):
 		"""False when the link failed (connection dropped); an encoding bug counts as failed but returns True."""
 		try:
 			if self._sock is None:
 				self._sock = self._connect()
-			data = self._encode(item, seq)
+			data = self._encode(item)
 			send_arrays(self._sock, data.items())
 		except (OSError, EOFError) as e:
 			self._failed += 1
@@ -176,7 +171,7 @@ class IocLink:
 		except Exception:
 			# An encoding bug, not a link problem: the connection stays usable.
 			self._failed += 1
-			log.exception("IOC link %s: shot seq %d not sent", self.address, seq)
+			log.exception("IOC link %s: shot not sent (encode failed)", self.address)
 			return True
 		self._sent += 1
 		if self._outage.since is not None:
@@ -258,7 +253,7 @@ class LinkListener:
 				raise
 		else:
 			host, port = self._target
-			sock = create_tcp_listener(host, None if port == 0 else (port, port), _LISTEN_BACKLOG)
+			sock = create_tcp_listener(host, port, _LISTEN_BACKLOG)
 			self.address = f"tcp:{host}:{sock.getsockname()[1]}"
 		self._listener = sock
 		threading.Thread(target=self._accept_loop, name="ioc-link-accept", daemon=True).start()

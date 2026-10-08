@@ -26,9 +26,9 @@ dependencies = [
   "matplotlib",
   "adios2",
   "PyNaCl",
-  # LeCroy + Rigol drivers (interf_raw.py). 0.4.0 is the minimum: it has the Rigol 12-bit/WORD
-  # full-depth read and LeCroy arm_master_single / wait_for_stop_then_complete.
-  "lab-scopes @ git+https://github.com/hjia94/lab_scopes.git@v0.4.0",
+  # LeCroy + Rigol drivers (interf_raw.py). 0.4.1: wavedesc_trigger_timestamp reads the WAVEDESC trigger
+  # time as America/Los_Angeles (0.4.0 read it as UTC, 7-8 h off), and tzdata comes with it on Windows.
+  "lab-scopes @ git+https://github.com/hjia94/lab_scopes.git@v0.4.1",
 ]
 
 [project.optional-dependencies]
@@ -44,7 +44,7 @@ diag-ioc = "diag_ioc.__main__:main"
 [tool.setuptools]
 # Flat layout with several top-level modules: setuptools refuses to auto-discover them. The explicit
 # lists name every module and package; a new one must be added here.
-py-modules = ["interf_main", "interf_raw", "interf_analysis", "interf_file"]
+py-modules = ["interf_main", "interf_raw", "interf_analysis", "interf_file", "interf_payload", "interf_shot", "interf_archive"]
 packages = ["diag_ioc", "interf_sim", "streamer"]
 
 [tool.setuptools.package-data]

@@ -86,6 +86,12 @@ class RawShot:
 	rigol: dict[str, tuple[np.ndarray, dict]]  # {ch: (uint16 12-bit codes, calibration metadata)}; {} if missing
 	missing: dict[str, str]  # {"lecroy" | "rigol": reason}; "lecroy" can coexist with partial lecroy data
 	critical_path_s: float  # capture detected -> re-armed (or not re-armed, on a stop request)
+	# Shot identity, assigned by interf_main after the re-arm (interf_shot; docs/ARCHITECTURE.md D14, D15). Not
+	# archived: streamer.payload ignores these, so the ADIOS output is unchanged.
+	shot_date: int | None = None  # YYYYMMDD, America/Los_Angeles
+	shot_number: int | None = None  # from 0 each shot_date
+	shot_time: float | None = None  # epoch s: the LeCroy trigger time, or host_time when time_source is "host"
+	time_source: str | None = None  # "trigger" | "host"
 
 
 #===============================================================================================================================================

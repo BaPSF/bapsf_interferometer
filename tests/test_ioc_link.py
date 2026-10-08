@@ -1,6 +1,8 @@
+import json
 import os
 import queue
 import socket
+import struct
 import sys
 import tempfile
 import threading
@@ -10,11 +12,12 @@ from pathlib import Path
 
 import numpy as np
 
+import interf_payload
+from diag_ioc.framing import receive_message, send_arrays, send_end
 from diag_ioc.link import UNIX_PATH_MAX_BYTES, IocLink, LinkListener, parse_address
+from diag_ioc.network import create_tcp_listener
 from interf_sim.synthetic import make_raw_shot
 from ioc_harness import as_is, free_port, wait_for
-from streamer.network_access import create_tcp_listener
-from streamer.payload import shot_variables
 
 RECEIVE_TIMEOUT_S = 5.0
 
@@ -32,7 +35,45 @@ def _receive_while_writing(received, link, item):
 
 
 def _shots(count):
-	return [make_raw_shot(4096, host_time=1_700_000_000.0 + 3 * i, rng=np.random.default_rng(i)) for i in range(count)]
+	return [make_raw_shot(4096, host_time=1_700_000_000.0 + 3 * i, rng=np.random.default_rng(i), shot_number=i)
+	        for i in range(count)]
+
+
+class FramingTests(unittest.TestCase):
+	def _pair(self):
+		left, right = socket.socketpair()
+		self.addCleanup(left.close)
+		self.addCleanup(right.close)
+		return left, right
+
+	def test_arrays_round_trip_with_dtype_and_shape(self):
+		left, right = self._pair()
+		sent = {"scalar": np.array(7, dtype=np.uint64), "time": np.array(12.5), "codes": np.arange(6, dtype=np.int16).reshape(2, 3),
+		        "strided": np.arange(10.0)[::2], "empty": np.empty(0)}
+		send_arrays(left, sent.items())
+		send_end(left)
+		received = receive_message(right)
+		self.assertEqual(set(received), set(sent))
+		for name, array in sent.items():
+			with self.subTest(name):
+				self.assertEqual((received[name].dtype, received[name].shape), (array.dtype, array.shape))
+				np.testing.assert_array_equal(received[name], array)
+		self.assertIsNone(receive_message(right))  # "end"
+
+	def test_message_over_max_bytes_is_refused_before_reading_payload(self):
+		left, right = self._pair()
+		send_arrays(left, [("a", np.zeros(60, dtype=np.uint8)), ("b", np.zeros(50, dtype=np.uint8))])
+		with self.assertRaisesRegex(ValueError, "over the 100-byte limit"):
+			receive_message(right, max_bytes=100)
+
+	def test_compressed_payload_is_refused(self):
+		# A streamer sender with compression on announces an "operation"; this link carries raw arrays only.
+		left, right = self._pair()
+		header = json.dumps({"type": "data", "variables": [{"name": "a", "dtype": "|u1", "shape": [4], "nbytes": 4,
+		                                                    "payload_nbytes": 2, "operation": {"name": "blosc2"}}]}).encode()
+		left.sendall(struct.pack("!Q", len(header)) + header + b"\0\0")
+		with self.assertRaisesRegex(ValueError, "not supported"):
+			receive_message(right)
 
 
 class ParseAddressTests(unittest.TestCase):
@@ -52,7 +93,7 @@ class ParseAddressTests(unittest.TestCase):
 		with self.assertRaises(ValueError):
 			parse_address("unix:" + at_limit + "x")
 		with self.assertRaises(ValueError):  # interf_main and interf_sim fail at startup, not on every send
-			IocLink("unix:" + at_limit + "x")
+			IocLink("unix:" + at_limit + "x", encode=as_is)
 
 	@unittest.skipUnless(sys.platform.startswith("linux"), "the 107-byte limit is Linux's (macOS allows 103)")
 	def test_a_socket_path_at_the_limit_binds(self):
@@ -69,12 +110,12 @@ class RoundTripTests(unittest.TestCase):
 	def _round_trip(self, address):
 		received = queue.Queue()
 		shots = _shots(3)
-		with LinkListener(address, received.put).start() as listener, IocLink(listener.address) as link:
-			for i, shot in enumerate(shots):
+		with LinkListener(address, received.put).start() as listener, IocLink(listener.address, interf_payload.encode) as link:
+			for shot in shots:
 				link.write(shot)
 				# One at a time: depth 2 would otherwise drop shots written before the first connect.
 				message = received.get(timeout=RECEIVE_TIMEOUT_S)
-				expected = shot_variables(shot, i)
+				expected = interf_payload.encode(shot)
 				self.assertEqual(set(message), set(expected))
 				for name, array in expected.items():
 					np.testing.assert_array_equal(message[name], array)
@@ -139,7 +180,7 @@ class NoListenerTests(unittest.TestCase):
 
 class CloseTests(unittest.TestCase):
 	def test_close_returns_within_its_bound_when_the_listener_stops_reading(self):
-		server = create_tcp_listener("127.0.0.1", None, 1)
+		server = create_tcp_listener("127.0.0.1", 0, 1)
 		accepted = []
 		threading.Thread(target=lambda: accepted.append(server.accept()[0]), daemon=True).start()
 		try:
@@ -157,7 +198,7 @@ class CloseTests(unittest.TestCase):
 				sock.close()
 
 	def test_write_after_close_raises(self):
-		link = IocLink(f"tcp:127.0.0.1:{free_port()}")
+		link = IocLink(f"tcp:127.0.0.1:{free_port()}", encode=as_is)
 		link.close()
 		with self.assertRaises(RuntimeError):
 			link.write(object())

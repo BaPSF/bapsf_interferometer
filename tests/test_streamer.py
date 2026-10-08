@@ -13,6 +13,7 @@ import nacl.public
 import interf_main
 from diag_ioc import outage
 from interf_raw import RawShot
+from interf_shot import ShotCounter, ShotIdentifier
 from streamer.adios_io import ADIOS2_AVAILABLE, AdiosIO
 from streamer.connection_security import (
 	CONNECTION_FILE_FORMAT,
@@ -58,6 +59,9 @@ class PayloadTests(unittest.TestCase):
 class MainIntegrationTests(unittest.TestCase):
 	def setUp(self):
 		interf_main._outages.clear()  # main() does this per run; these tests call _handle_shot directly
+		tmp = tempfile.TemporaryDirectory()
+		self.addCleanup(tmp.cleanup)
+		self.identifier = ShotIdentifier(ShotCounter(Path(tmp.name) / "shot_counter.json"))
 
 	def test_handle_shot_writes_before_logging(self):
 		events = []
@@ -69,7 +73,7 @@ class MainIntegrationTests(unittest.TestCase):
 			"log",
 			side_effect=lambda *args: events.append("log"),
 		):
-			self.assertIsNone(interf_main._handle_shot(shot, None, [raw_output]))
+			self.assertIsNone(interf_main._handle_shot(shot, None, self.identifier,[raw_output]))
 		self.assertEqual(events, ["write", "log"])
 
 	def test_failing_output_does_not_stop_later_outputs_or_log(self):
@@ -82,10 +86,10 @@ class MainIntegrationTests(unittest.TestCase):
 		with mock.patch.object(interf_main.log, "log", side_effect=lambda *args: events.append("log")), \
 				mock.patch.object(interf_main.log, "warning") as warning, \
 				mock.patch.object(interf_main.log, "info") as info:
-			interf_main._handle_shot(shot, None, [broken, healthy])
-			interf_main._handle_shot(shot, None, [broken, healthy])
+			interf_main._handle_shot(shot, None, self.identifier,[broken, healthy])
+			interf_main._handle_shot(shot, None, self.identifier,[broken, healthy])
 			broken.write.side_effect = None
-			interf_main._handle_shot(shot, None, [broken, healthy])
+			interf_main._handle_shot(shot, None, self.identifier,[broken, healthy])
 		self.assertEqual(events, ["write", "log"] * 3)
 		warning.assert_called_once()  # the outage start; the repeat waits OUTAGE_LOG_INTERVAL_S
 		self.assertTrue(warning.call_args.kwargs["exc_info"])  # with the traceback
@@ -110,9 +114,9 @@ class MainIntegrationTests(unittest.TestCase):
 		with mock.patch.object(interf_main.log, "log", side_effect=lambda *args: events.append("log")), \
 				mock.patch.object(interf_main.log, "warning") as warning, \
 				mock.patch.object(interf_main.log, "info") as info:
-			interf_main._handle_shot(shot, None, [output])
+			interf_main._handle_shot(shot, None, self.identifier,[output])
 			output.fail = False
-			interf_main._handle_shot(shot, None, [output])
+			interf_main._handle_shot(shot, None, self.identifier,[output])
 		self.assertEqual(events, ["log", "log"])  # the shot line survived the failing write
 		self.assertEqual(output.written, [shot])
 		warning.assert_called_once()
@@ -126,7 +130,7 @@ class MainIntegrationTests(unittest.TestCase):
 				mock.patch.object(interf_main.log, "log"), \
 				mock.patch.object(interf_main.log, "warning") as warning:
 			for _ in range(3):
-				interf_main._handle_shot(shot, None, [broken])
+				interf_main._handle_shot(shot, None, self.identifier,[broken])
 		messages = [c.args[0] % c.args[1:] for c in warning.call_args_list]
 		self.assertEqual(len(messages), 3)  # start, then one per (zero-length) interval
 		self.assertIn("2 failures", messages[1])
@@ -150,16 +154,6 @@ class TransportTests(unittest.TestCase):
 		self.assertEqual(set(actual), set(expected))
 		for name in expected:
 			np.testing.assert_array_equal(actual[name], expected[name])
-
-	def test_message_over_max_bytes_is_refused_before_reading_payload(self):
-		left, right = socket.socketpair()
-		try:
-			send_arrays(left, [("a", np.zeros(60, dtype=np.uint8)), ("b", np.zeros(50, dtype=np.uint8))])
-			with self.assertRaises(ValueError):
-				receive_message(right, max_bytes=100)
-		finally:
-			left.close()
-			right.close()
 
 	def test_connection_information_remains_encrypted(self):
 		private_key = nacl.public.PrivateKey.generate()

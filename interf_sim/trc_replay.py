@@ -9,7 +9,7 @@ What a run cannot show:
 - No Rigol: every Rigol connection fails, so every shot has missing["rigol"].
 - Transfers cost only the file read, so RawShot.critical_path_s is shorter than on the scopes.
 - Trigger times come from the recorded WAVEDESCs, so the dt that interf_main logs follows the
-  recording, not `shot_period`.
+  recording, not `shot_period`, and shot dates and numbers are those of the recording's days.
 - The patches are per process: a Rigol moved into a worker process would bypass them.
 """
 import math
@@ -28,6 +28,7 @@ from lab_scopes.lecroy import LeCroyNoDataError, LeCroyScope, LeCroyWavedesc, wa
 
 import interf_main
 import interf_raw
+from interf_shot import ShotCounter, ShotIdentifier
 
 # TRC_DIR = Path("D:/data/raw data")  # recorded shots on this PC; on Linux edit this line or pass --trc-dir
 TRC_DIR = Path("/home/adios/shared/Software/LAPD/data")
@@ -306,13 +307,16 @@ def run_main(lecroy, log_dir, outputs=()):
 
 	Exhaustion sends SIGINT, as an operator's Ctrl-C, so main's stop and release path runs. The stop
 	flag and signal handlers main changes are restored, so it can run again in the same process.
+	The shot counter state is `log_dir`/shot_counter.json, so a replay never numbers into acquisition's
+	counter. The trigger-lag check is off: recorded trigger times are older than the replay's host_time.
 	"""
 	lecroy.on_exhausted = lambda: signal.raise_signal(signal.SIGINT)
 	handlers = {s: signal.getsignal(s) for s in (signal.SIGINT, signal.SIGTERM)}
+	identifier = ShotIdentifier(ShotCounter(Path(log_dir) / "shot_counter.json"), trig_lag_max_s=0)
 	try:
 		with simulated_scopes(lecroy), mock.patch.object(interf_main, "LOG_DIR", str(log_dir)), \
 				mock.patch.object(interf_main, "_stop", False):
-			interf_main.main(outputs=outputs)
+			interf_main.main(outputs=outputs, identifier=identifier)
 	finally:
 		for s, handler in handlers.items():
 			signal.signal(s, handler)

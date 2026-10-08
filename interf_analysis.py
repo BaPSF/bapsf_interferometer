@@ -263,9 +263,17 @@ class PortResult:
 	missing: str | None  # reason the port has no data; the arrays are then empty
 
 
+_IDENTITY = ("shot_date", "shot_number", "shot_time", "time_source")
+
+
 @dataclass
 class ShotResult:
-	shot_index: int | None  # link sequence number; None for an interf_raw.RawShot
+	# Shot identity (docs/ARCHITECTURE.md D14, D15), copied from the shot; None where it has none (a RawShot
+	# before interf_main assigns it, or a streamer archive step).
+	shot_date: int | None
+	shot_number: int | None
+	shot_time: float | None
+	time_source: str | None
 	host_time: float
 	critical_path_s: float
 	acq_missing: dict[str, str]  # shot.missing as acquired
@@ -274,7 +282,7 @@ class ShotResult:
 
 
 def analyze_shot(shot, ports=PORTS, plasma_length=0.4, ft_len=FT_len, max_points=None, ne_window_ms=None):
-	'''ShotResult of an interf_raw.RawShot or streamer.payload.DecodedShot.
+	'''ShotResult of an interf_raw.RawShot, interf_payload.DecodedShot or interf_archive.ArchiveShot.
 
 	Never raises on bad data: a port whose channels are absent, flat or too short, or whose analysis
 	fails, is returned with `missing` set, and the other ports are unaffected. Above `max_points`
@@ -286,8 +294,9 @@ def analyze_shot(shot, ports=PORTS, plasma_length=0.4, ft_len=FT_len, max_points
 		raise ValueError(f"ne_window_ms {ne_window_ms}: start must be before stop")
 	t0 = time.perf_counter()
 	results = {p.name: _analyze_port(shot, p, plasma_length, ft_len, max_points, ne_window_ms) for p in ports}
-	return ShotResult(getattr(shot, "shot_index", None), shot.host_time, shot.critical_path_s,
-	                  dict(shot.missing), results, time.perf_counter() - t0)
+	return ShotResult(**{name: getattr(shot, name, None) for name in _IDENTITY}, host_time=shot.host_time,
+	                  critical_path_s=shot.critical_path_s, acq_missing=dict(shot.missing), ports=results,
+	                  analysis_s=time.perf_counter() - t0)
 
 
 def _analyze_port(shot, port, plasma_length, ft_len, max_points, ne_window_ms):

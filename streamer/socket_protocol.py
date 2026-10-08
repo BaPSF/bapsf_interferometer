@@ -153,26 +153,12 @@ def receive_hello(sock):
     return tuple(header.get("variables", [])), header.get("consumer_id")
 
 
-def receive_message(sock, max_bytes=None):
-    """Next data message as {name: array}, or None for "end".
-
-    With max_bytes, a message announcing more array bytes in total raises ValueError before any
-    payload is read or allocated; the stream is then mid-message, so the caller must close it.
-    """
+def receive_message(sock):
     header = _receive_header(sock)
     if header.get("type") == "end":
         return None
     if header.get("type") != "data":
         raise ValueError(f"Unknown socket message type: {header.get('type')}")
-    if max_bytes is not None:
-        announced = sum(
-            max(int(d["nbytes"]), int(d.get("payload_nbytes", 0)))
-            for d in header["variables"]
-        )
-        if announced > max_bytes:
-            raise ValueError(
-                f"Socket message announces {announced} bytes, over the {max_bytes}-byte limit"
-            )
 
     variables = {}
     for description in header["variables"]:

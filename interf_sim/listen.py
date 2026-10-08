@@ -12,25 +12,26 @@ import time
 
 import numpy as np
 
+import interf_payload
 from diag_ioc.link import LinkListener, address_arg
+from diag_ioc.network import ipv4_network
 from diag_ioc.outage import LOG_FORMAT
 from interf_analysis import analyze_shot
-from streamer.network_access import ipv4_network
-from streamer.payload import decode_json, shot_from_variables
+from interf_shot import clock, shot_id
 
 
 def _shot_line(variables, analyze, ne_window_ms):
 	mb = sum(np.asarray(v).nbytes for v in variables.values()) / 1e6
-	parts = [f"seq {int(variables['shot_index'])}",
-	         time.strftime("host %H:%M:%S", time.localtime(float(variables["host_time"]))),
+	shot = interf_payload.decode(variables)
+	parts = [f"shot {shot_id(shot.shot_date, shot.shot_number)}",
+	         f"{shot.time_source} {clock(shot.shot_time)}",
 	         f"{len(variables)} variables {mb:.1f} MB",
-	         f"path {float(variables['critical_path_s']):.2f} s"]
+	         f"path {shot.critical_path_s:.2f} s"]
 	if not analyze:
-		missing = decode_json(variables["missing_json"])
-		if missing:
-			parts.append("missing " + "; ".join(f"{k}: {v}" for k, v in missing.items()))
+		if shot.missing:
+			parts.append("missing " + "; ".join(f"{k}: {v}" for k, v in shot.missing.items()))
 		return " | ".join(parts)
-	result = analyze_shot(shot_from_variables(variables), ne_window_ms=ne_window_ms)
+	result = analyze_shot(shot, ne_window_ms=ne_window_ms)
 	for port in result.ports.values():
 		if port.missing is not None:
 			parts.append(f"{port.name} missing: {port.missing}")

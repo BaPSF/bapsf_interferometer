@@ -13,8 +13,9 @@ from interf_analysis import (FT_len, OFFSET_WINDOWS, analyze_shot, get_calibrati
                              rigol_trace)
 from interf_sim.synthetic import gaussian_phase, make_raw_shot, make_wavedesc, synthetic_shots, write_trc_shots
 from interf_sim.trc_replay import ReplayLeCroy, iter_shots, trc_shots
-from streamer.adios_io import ADIOS2_AVAILABLE, AdiosIO, iter_steps, read_step
-from streamer.payload import SCHEMA_VERSION, shot_from_variables, shot_variables
+from interf_archive import ADIOS2_AVAILABLE, decode, iter_steps, read_step
+from streamer.adios_io import AdiosIO
+from streamer.payload import SCHEMA_VERSION, shot_variables
 
 N = FT_len * 200
 DT = 1e-8
@@ -120,9 +121,13 @@ class AnalyzeShotTests(unittest.TestCase):
 				np.testing.assert_array_equal(self.result.ports[name].t_ms, t_ms)
 				np.testing.assert_array_equal(self.result.ports[name].phase, phase)
 
-	def test_raw_shot_has_no_shot_index(self):
-		self.assertIsNone(self.result.shot_index)
+	def test_shot_identity_is_copied_when_present(self):
+		self.assertEqual((self.result.shot_date, self.result.shot_number, self.result.shot_time, self.result.time_source),
+		                 (None, None, None, None))  # a RawShot before interf_main identifies it
 		self.assertEqual(self.result.host_time, HOST_TIME)
+		identified = analyze_shot(_shot(shot_number=4))
+		self.assertEqual((identified.shot_number, identified.shot_time, identified.time_source), (4, HOST_TIME, "trigger"))
+		self.assertEqual(identified.shot_date, 20231114)  # HOST_TIME is 2023-11-14 22:13 UTC, 14:13 in LA
 
 	def test_missing_rigol_marks_only_p40(self):
 		shot = _shot(rigol=False)
@@ -186,10 +191,10 @@ class AnalyzeShotTests(unittest.TestCase):
 		self.assertEqual(port.ne_mean, full.ne_mean)  # averaged before striding
 
 
-class PayloadRoundTripTests(unittest.TestCase):
-	def test_shot_from_variables_inverts_shot_variables(self):
+class ArchiveRoundTripTests(unittest.TestCase):
+	def test_decode_inverts_shot_variables(self):
 		shot = _shot()
-		decoded = shot_from_variables(shot_variables(shot, 7))
+		decoded = decode(shot_variables(shot, 7))
 		self.assertEqual((decoded.schema_version, decoded.shot_index), (SCHEMA_VERSION, 7))
 		self.assertEqual((decoded.host_time, decoded.critical_path_s), (shot.host_time, shot.critical_path_s))
 		self.assertEqual(decoded.missing, shot.missing)
@@ -197,7 +202,7 @@ class PayloadRoundTripTests(unittest.TestCase):
 		_assert_channels_equal(self, decoded.rigol, shot.rigol)
 
 		direct, via_payload = analyze_shot(shot), analyze_shot(decoded)
-		self.assertEqual(via_payload.shot_index, 7)
+		self.assertIsNone(via_payload.shot_number)  # the archive (streamer schema 1) carries no shot identity
 		for name, port in direct.ports.items():
 			np.testing.assert_array_equal(via_payload.ports[name].ne, port.ne)
 
@@ -206,7 +211,7 @@ class PayloadRoundTripTests(unittest.TestCase):
 		variables = shot_variables(shot, 7)
 		for name in ("schema_version", "shot_index", "host_time", "critical_path_s"):
 			variables[name] = variables[name].reshape(1)  # as adios2 FileReader returns them
-		decoded = shot_from_variables(variables)
+		decoded = decode(variables)
 		self.assertEqual((decoded.shot_index, decoded.host_time, decoded.critical_path_s),
 		                 (7, shot.host_time, shot.critical_path_s))
 
@@ -234,7 +239,7 @@ class PayloadRoundTripTests(unittest.TestCase):
 				self.assertEqual(len(steps), len(shots))
 				for i, (shot, variables) in enumerate(zip(shots, steps)):
 					with self.subTest(step=i):
-						decoded = shot_from_variables(variables)
+						decoded = decode(variables)
 						self.assertEqual((decoded.shot_index, decoded.host_time, decoded.missing),
 						                 (i, shot.host_time, shot.missing))
 						_assert_channels_equal(self, decoded.lecroy, shot.lecroy)
@@ -250,9 +255,8 @@ class PayloadRoundTripTests(unittest.TestCase):
 		# never marked: reading must return the steps written so far, not wait for the next one. A
 		# wait holds the GIL, so the reader runs in a subprocess, where a regression times out.
 		reader = ("import sys\n"
-		          "from streamer.adios_io import iter_steps, read_step\n"
-		          "from streamer.payload import shot_from_variables\n"
-		          "print([shot_from_variables(variables).shot_index for variables in iter_steps(sys.argv[1])])\n"
+		          "from interf_archive import decode, iter_steps, read_step\n"
+		          "print([decode(variables).shot_index for variables in iter_steps(sys.argv[1])])\n"
 		          "try:\n"
 		          "    read_step(sys.argv[1], 2)\n"
 		          "except IndexError:\n"
@@ -273,7 +277,7 @@ class PayloadRoundTripTests(unittest.TestCase):
 		variables = shot_variables(_shot(rigol=False), 0)
 		variables["schema_version"] = np.array(SCHEMA_VERSION + 1, dtype=np.uint16)
 		with self.assertRaises(ValueError):
-			shot_from_variables(variables)
+			decode(variables)
 
 
 class SyntheticTrcTests(unittest.TestCase):

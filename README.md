@@ -3,9 +3,9 @@
 Acquisition and analysis for the BaPSF microwave interferometers at ports 20, 29, and 40.
 
 > **Refactor in progress:** branch `refactor/linux-epics-daq`.
-> Acquisition now reads both scopes directly over Ethernet on Linux and stops once it has the raw samples. Nothing is written to disk, no phase is computed in the loop, and nothing is published to EPICS yet. The HDF5 layout below is for files written by the previous acquisition, which ran on Windows and read LeCroy `.trc` files.
+> Acquisition now reads both scopes directly over Ethernet on Linux and stops once it has the raw samples. Nothing is written to disk but the log and the shot counter, no phase is computed in the loop, and nothing is published to EPICS yet. The HDF5 layout below is for files written by the previous acquisition, which ran on Windows and read LeCroy `.trc` files.
 
-Requires Python 3.11 or later (developed on 3.14). Acquisition runs on **Linux only**, because the Rigol deadline uses `signal.setitimer`. `pip install .` installs the dependencies, including [`lab-scopes`](https://github.com/hjia94/lab_scopes) `v0.4.0`, which provides both scope drivers.
+Requires Python 3.11 or later (developed on 3.14). Acquisition runs on **Linux only**, because the Rigol deadline uses `signal.setitimer`. `pip install .` installs the dependencies, including [`lab-scopes`](https://github.com/hjia94/lab_scopes) `v0.4.1`, which provides both scope drivers and reads the LeCroy trigger time as America/Los_Angeles (on Windows it also installs `tzdata`).
 
 ## Acquisition
 
@@ -27,22 +27,26 @@ LECROY_IP=<address> python interf_main.py
 ```
 
 - Each LeCroy capture produces one log line, written to stdout and to `$INTERF_LOG_DIR/interf_acquire.log`. The default directory is `~/data/log`, and the log rotates at midnight, keeping 30 days. A line gives:
-  - host time;
-  - LeCroy trigger time on the scope's clock, and Δt since the previous capture (≈ 3 s steady, ≈ 6 s when a shot is skipped, "-" after a shot with no LeCroy data);
+  - the shot ID, `shot <YYYYMMDD>-<number>`;
+  - host time, in Los Angeles time like every time on the line;
+  - LeCroy trigger time, and Δt since the previous capture (≈ 3 s steady, ≈ 6 s when a shot is skipped, "-" after a shot with no trigger time);
   - points per channel;
   - time from capture detection to LeCroy re-arm;
   - any missing scope, with the reason.
+- Shot identity ([interf_shot.py](interf_shot.py)): the shot time is the LeCroy trigger time from the WAVEDESC (keep the scope clock NTP-synced), or the host time when a shot has none. A shot is its Los Angeles date plus a number from 0 each day; the counter is saved after every shot, so a restart the same day continues. A gap in the numbers is a lost shot. A host time before the trigger time, or more than `INTERF_TRIG_LAG_MAX_S` after it, is logged as a clock problem.
 - A pause in triggers, or a LeCroy that keeps failing to connect or respond, is logged when it starts, then every 5 min, then once more when capture resumes. After a LeCroy error the next attempt waits `LECROY_RETRY_INTERVAL`.
 - **Ctrl-C** (or SIGTERM from systemd): a shot already being read is finished and logged. The LeCroy is then set to NORM, the Rigol is sent `:RUN` (normally already running), and every connection is closed. A **second** Ctrl-C exits immediately, without restoring the trigger modes.
 
 ### Configuration
 
-Each variable is read from the environment at startup; unset means the default. The first two are in [interf_main.py](interf_main.py), the rest in [interf_raw.py](interf_raw.py).
+Each variable is read from the environment at startup; unset means the default. The first three are in [interf_main.py](interf_main.py), `INTERF_TRIG_LAG_MAX_S` in [interf_shot.py](interf_shot.py), the rest in [interf_raw.py](interf_raw.py). The time zone of trigger times and shot dates is always America/Los_Angeles, not a setting.
 
 | Variable | Default | Meaning |
 |---|---|---|
 | `INTERF_LOG_DIR` | `~/data/log` | Log directory |
 | `INTERF_IOC_LINK` | unset | `unix:/path` or `tcp:host:port` of a `diag_ioc` listener. When set, every shot is also sent there for live analysis; unset, acquisition runs exactly as before |
+| `INTERF_SHOT_STATE` | `~/data/state/shot_counter.json` | Shot counter state (date and last number), kept apart from the logs. An unreadable file is logged and counting starts at 0 |
+| `INTERF_TRIG_LAG_MAX_S` | 5 s | Largest normal host time − trigger time; outside 0 to this, a clock problem is logged. 0 disables the check |
 | `LECROY_IP` | `10.10.10.10` | **Placeholder; set it** |
 | `LECROY_CHANNELS` | `C1,C2,C3,C4` | Channels read, comma-separated. The first one carries the sweep counter used to detect a fresh capture |
 | `LECROY_TIMEOUT` | 5 s | VICP socket timeout |
@@ -62,11 +66,12 @@ A Rigol operation that hangs is cut off by `SIGALRM` at its deadline, so it cann
 - `lecroy`: `{ch: (int16 samples, 346-byte WAVEDESC)}`;
 - `rigol`: `{ch: (uint16 12-bit codes, calibration metadata dict)}`. The Rigol has no header block, so voltages are `(code - y_origin - y_reference) * y_increment`;
 - `missing`: `{"lecroy" | "rigol": reason}`. A missing Rigol has an empty data dict. `missing["lecroy"]` lists failed channels, and `lecroy` still holds the channels that were read;
-- `host_time` and `critical_path_s`.
+- `host_time` and `critical_path_s`;
+- `shot_date`, `shot_number`, `shot_time` and `time_source` (`trigger` or `host`): `None` from `acquire_shot`, then set by `interf_main` before the outputs. The raw archive does not store them.
 
-`interf_main.main(outputs)` writes each shot to every output, then logs it. A failing output is logged (traceback when it starts failing, a count every 5 min, a line on recovery) and never stops the other outputs or the loop. The command-line entry point passes no output unless `INTERF_IOC_LINK` is set.
+`interf_main.main(outputs)` assigns each shot's identity, writes the shot to every output, then logs it. A failing output is logged (traceback when it starts failing, a count every 5 min, a line on recovery) and never stops the other outputs or the loop. The command-line entry point passes no output unless `INTERF_IOC_LINK` is set.
 
-With `INTERF_IOC_LINK`, the output is an `IocLink` ([diag_ioc/link.py](diag_ioc/link.py)). Its `write()` only queues the shot; a background thread encodes and sends it. It is latest-wins: it keeps at most the 2 newest unsent shots, never blocks acquisition, and does not resend a shot lost during an outage (the raw archive is the complete record). An outage is logged when it starts, every 5 min, and on recovery with the number of shots not delivered; reconnection is retried every 5 s.
+With `INTERF_IOC_LINK`, the output is an `IocLink` ([diag_ioc/link.py](diag_ioc/link.py)). Its `write()` only queues the shot; a background thread encodes it with [interf_payload.py](interf_payload.py) (schema 2: the shot identity, then the raw arrays) and sends it. It is latest-wins: it keeps at most the 2 newest unsent shots, never blocks acquisition, and does not resend a shot lost during an outage (the raw archive is the complete record). An outage is logged when it starts, every 5 min, and on recovery with the number of shots not delivered; reconnection is retried every 5 s.
 
 ## Offline simulation
 
@@ -87,6 +92,7 @@ python -m interf_sim --ioc-link unix:/tmp/interf.sock --limit 20  # also send sh
 - There is no Rigol: every shot has `missing["rigol"]`.
 - When the shots run out, the simulator sends SIGINT, so the Ctrl-C stop and release path runs. The log goes to `interf_sim/log/`.
 - Transfers take only the file read time, so `critical_path_s` is shorter than on the scopes. The logged `dt` follows the recorded trigger times, not `--period`.
+- Shot dates are the recording's, and the shot counter state is `interf_sim/log/shot_counter.json` (`INTERF_SHOT_STATE` is not used), so a replay never adds to acquisition's numbering. The trigger-lag check is off, since recorded trigger times are older than the replay.
 - `--raw-output` enables the integrated output package. It accepts a direct ADIOS output, an encrypted socket connection file, or a remote server configuration. See [streamer/README.md](streamer/README.md) for the payload and consumer commands.
 
 Without recorded shots, generate synthetic ones with a known phase (a Gaussian bump of about 6 rad), then replay them with `--trc-dir`:
@@ -119,10 +125,14 @@ for shot in iter_shots(ReplayLeCroy(trc_shots()[:10])):
 | [interf_main.py](interf_main.py) | Acquisition entry point: loop, logging, and Ctrl-C/SIGTERM handling |
 | [interf_raw.py](interf_raw.py) | Same-shot raw acquisition from the LeCroy and the Rigol |
 | [interf_analysis.py](interf_analysis.py) | Phase extraction (`phase_from_raw`, which uses the cross-spectral density; `phase_from_hilbert`, which is slower), `get_calibration_factor`, and `analyze_shot`, which turns one raw shot into per-port phase and density (P20, P29, P40) |
+| [interf_shot.py](interf_shot.py) | Shot time (LeCroy trigger time, Los Angeles zone, host-time fallback) and the persisted per-day shot counter |
+| [interf_payload.py](interf_payload.py) | Live-link message of one shot (`encode` for `IocLink`, `decode` for the IOC); independent of `streamer/` |
+| [interf_archive.py](interf_archive.py) | Reads the `--raw-output` ADIOS archive back shot by shot (`iter_steps`, `read_step`, `decode`) for offline reanalysis with `analyze_shot`. Kept outside `streamer/`, which another group maintains |
 | [interf_file.py](interf_file.py) | HDF5 schema and writers for the daily interferometer file (previous acquisition) |
 | [interf_sim/](interf_sim/) | Offline simulation: scope fakes that replay `.trc` files, `synthetic.py`, which generates shots with a known phase, and `listen.py`, a development listener for the IOC link |
-| [diag_ioc/](diag_ioc/) | Diagnostic IOC host (pythonSoftIOC; Linux). `python -m diag_ioc --config FILE.toml` serves each configured module's records over CA and PVA, plus `STAT:*` link and analysis status and the devIocStats health records. Modules subclass `module.DiagnosticModule` (`create_records`, `analyze`, `publish`) and build records with `records.py`. `link.py` is the latest-wins shot link from acquisition (`IocLink`) to the IOC (`LinkListener`, which refuses a message announcing more than 1 GiB, about 80× today's shot); `outage.py` logs a persisting failure when it starts, every 5 min, and on recovery. Importing the package never loads softioc, so acquisition can use the link. `pip install -e '.[ioc]'` |
+| [diag_ioc/](diag_ioc/) | Diagnostic IOC host (pythonSoftIOC; Linux). `python -m diag_ioc --config FILE.toml` serves each configured module's records over CA and PVA, plus `STAT:*` link and analysis status and the devIocStats health records. Modules subclass `module.DiagnosticModule` (`create_records`, `analyze`, `publish`) and build records with `records.py`. `link.py` is the latest-wins shot link from acquisition (`IocLink`) to the IOC (`LinkListener`, which refuses a message announcing more than 1 GiB, about 80× today's shot), with its own framing (`framing.py`) and allow-list (`network.py`), so the package never imports `streamer/`; `outage.py` logs a persisting failure when it starts, every 5 min, and on recovery. Importing the package never loads softioc, so acquisition can use the link. `pip install -e '.[ioc]'` |
 | [deploy/systemd/](deploy/systemd/) | `diag-ioc@.service`: one IOC instance per `/etc/diag-ioc/<name>.toml` (user and paths are placeholders) |
+| [docs/](docs/) | `ARCHITECTURE.md`: decisions D1–D15 for the live analysis and EPICS IOC; `HANDOFF_live_epics.md`: the commit-by-commit plan |
 | [streamer/](streamer/) | Buffered ADIOS/socket raw output, metadata encoding, consumer, security, compression, and remote restart support |
 
 The live GUI will be re-implemented under EPICS. The HDF5 readers and the datarun merge scripts may return later on this branch.

@@ -20,7 +20,7 @@ REPO = Path(__file__).resolve().parent.parent
 TESTS = Path(__file__).resolve().parent
 
 
-def as_is(item, seq):
+def as_is(item):
 	"""IocLink encode for items that already are {name: array}."""
 	return item
 
@@ -154,4 +154,6 @@ class IocProcess:
 			if self.process is not None and self.process.poll() is None:
 				self.stop()
 		finally:
+			if self.process is not None:
+				self.process.stdout.close()
 			self._dir.cleanup()

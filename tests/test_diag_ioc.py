@@ -70,7 +70,7 @@ class ConfigTests(unittest.TestCase):
 	def test_invalid_configs_name_the_problem(self):
 		base = tomllib.loads(SPEC_EXAMPLE)
 		cases = {
-			"unknown top-level": dict(base, extra=1),
+			"top level: unknown keys": dict(base, extra=1),
 			"[ioc] table is required": {"module": base["module"]},
 			"unknown keys": dict(base, module=[dict(base["module"][0], stale_second=3)]),
 			"prefix must be": dict(base, module=[dict(base["module"][0], prefix="LAPD:DIAG:INTERF:")]),
