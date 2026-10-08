@@ -1,8 +1,11 @@
+import errno
 import json
 import os
 import queue
+import signal
 import socket
 import struct
+import subprocess
 import sys
 import tempfile
 import threading
@@ -17,7 +20,7 @@ from diag_ioc.framing import receive_message, send_arrays, send_end
 from diag_ioc.link import UNIX_PATH_MAX_BYTES, IocLink, LinkListener, parse_address
 from diag_ioc.network import create_tcp_listener
 from interf_sim.synthetic import make_raw_shot
-from ioc_harness import as_is, free_port, wait_for
+from ioc_harness import REPO, as_is, free_port, wait_for
 
 RECEIVE_TIMEOUT_S = 5.0
 
@@ -141,6 +144,48 @@ class RoundTripTests(unittest.TestCase):
 			stale.close()  # leaves the path behind, as a crashed listener does
 			with LinkListener(f"unix:{path}", lambda message: None).start():
 				self.assertTrue(path.exists())
+
+
+@unittest.skipUnless(sys.platform.startswith("linux"), "unix socket path ownership is checked on Linux")
+class UnixPathOwnershipTests(unittest.TestCase):
+	def _assert_in_use(self, address):
+		with self.assertRaises(OSError) as raised:
+			LinkListener(address, lambda message: None).start()
+		self.assertEqual(raised.exception.errno, errno.EADDRINUSE)
+		self.assertIn("in use", str(raised.exception))
+
+	def test_a_second_listener_on_the_same_file_is_refused_and_the_first_keeps_it(self):
+		with tempfile.TemporaryDirectory(dir="/tmp") as tmp:
+			(Path(tmp) / "x").mkdir()
+			path = f"{tmp}/link.sock"
+			received = queue.Queue()
+			with LinkListener(f"unix:{path}", received.put).start():
+				inode = os.stat(path).st_ino
+				for spelling in (path, f"{tmp}/x/../link.sock", f"{tmp}//link.sock", os.path.relpath(path)):
+					with self.subTest(spelling=spelling):
+						self._assert_in_use(f"unix:{spelling}")
+				self.assertEqual(os.stat(path).st_ino, inode)
+				with IocLink(f"unix:{path}", encode=as_is) as link:
+					self.assertIn("v", _receive_while_writing(received, link, {"v": np.arange(3)}))
+
+	def test_a_path_held_by_another_process_is_refused_until_that_process_dies(self):
+		with tempfile.TemporaryDirectory(dir="/tmp") as tmp:
+			path = f"{tmp}/link.sock"
+			holder = subprocess.Popen(
+				[sys.executable, "-c", "import sys, time; from diag_ioc.link import LinkListener; "
+				 "LinkListener(sys.argv[1], print).start(); print('ready', flush=True); time.sleep(60)", f"unix:{path}"],
+				cwd=REPO, env=dict(os.environ, PYTHONPATH=str(REPO)), stdout=subprocess.PIPE, text=True)
+			try:
+				self.assertEqual(holder.stdout.readline().strip(), "ready")
+				self._assert_in_use(f"unix:{path}")
+			finally:
+				holder.send_signal(signal.SIGKILL)  # no cleanup: the socket and lock files stay, as after a crash
+				holder.wait()
+				holder.stdout.close()
+			self.assertTrue(Path(path).is_socket())
+			with LinkListener(f"unix:{path}", lambda message: None).start():  # restart after the crash
+				self.assertTrue(Path(path).is_socket())
+			self.assertFalse(Path(path).exists())
 
 
 class SizeCapTests(unittest.TestCase):

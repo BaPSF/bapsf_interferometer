@@ -28,8 +28,10 @@ Facts from testing that still matter:
   real record length is known; `scipy.fft.rfft` with `workers=-1` in `correlation_spectrogram` gives the same peaks
   faster.
 - `critical_path_s` is unchanged by the link (median about 4 ms with and without).
-- C4 config gap (minor): the same address spelled two ways (`unix:/tmp/../tmp/a.sock`) passes the uniqueness check.
-  Normalize unix paths with `os.path.abspath` first.
+- Two listeners on one unix socket path (one config spelling it two ways, or two IOC processes) used to let the second
+  silently take the socket, and stopping the first then removed it. Fixed after C4r: `LinkListener` holds
+  `<path>.lock` (`flock`), so a second listener fails to start with EADDRINUSE. No `os.path.abspath` config check: it
+  resolves `..` and `//` differently from the kernel.
 - Run single test modules with `python -m unittest discover -s tests -p test_x.py -v`. The dotted form fails, because
   the tests import `ioc_harness` as a top-level module.
 - A disconnected channel that still delivers noise is not caught. A signal-quality (SNR) check waits for real data.

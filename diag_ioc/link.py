@@ -5,6 +5,7 @@ completeness is the ADIOS archive's job. The framing (diag_ioc.framing) has no a
 so listen only on a unix socket or an allow-listed TCP address.
 """
 import argparse
+import errno
 import logging
 import os
 import socket
@@ -210,12 +211,34 @@ class IocLink:
 		return self._dropped + self._failed - self._lost_at_outage_start
 
 
+def _lock_socket_path(path):
+	"""fd holding an exclusive flock on <path>.lock; OSError(EADDRINUSE) when another listener holds it.
+
+	flock, not fcntl/lockf: it is per open file, so a second listener in the same process is refused too.
+	The kernel releases it when the holder dies, so a restart after a crash takes the path back. The lock
+	file is left in place: removing it would let a waiter lock a file that is no longer at the path.
+	"""
+	import fcntl  # unix only; link.py stays importable on Windows
+	fd = os.open(path + ".lock", os.O_RDWR | os.O_CREAT, 0o660)
+	try:
+		fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+	except BlockingIOError:
+		os.close(fd)
+		raise OSError(errno.EADDRINUSE, f"link socket {path} is in use: another listener holds {path}.lock "
+		              "(two modules or two IOCs configured with the same listen path?)") from None
+	except BaseException:
+		os.close(fd)
+		raise
+	return fd
+
+
 class LinkListener:
 	"""Accepts IocLink connections and calls on_message(variables) once per shot.
 
 	on_message runs on that connection's reader thread; an exception in it is logged and the
 	connection kept. TCP peers outside `allow` (CIDR strings or networks, default 127.0.0.1/32) are closed unread.
-	A message over max_message_bytes closes its connection unread.
+	A message over max_message_bytes closes its connection unread. start() raises OSError(EADDRINUSE) when another
+	listener, in this process or another, owns the address: a TCP port in use, or a unix path whose <path>.lock is held.
 	"""
 
 	def __init__(self, address, on_message, allow=(), max_message_bytes=MAX_MESSAGE_BYTES):
@@ -225,6 +248,7 @@ class LinkListener:
 		self._allow = tuple(ipv4_network(a) for a in allow) or (ipv4_network("127.0.0.1/32"),)
 		self._max_message_bytes = max_message_bytes
 		self._listener = None
+		self._lock_fd = None  # unix only: holds <path>.lock while this listener owns the path
 		self._connections = set()
 		self._lock = threading.Lock()  # also serializes _drops across reader threads
 		self._drops = Outage(log, f"IOC link listener {address}")  # a persistently bad sender reconnects every retry_interval
@@ -238,18 +262,24 @@ class LinkListener:
 	def start(self):
 		if self._kind == "unix":
 			path = self._target
+			self._lock_fd = _lock_socket_path(path)
 			try:
-				if stat.S_ISSOCK(os.stat(path).st_mode):
-					os.unlink(path)  # left by a process that died; a non-socket file makes bind fail instead
-			except FileNotFoundError:
-				pass
-			sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-			try:
-				sock.bind(path)
-				os.chmod(path, 0o660)  # the acquisition user reaches it through a shared group
-				sock.listen(_LISTEN_BACKLOG)
+				try:
+					if stat.S_ISSOCK(os.stat(path).st_mode):
+						os.unlink(path)  # we hold the lock, so no live listener owns it: a process that died left it
+				except FileNotFoundError:
+					pass
+				sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+				try:
+					sock.bind(path)  # a non-socket file at path makes this fail
+					os.chmod(path, 0o660)  # the acquisition user reaches it through a shared group
+					sock.listen(_LISTEN_BACKLOG)
+				except BaseException:
+					sock.close()
+					raise
 			except BaseException:
-				sock.close()
+				os.close(self._lock_fd)
+				self._lock_fd = None
 				raise
 		else:
 			host, port = self._target
@@ -273,11 +303,13 @@ class LinkListener:
 			except OSError:
 				pass
 			sock.close()
-		if self._kind == "unix" and self._listener is not None:
+		if self._lock_fd is not None:
 			try:
-				os.unlink(self._target)
+				os.unlink(self._target)  # ours: the lock kept every other listener off this path
 			except FileNotFoundError:
 				pass
+			os.close(self._lock_fd)  # last: the next listener may take the path from here on
+			self._lock_fd = None
 
 	def __enter__(self):
 		return self

@@ -17,7 +17,10 @@ WorkingDirectory=/opt/bapsf_interferometer
 EnvironmentFile=-/etc/diag-ioc/%i.env
 Environment=PYTHONUNBUFFERED=1
 ExecStart=/opt/bapsf_interferometer/.venv/bin/python -m diag_ioc --config /etc/diag-ioc/%i.toml
-# /run/diag-ioc/%i holds the link socket named by the config's listen = "unix:/run/diag-ioc/%i/link.sock".
+# /run/diag-ioc/%i holds the link socket named by the config's listen = "unix:/run/diag-ioc/%i/link.sock",
+# and link.sock.lock beside it: an IOC whose socket path is already locked by another listener refuses to start.
+# systemd removes the directory whenever the service stops, Restart= restarts included, so no stale socket
+# outlives a crash here; the IOC replaces a stale socket itself only when run outside systemd.
 RuntimeDirectory=diag-ioc/%i
 RuntimeDirectoryMode=0750
 # SIGTERM: the IOC closes its listeners (removing the socket) and exits 0 within about a second.
