@@ -36,6 +36,7 @@ compression = ["blosc2>=4,<5"]
 
 [project.scripts]
 interf-stream-consumer = "streamer.consumer:main"
+interf-wanstream-consumer = "streamer.wanstreamer_consumer:main"
 interf-stream-analyze = "streamer.analyze_remote_experiment:main"
 
 [tool.setuptools]

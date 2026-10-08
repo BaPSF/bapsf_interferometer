@@ -17,6 +17,13 @@ class IO(ABC):
     def create(cls, settings, timing_log=None):
         from .remote_consumer_io import ServerConfig
 
+        if getattr(settings, "engine", "").lower() == "wanstreamer":
+            from .adios_io import AdiosIO
+
+            # WANStreamer owns its replay queue and reconnect worker.  Adding
+            # BufferedIO here would create a second producer-side ring buffer.
+            return AdiosIO(settings)
+
         if (
             Path(settings.destination).suffix.lower() == ".conf"
             or ServerConfig.is_server_config(settings.destination)
