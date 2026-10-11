@@ -1,0 +1,5 @@
+# diag_ioc access security, installed through the config's [ioc] acf (docs/ARCHITECTURE.md D8):
+# every record is readable by every client and writable by none, over CA and PVA.
+ASG(DEFAULT) {
+	RULE(1, READ)
+}

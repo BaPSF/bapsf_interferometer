@@ -1,11 +1,12 @@
 # EPICS live-analysis architecture: decisions
 
-Repo `BaPSF/bapsf_interferometer`, branch `refactor/linux-epics-daq` (C4r, the link socket lock and C4s done).
+Repo `BaPSF/bapsf_interferometer`, branch `refactor/linux-epics-daq` (C4r `4ee26b8`, the link socket lock `ebb0b9f`,
+C4s `465b76a` and C5 done; `git log` has the current head).
 Status: **all 15 decisions ACCEPTED by J on 2026-10-08.** Every agent follows this file, and
 `HANDOFF_live_epics.md` implements it commit by commit. Anything neither covers goes to J before code is written.
 
 **Single source:** this file is `docs/ARCHITECTURE.md` on `refactor/linux-epics-daq`, next to
-`docs/HANDOFF_live_epics.md`. Every session (the local coding agent, the cloud test agent and `test-on-Bobby`) pulls the
+`docs/HANDOFF_live_epics.md`. Every session (the local coding agent and `test-on-Bobby`) pulls the
 branch and reads both before any work. Copies elsewhere (the project's shared folder, an agent's memory) are not
 authoritative. Doc changes land only as commits by the local agent; other sessions send them as patch files.
 
@@ -41,7 +42,7 @@ the record timestamps are `host_time`. C4r (`4ee26b8`) replaced both, per D6, D1
 | D10 | Supervision | systemd template unit |
 | D11 | Dependencies | Exact pins for `softioc`, `epicscorelibs`, `pvxslibs`, `p4p` |
 | D12 | Repo layout | `diag_ioc` stays here until a 2nd diagnostic exists |
-| D13 | Agent roles | Local agent writes code; cloud agent tests synthetically; real-data gates deferred |
+| D13 | Agent roles | Local agent writes code; `test-on-Bobby` tests every commit on Linux with real `.trc` data |
 | D14 | Shot identity | `shot_date` (YYYYMMDD, LA local) + `shot_number` from 0 each day, persisted |
 | D15 | Shot time | LeCroy WAVEDESC trigger time (scope NTP-synced), float64 epoch seconds |
 
@@ -197,25 +198,25 @@ shots dropped by the IOC mailbox.
 ### D13. Agent roles and gates
 - **Single source (J, 2026-10-11):** see the header. A session that finds the docs and the code disagree reports it
   rather than working from its own copy.
-- **Local agent (Windows):** the only code writer, `docs/` included. It runs no tests unless J asks. Pushes the planned commits (C4s, C5, then C6–C8) to `refactor/linux-epics-daq`
+- **Local agent (Windows):** the only code writer, `docs/` included. It runs no tests unless J asks, and says in each
+  commit message what it ran and what it did not. Pushes the planned commits (C6–C8) to `refactor/linux-epics-daq`
   on top of the latest head, pulling before each commit.
-- **Cloud agent (Linux):** runs the test suite, including the Linux-only tests, and synthetic scenarios (`interf_sim.synthetic`, `interf_sim --ioc-link`,
-  pyepics CA checks) on the latest head, reports results and proposed patches to J, and pushes nothing. PVA
-  tests are skipped where the kernel has no IPv6.
-- **`test-on-Bobby` (the Linux lab machine with the `.trc` recordings):** runs the real-data checks (handoff §5), the
-  PVA tests and the PVA bench re-run, reports to J, and pushes nothing.
+- **`test-on-Bobby` (the Linux lab machine with the `.trc` recordings), the only test session (J, 2026-10-11):** runs
+  the full suite, including the Linux-only tests, on each pushed commit, plus its scenario on real `.trc` files, the
+  real-data checks (handoff §5), the PVA tests and the PVA bench re-run. It reports results and proposed patches to J,
+  and pushes nothing. The cloud test agent is retired; no new synthetic data generators are needed.
 - **pyepics monitor rule (bench F2):** pyepics reports a PV connected before it subscribes, so the last monitor
   created can silently never start (8 of 35 trials). Every CA monitor client (the tests, through
   a `tests/ioc_harness.py` helper such as `monitor_all(names, callback, timeout)`) calls `epics.ca.flush_io()` until
   every PV has delivered its first value, then reports ready. Otherwise it fails and names the PVs that never
   delivered. Drop values that arrive before the first shot (the connect-time value is not a shot). The rule applies to
   CA test clients; `interf_store` uses PVA (D9).
-- **Real-data gates are deferred, not waived:** plausible density, no missing ports on real `.trc` shots, the
-  record length that sets `max_points`/`ca_max_array_bytes`, and TRIGGER_TIME resolution. Each stage stays
-  "pending real-data check" until `test-on-Bobby` is usable. No trc-dependent work before then.
-- **PVA gate:** the PVA group (one update per shot, no torn reads) is untested here, because the cloud has no IPv6, so
-  the cloud skips the C5 and C6 PVA tests. Run them on the Linux machine, before C6 is called done.
-  J re-runs the IOC bench (`ioc_bench.py run --quick`, without `--no-pva`) on an IPv6 machine.
+- **Real-data gates** (`test-on-Bobby`, usable since 2026-10-11): plausible density, no missing P20/P29 on real `.trc`
+  shots (they hold no Rigol traces, so P40 is always missing in replay), and TRIGGER_TIME resolution. The record length
+  is known (1,000,002 samples at 0.1 µs) and set `max_points = 2048`, `ca_max_array_bytes = 65536` in C5.
+- **PVA gate:** the PVA group (one update per shot, no torn reads) needs kernel IPv6; the PVA tests skip without it.
+  Run them on the Linux machine before C6 is called done. J re-runs the IOC bench (`ioc_bench.py run --quick`,
+  without `--no-pva`) on an IPv6 machine.
 
 ### D14. Shot identity
 - LAPD has no facility shot number yet. When one exists, it is added beside ours.
@@ -257,8 +258,7 @@ shots dropped by the IOC mailbox.
 
 ## 2. Open
 
-- Config values still to set (no code change): `max_points`/`ca_max_array_bytes` (real record length, D13) and the
-  systemd user/group/paths.
+- Config values still to set (no code change): the systemd user/group/paths.
 - Deferred by J: whether legacy HDF5 readers accept empty P40 arrays where the old writer stored zero-filled
   placeholders (D9).
 
@@ -267,11 +267,10 @@ shots dropped by the IOC mailbox.
 Commit labels and file-level specs are in `HANDOFF_live_epics.md`.
 
 Done: C4r (`4ee26b8`: streamer restored, live link decoupled, shot identity and trigger time), the link socket lock
-(`ebb0b9f`) and C4s (the shot counter's file write off the acquisition thread, start-up recovery from the acquisition
-log; D14).
+(`ebb0b9f`), C4s (`465b76a`: the shot counter's file write off the acquisition thread, start-up recovery from the
+acquisition log; D14) and C5 (`interf_ioc.py` per D2, D4, D5, D7, the host's `SHOT:ACK` wait, `<name>.db` at start,
+the read-only ACF of D8 and the constraints file of D11).
 
-1. C5, one commit: `interf_ioc.py` per D2, D4, D5, D7, with the prefix from config, `<name>.db` written at start, the
-   host's `SHOT:ACK` wait (tested by publishing back-to-back and finding no torn chain), the read-only ACF (D8) and the
-   constraints file (D11).
-2. Cloud agent: synthetic C5 scenario (IOC + `interf_sim --ioc-link`, CA readback of the D4 list, STALE after stop, IOC
-   restart mid-run). C6 (PVA storage) is then tested on the Linux machine.
+1. `test-on-Bobby`: the C5 suite and scenario (IOC + `interf_sim --ioc-link` on real `.trc` files, CA readback of the
+   D4 list, STALE after stop, IOC restart mid-run), and the PVA tests where IPv6 works.
+2. C6 (PVA storage), then C7 and C8.

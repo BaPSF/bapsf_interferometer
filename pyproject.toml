@@ -33,6 +33,7 @@ dependencies = [
 
 [project.optional-dependencies]
 compression = ["blosc2>=4,<5"]
+# Floors; constraints.txt pins the tested EPICS stack.
 ioc = ["softioc>=4.7.2"]
 # CA clients, including the tests that read the IOC back over CA.
 clients = ["pyepics>=3.5.10"]
@@ -44,7 +45,8 @@ diag-ioc = "diag_ioc.__main__:main"
 [tool.setuptools]
 # Flat layout with several top-level modules: setuptools refuses to auto-discover them. The explicit
 # lists name every module and package; a new one must be added here.
-py-modules = ["interf_main", "interf_raw", "interf_analysis", "interf_file", "interf_payload", "interf_shot", "interf_archive"]
+py-modules = ["interf_main", "interf_raw", "interf_analysis", "interf_file", "interf_payload", "interf_shot", "interf_archive",
+              "interf_ioc"]
 packages = ["diag_ioc", "interf_sim", "streamer"]
 
 [tool.setuptools.package-data]
