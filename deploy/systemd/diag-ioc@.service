@@ -11,7 +11,7 @@ Type=simple
 # (socket 0660 inside the 0750 runtime directory below).
 User=diag-ioc
 Group=diag-ioc
-# Placeholder checkout with its venv (pip install -e '.[ioc]' -c constraints.txt).
+# Placeholder checkout with its venv (pip install -e '.[ioc]').
 WorkingDirectory=/opt/bapsf_interferometer
 # EPICS_* settings, e.g. EPICS_CAS_INTF_ADDR_LIST, EPICS_PVAS_INTF_ADDR_LIST, EPICS_CA_MAX_ARRAY_BYTES.
 EnvironmentFile=-/etc/diag-ioc/%i.env
@@ -23,9 +23,6 @@ ExecStart=/opt/bapsf_interferometer/.venv/bin/python -m diag_ioc --config /etc/d
 # outlives a crash here; the IOC replaces a stale socket itself only when run outside systemd.
 RuntimeDirectory=diag-ioc/%i
 RuntimeDirectoryMode=0750
-# /var/lib/diag-ioc, owned by User= and kept across stops: the config's db_dir, where each instance writes
-# <name>.db (every PV) at start.
-StateDirectory=diag-ioc
 # SIGTERM: the IOC closes its listeners (removing the socket) and exits 0 within about a second.
 KillSignal=SIGTERM
 TimeoutStopSec=15

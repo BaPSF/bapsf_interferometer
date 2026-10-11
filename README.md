@@ -3,7 +3,7 @@
 Acquisition and analysis for the BaPSF microwave interferometers at ports 20, 29, and 40.
 
 > **Refactor in progress:** branch `refactor/linux-epics-daq`.
-> Acquisition now reads both scopes directly over Ethernet on Linux and stops once it has the raw samples. Nothing is written to disk but the log and the shot counter, and no phase is computed in the loop. With `INTERF_IOC_LINK` set, each shot also goes to the live analysis IOC, which publishes it to EPICS. The HDF5 layout below is for files written by the previous acquisition, which ran on Windows and read LeCroy `.trc` files.
+> Acquisition now reads both scopes directly over Ethernet on Linux and stops once it has the raw samples. Nothing is written to disk but the log and the shot counter, no phase is computed in the loop, and nothing is published to EPICS yet. The HDF5 layout below is for files written by the previous acquisition, which ran on Windows and read LeCroy `.trc` files.
 
 Requires Python 3.11 or later (developed on 3.14). Acquisition runs on **Linux only**, because the Rigol deadline uses `signal.setitimer`. `pip install .` installs the dependencies, including [`lab-scopes`](https://github.com/hjia94/lab_scopes) `v0.4.1`, which provides both scope drivers and reads the LeCroy trigger time as America/Los_Angeles (on Windows it also installs `tzdata`).
 
@@ -73,23 +73,6 @@ A Rigol operation that hangs is cut off by `SIGALRM` at its deadline, so it cann
 
 With `INTERF_IOC_LINK`, the output is an `IocLink` ([diag_ioc/link.py](diag_ioc/link.py)). Its `write()` only queues the shot; a background thread encodes it with [interf_payload.py](interf_payload.py) (schema 2: the shot identity, then the raw arrays) and sends it. It is latest-wins: it keeps at most the 2 newest unsent shots, never blocks acquisition, and does not resend a shot lost during an outage (the raw archive is the complete record). An outage is logged when it starts, every 5 min, and on recovery with the number of shots not delivered; reconnection is retried every 5 s.
 
-## Live analysis IOC
-
-`diag_ioc` runs [interf_ioc.py](interf_ioc.py), which analyzes every shot from the link with `analyze_shot` and serves the results as EPICS PVs over CA and PVA, under the prefix `LAPD:DIAG:INTERF`. The PV list is D4 in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
-
-```bash
-pip install -e '.[ioc,clients]' -c constraints.txt   # constraints.txt pins the tested EPICS stack
-python -m diag_ioc --config my_interferometer.toml   # a copy of deploy/diag-ioc/interferometer.toml
-INTERF_IOC_LINK=unix:/run/diag-ioc/interferometer/link.sock LECROY_IP=<address> python interf_main.py
-```
-
-- [deploy/diag-ioc/interferometer.toml](deploy/diag-ioc/interferometer.toml) is the production config, run by `diag-ioc@interferometer` from `/etc/diag-ioc/` with `readonly.acf` beside it. For a trial run, copy it and change the prefix, `listen` and `db_dir`.
-- Every PV of a shot carries the shot time as its timestamp. `SHOT:NUM` is set last, and the PVA group `<prefix>:SHOT` updates once per shot with every value of it. A CA client that falls behind can miss or mix values of a shot; only the group is atomic.
-- A port without data (P40 when the Rigol is missing, which is every shot replayed from LeCroy-only `.trc` files) gets empty arrays with INVALID severity, and `SHOT:MISSING` says why.
-- Module options: `max_points` (2048; a 1,000,002-sample record gives 1953 points per port, so none are dropped), `ne_window_ms` (default 5 to 10 ms), `plasma_length_m` (0.4) and `ports` (default P20, P29, P40). `<port>:CAL`, `<port>:FREQ` and `CFG:NE_WINDOW_MS` show them; a change needs an IOC restart.
-- At every start the IOC writes `<config name>.db`, listing every record, into `[ioc] db_dir`. `[ioc] acf` installs an access file; `readonly.acf` makes every PV read-only over CA and PVA.
-- Each publish waits, at most 2 s, until the previous shot's records have all processed (`SHOT:ACK` reaches `STAT:PUBLISHED`), so no update mixes two shots. `STAT:ACK_TIMEOUTS` counts the waits that timed out and should stay 0.
-
 ## Offline simulation
 
 `interf_sim/` runs `interf_main` and `interf_raw` on recorded LeCroy `.trc` files, and contacts no scope. It replaces only the two lab_scopes driver classes that `interf_raw` imports, so a change to `interf_main` or `interf_raw` takes effect in the simulation without editing it.
@@ -147,11 +130,8 @@ for shot in iter_shots(ReplayLeCroy(trc_shots()[:10])):
 | [interf_archive.py](interf_archive.py) | Reads the `--raw-output` ADIOS archive back shot by shot (`iter_steps`, `read_step`, `decode`) for offline reanalysis with `analyze_shot`. Kept outside `streamer/`, which another group maintains |
 | [interf_file.py](interf_file.py) | HDF5 schema and writers for the daily interferometer file (previous acquisition) |
 | [interf_sim/](interf_sim/) | Offline simulation: scope fakes that replay `.trc` files, `synthetic.py`, which generates shots with a known phase, and `listen.py`, a development listener for the IOC link |
-| [diag_ioc/](diag_ioc/) | Diagnostic IOC host (pythonSoftIOC; Linux). `python -m diag_ioc --config FILE.toml` serves each configured module's records over CA and PVA, plus `STAT:*` link and analysis status, the publish ack (`SHOT:ACK`, `STAT:PUBLISHED`, `STAT:ACK_TIMEOUTS`) and the devIocStats health records. Modules subclass `module.DiagnosticModule` (`create_records`, which returns its chain's last record, `analyze`, `publish`) and build records with `records.py`. `link.py` is the latest-wins shot link from acquisition (`IocLink`) to the IOC (`LinkListener`, which refuses a message announcing more than 1 GiB, about 80× today's shot), with its own framing (`framing.py`) and allow-list (`network.py`), so the package never imports `streamer/`; `outage.py` logs a persisting failure when it starts, every 5 min, and on recovery. Importing the package never loads softioc, so acquisition can use the link. `pip install -e '.[ioc]' -c constraints.txt` |
-| [interf_ioc.py](interf_ioc.py) | The interferometer's `diag_ioc` module: link message -> `analyze_shot` -> the D4 PVs and the PVA group `<prefix>:SHOT` |
-| [deploy/diag-ioc/](deploy/diag-ioc/) | `interferometer.toml`, the production IOC config, and `readonly.acf`, its read-only access file |
+| [diag_ioc/](diag_ioc/) | Diagnostic IOC host (pythonSoftIOC; Linux). `python -m diag_ioc --config FILE.toml` serves each configured module's records over CA and PVA, plus `STAT:*` link and analysis status and the devIocStats health records. Modules subclass `module.DiagnosticModule` (`create_records`, `analyze`, `publish`) and build records with `records.py`. `link.py` is the latest-wins shot link from acquisition (`IocLink`) to the IOC (`LinkListener`, which refuses a message announcing more than 1 GiB, about 80× today's shot), with its own framing (`framing.py`) and allow-list (`network.py`), so the package never imports `streamer/`; `outage.py` logs a persisting failure when it starts, every 5 min, and on recovery. Importing the package never loads softioc, so acquisition can use the link. `pip install -e '.[ioc]'` |
 | [deploy/systemd/](deploy/systemd/) | `diag-ioc@.service`: one IOC instance per `/etc/diag-ioc/<name>.toml` (user and paths are placeholders) |
-| [constraints.txt](constraints.txt) | Exact versions of the EPICS stack (`softioc`, `epicscorelibs`, `pvxslibs`, `p4p`, `pyepics`), for `pip install -c` |
 | [docs/](docs/) | `ARCHITECTURE.md`: decisions D1–D15 for the live analysis and EPICS IOC; `HANDOFF_live_epics.md`: the commit-by-commit plan |
 | [streamer/](streamer/) | Buffered ADIOS/socket raw output, metadata encoding, consumer, security, compression, and remote restart support |
 

@@ -25,7 +25,6 @@ class DiagnosticModule:
 		self.options = dict(options)
 
 	def create_records(self, builder):
-		"""The last record of the chain publish() runs (the host FLNKs its SHOT:ACK to it), or None without a chain."""
 		raise NotImplementedError
 
 	def analyze(self, variables):
@@ -47,16 +46,14 @@ class ShotPipeline:
 
 	submit() never blocks: a full mailbox drops its oldest message (`dropped`). After every shot the worker
 	calls on_done(analysis_s, error), error "" for a good shot; a failing shot is also logged (throttled).
-	`gate` (diag_ioc.host.PublishAck) is waited on before each publish and released when a publish raises.
 	"""
 
-	def __init__(self, module, depth=2, on_done=None, gate=None):
+	def __init__(self, module, depth=2, on_done=None):
 		self.module = module
 		self.dropped = 0
 		self.last_received = None  # time.time() of the latest submit(); None before the first
 		self._depth = depth
 		self._on_done = on_done
-		self._gate = gate
 		self._queue = deque()
 		self._cond = threading.Condition()
 		self._closing = False
@@ -95,7 +92,7 @@ class ShotPipeline:
 			t0 = time.perf_counter()
 			error = ""
 			try:
-				self._publish(self.module.analyze(variables))
+				self.module.publish(self.module.analyze(variables))
 			except Exception as e:
 				error = f"{type(e).__name__}: {e}"
 				self._outage.failed(e, exc_info=True)
@@ -106,14 +103,3 @@ class ShotPipeline:
 					self._on_done(time.perf_counter() - t0, error)
 				except Exception:
 					log.exception("module %s: status update failed", self.module.name)
-
-	def _publish(self, result):
-		if self._gate is None:
-			self.module.publish(result)
-			return
-		self._gate.wait()
-		try:
-			self.module.publish(result)
-		except BaseException:
-			self._gate.release()
-			raise

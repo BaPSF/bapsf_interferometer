@@ -1,4 +1,4 @@
-"""diag_ioc test module: <prefix>:SEQ (chain head) -> VALUE -> WAVE (-> the host's SHOT:ACK), each stamped with the message's ts.
+"""diag_ioc test module: <prefix>:SEQ (chain head) -> VALUE -> WAVE, each stamped with the message's ts.
 
 A message is {"seq", "value", "wave", "ts"} arrays; VALUE = value * options["scale"]. A message with a
 "fail" key makes analyze() raise, to exercise STAT:ERROR.
@@ -18,7 +18,6 @@ class DummyModule(DiagnosticModule):
 			lambda **kw: scalar(builder, "VALUE", desc="value x scale", **kw),
 			lambda **kw: waveform(builder, "WAVE", WAVE_NELM, desc="wave", **kw),
 		])
-		return self.wave
 
 	def analyze(self, variables):
 		if "fail" in variables:

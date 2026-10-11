@@ -15,9 +15,9 @@ from streamer import RawOutput
 from streamer.arguments import RawOutputSettings
 from streamer.payload import shot_variables
 from test_interf_analysis import HOST_TIME, REPO_ROOT, _assert_channels_equal
-# The live path: everything IocLink, the IOC host and its modules import.
+# The live path: everything IocLink, the IOC host and its modules import. C5 adds interf_ioc.
 LIVE_MODULES = ["diag_ioc", "diag_ioc.framing", "diag_ioc.host", "diag_ioc.link", "diag_ioc.module", "diag_ioc.network",
-                "diag_ioc.outage", "diag_ioc.records", "interf_analysis", "interf_ioc", "interf_payload", "interf_shot"]
+                "diag_ioc.outage", "diag_ioc.records", "interf_analysis", "interf_payload", "interf_shot"]
 
 
 def _shot(shot_number=3, **kw):

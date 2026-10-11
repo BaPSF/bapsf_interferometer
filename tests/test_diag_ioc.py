@@ -72,8 +72,6 @@ class ConfigTests(unittest.TestCase):
 		cases = {
 			"top level: unknown keys": dict(base, extra=1),
 			"[ioc] table is required": {"module": base["module"]},
-			"[ioc] acf must be": dict(base, ioc=dict(base["ioc"], acf="")),
-			"[ioc] db_dir must be": dict(base, ioc=dict(base["ioc"], db_dir=1)),
 			"unknown keys": dict(base, module=[dict(base["module"][0], stale_second=3)]),
 			"prefix must be": dict(base, module=[dict(base["module"][0], prefix="LAPD:DIAG:INTERF:")]),
 			"factory must be": dict(base, module=[dict(base["module"][0], factory="interf_ioc.Module")]),
@@ -139,32 +137,6 @@ class ShotPipelineTests(unittest.TestCase):
 			self.assertGreaterEqual(seconds, 0.0)
 		finally:
 			pipeline.close()
-
-	def test_the_gate_is_waited_before_each_publish_and_released_when_publish_raises(self):
-		events = []
-
-		class Gate:
-			def wait(self):
-				events.append("wait")
-
-			def release(self):
-				events.append("release")
-
-		class Module(_RecordingModule):
-			def publish(self, result):
-				events.append(("publish", result))
-				if result == 2:
-					raise ValueError("publish failed")
-
-		done = queue.Queue()
-		pipeline = ShotPipeline(Module(), on_done=lambda seconds, error: done.put(error), gate=Gate())
-		try:
-			for message in ({"fail": 1}, {"i": 1}, {"i": 2}):  # an analyze() failure never reaches the gate
-				pipeline.submit(message)
-				done.get(timeout=5)
-		finally:
-			pipeline.close()
-		self.assertEqual(events, ["wait", ("publish", 1), "wait", ("publish", 2), "release"])
 
 	def test_close_discards_late_messages(self):
 		module = _RecordingModule()
@@ -236,21 +208,6 @@ class DiagIocTests(unittest.TestCase):
 			self._wait_value("SEQ", 301)
 			cleared = self._wait_value("STAT:ERROR", "", as_string=True)
 			self.assertEqual(cleared["severity"], NO_ALARM)
-
-	def test_every_publish_is_acked(self):
-		with IocLink(self.listen, encode=as_is) as link:
-			for seq in range(401, 411):  # back to back: each publish waits for the previous chain's ack
-				link.write({"seq": np.array(seq), "value": np.array(0.0), "wave": np.zeros(WAVE_NELM), "ts": np.array(time.time())})
-			self._wait_value("SEQ", 410)
-		published = self._read("STAT:PUBLISHED")["value"]
-		self.assertGreater(published, 0)
-		self._wait_value("SHOT:ACK", published, timeout=5)
-		self.assertEqual(self._read("STAT:ACK_TIMEOUTS")["value"], 0, self.ioc.log())
-
-	def test_the_db_file_lists_the_module_and_host_records(self):
-		text = self.ioc.db_path.read_text()
-		for suffix in ("SEQ", "VALUE", "WAVE", "STAT:STALE", "STAT:PUBLISHED", "SHOT:ACK", "STAT:ACK_TIMEOUTS"):
-			self.assertIn(f'"{self.prefix}:{suffix}"', text, suffix)
 
 	def test_heartbeat_advances(self):
 		first = self._read("IOC:HEARTBEAT")["value"]

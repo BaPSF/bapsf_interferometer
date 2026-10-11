@@ -1,7 +1,0 @@
-# Exact versions of the EPICS stack, as run on the lab Linux machine (docs/ARCHITECTURE.md D11). pyproject only sets
-# floors. Install with: pip install -e '.[ioc,clients]' -c constraints.txt. Upgrade deliberately, then re-test.
-softioc==4.7.2
-epicscorelibs==7.0.10.99.0.2
-pvxslibs==1.5.3
-p4p==4.3.0
-pyepics==3.5.10
