@@ -2,6 +2,8 @@ import datetime
 import json
 import logging
 import tempfile
+import threading
+import time
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -11,6 +13,7 @@ from lab_scopes.lecroy import LeCroyWavedesc
 
 import interf_main
 import interf_shot
+from diag_ioc.outage import LOG_FORMAT
 from interf_raw import RawShot
 from interf_shot import SHOT_ZONE, ShotCounter, ShotIdentifier, shot_date, trigger_time
 from interf_sim.synthetic import make_raw_shot, make_wavedesc
@@ -36,10 +39,22 @@ REPEAT_FIRST = _la(2026, 11, 1, 1, 30, 15) + 0.125  # 01:30:15 PDT; the wall clo
 REPEAT_SECOND = _la(2026, 11, 1, 1, 30, 15, fold=1) + 0.125
 
 
-def _temp_counter(test):
-	tmp = tempfile.TemporaryDirectory()
-	test.addCleanup(tmp.cleanup)
-	return ShotCounter(Path(tmp.name) / "shot_counter.json")
+WRITER_BLOCK_S = 10.0  # how long the stub writer blocks; a next() that waited for it would take this long
+
+
+def _write_log(path, *ids):
+	"""An acquisition log at `path` with interf_main's shot lines for `ids` ((date, number) pairs), formatted as it writes them."""
+	formatter = logging.Formatter(LOG_FORMAT)
+
+	def line(message):
+		return formatter.format(logging.makeLogRecord({"name": "interf_main", "levelname": "INFO", "msg": message}))
+
+	lines = [line("acquisition started")]
+	for date, number in ids:
+		shot = RawShot(PST, {}, {}, {}, 0.1, shot_date=date, shot_number=number, shot_time=PST, time_source="host")
+		lines.append(line(interf_main._shot_line(shot, None)))
+	path.write_text("\n".join(lines) + "\n")
+	return path
 
 
 class TriggerTimeTests(unittest.TestCase):
@@ -79,25 +94,25 @@ class TriggerTimeTests(unittest.TestCase):
 class ShotIdentifierTests(unittest.TestCase):
 	def test_identity_from_the_trigger_time(self):
 		shot = _shot(PST, PST + 0.3)
-		ShotIdentifier(_temp_counter(self)).identify(shot)
+		ShotIdentifier(ShotCounter(None)).identify(shot)
 		self.assertEqual((shot.shot_date, shot.shot_number, shot.time_source), (20260115, 0, "trigger"))
 		self.assertAlmostEqual(shot.shot_time, PST, places=6)
 
 	def test_host_fallback(self):
 		for shot in (_shot(None, PST), RawShot(PST, {}, {}, {"lecroy": "C1 not read"}, 0.0)):
 			with self.subTest(lecroy=bool(shot.lecroy)):
-				ShotIdentifier(_temp_counter(self)).identify(shot)
+				ShotIdentifier(ShotCounter(None)).identify(shot)
 				self.assertEqual((shot.shot_time, shot.time_source, shot.shot_number), (PST, "host", 0))
 
 	def test_unreadable_wavedesc_falls_back_to_host_time_and_is_logged(self):
 		shot = make_raw_shot(4096, host_time=PST, rng=np.random.default_rng(0))
 		shot.lecroy["C1"] = (shot.lecroy["C1"][0], b"bad")
 		with self.assertLogs("interf_shot", logging.WARNING):
-			ShotIdentifier(_temp_counter(self)).identify(shot)
+			ShotIdentifier(ShotCounter(None)).identify(shot)
 		self.assertEqual((shot.shot_time, shot.time_source, shot.shot_number), (PST, "host", 0))
 
 	def test_lag_outside_the_bound_is_logged_once_per_outage(self):
-		identifier = ShotIdentifier(_temp_counter(self), trig_lag_max_s=5)
+		identifier = ShotIdentifier(ShotCounter(None), trig_lag_max_s=5)
 		with self.assertLogs("interf_shot", logging.WARNING) as logs:
 			identifier.identify(_shot(PST, PST - 1.0))  # host clock behind the scope
 			identifier.identify(_shot(PST, PST + 60.0))  # same outage: not logged again
@@ -109,49 +124,126 @@ class ShotIdentifierTests(unittest.TestCase):
 
 	def test_lag_check_off_at_zero(self):
 		with self.assertNoLogs("interf_shot"):
-			ShotIdentifier(_temp_counter(self), trig_lag_max_s=0).identify(_shot(PST, PST - 100.0))
+			ShotIdentifier(ShotCounter(None), trig_lag_max_s=0).identify(_shot(PST, PST - 100.0))
 
 
 class ShotCounterTests(unittest.TestCase):
 	def setUp(self):
 		tmp = tempfile.TemporaryDirectory()
 		self.addCleanup(tmp.cleanup)
-		self.path = Path(tmp.name) / "state" / "shot_counter.json"
+		self.dir = Path(tmp.name)
+		self.path = self.dir / "state" / "shot_counter.json"
+
+	def _counter(self, *log_paths):
+		counter = ShotCounter(self.path, log_paths)
+		self.addCleanup(counter.close)  # runs before the directory cleanup (LIFO)
+		return counter
+
+	def _count(self, *times):
+		"""Count `times` in a counter on self.path, then close it, so its last state is on disk."""
+		counter = self._counter()
+		numbers = [counter.next(t) for t in times]
+		counter.close()
+		return numbers
 
 	def test_counts_from_zero_and_persists(self):
-		counter = ShotCounter(self.path)
-		self.assertEqual([counter.next(PST + i) for i in range(3)], [(20260115, 0), (20260115, 1), (20260115, 2)])
+		self.assertEqual(self._count(PST, PST + 1, PST + 2), [(20260115, 0), (20260115, 1), (20260115, 2)])
 		self.assertEqual(json.loads(self.path.read_text()), {"shot_date": 20260115, "shot_number": 2})
 
 	def test_restart_the_same_day_continues(self):
-		ShotCounter(self.path).next(PST)
-		self.assertEqual(ShotCounter(self.path).next(PST + 3), (20260115, 1))
+		self._count(PST)
+		self.assertEqual(self._counter().next(PST + 3), (20260115, 1))
 
 	def test_restart_another_day_starts_at_zero(self):
-		ShotCounter(self.path).next(PST)
-		self.assertEqual(ShotCounter(self.path).next(PST + 86400), (20260116, 0))
+		self._count(PST)
+		self.assertEqual(self._counter().next(PST + 86400), (20260116, 0))
 
 	def test_la_midnight_restarts_the_number_and_utc_midnight_does_not(self):
-		counter = ShotCounter(self.path)
+		counter = ShotCounter(None)
 		before_utc_midnight, after_utc_midnight = _la(2026, 1, 15, 15, 59, 59), _la(2026, 1, 15, 16, 0, 1)
 		before_la_midnight, after_la_midnight = _la(2026, 1, 15, 23, 59, 59), _la(2026, 1, 16, 0, 0, 1)
 		self.assertEqual([counter.next(t) for t in (before_utc_midnight, after_utc_midnight, before_la_midnight, after_la_midnight)],
 		                 [(20260115, 0), (20260115, 1), (20260115, 2), (20260116, 0)])
 
-	def test_unreadable_state_is_logged_and_counting_starts_at_zero(self):
+	def test_unreadable_state_without_a_logged_shot_warns_that_numbers_may_repeat(self):
 		self.path.parent.mkdir(parents=True)
 		for text in ("{not json", json.dumps({"shot_date": 20260115}), json.dumps({"shot_date": "20260115", "shot_number": 4})):
 			with self.subTest(text=text):
 				self.path.write_text(text)
-				with self.assertLogs("interf_shot", logging.WARNING):
-					counter = ShotCounter(self.path)
+				with self.assertLogs("interf_shot", logging.WARNING) as logs:
+					counter = self._counter(self.dir / "absent.log")
+				self.assertIn("may repeat", logs.output[0])
 				self.assertEqual(counter.next(PST), (20260115, 0))
+				counter.close()  # else its write could land after the next subtest's text
+
+	def test_corrupt_state_is_recovered_from_the_log(self):
+		self.path.parent.mkdir(parents=True)
+		self.path.write_text("{not json")
+		log = _write_log(self.dir / "interf_acquire.log", (20260115, 40), (20260115, 41), (None, None))
+		with self.assertLogs("interf_shot", logging.WARNING) as logs:
+			counter = self._counter(log)
+		self.assertIn("resuming after 20260115-41", logs.output[0])
+		self.assertNotIn("may repeat", logs.output[0])
+		self.assertEqual(counter.next(PST), (20260115, 42))
+
+	def test_the_later_source_wins(self):
+		# {case: (each log's shots, time of the next shot, its identity)}, with the state file at 20260115-5
+		day_after = PST + 86400
+		cases = {"a log ahead of the state file (a lost last write)": ([[(20260115, 5), (20260115, 6)]], PST, (20260115, 7)),
+		         "a log behind the state file": ([[(20260115, 3)]], PST, (20260115, 6)),
+		         "a later date with a smaller number": ([[(20260116, 2)]], day_after, (20260116, 3)),
+		         "a larger number in an older log": ([[(20260116, 2)], [(20260114, 90)]], day_after, (20260116, 3))}
+		self.path.parent.mkdir(parents=True)
+		for name, (logs, t, expected) in cases.items():
+			with self.subTest(name):
+				self.path.write_text(json.dumps({"shot_date": 20260115, "shot_number": 5}))
+				counter = self._counter(*(_write_log(self.dir / f"{i}.log", *ids) for i, ids in enumerate(logs)))
+				self.assertEqual(counter.next(t), expected)
+				counter.close()
+
+	def test_a_log_from_an_earlier_date_only_and_no_source(self):
+		log = _write_log(self.dir / "interf_acquire.log", (20260114, 7))
+		self.assertEqual(ShotCounter(None, [log]).next(PST), (20260115, 0))
+		self.assertEqual(ShotCounter(None, [log]).next(PST - 86400), (20260114, 8))  # the log was read
+		with self.assertNoLogs("interf_shot", logging.WARNING):  # a first start: nothing lost
+			counter = self._counter(self.dir / "absent.log")
+		self.assertEqual(counter.next(PST), (20260115, 0))
+
+	def test_no_state_path_writes_no_file(self):
+		with mock.patch.object(ShotCounter, "_save") as save:
+			counter = ShotCounter(None)
+			self.assertEqual([counter.next(PST + i) for i in range(2)], [(20260115, 0), (20260115, 1)])
+			counter.close()
+		save.assert_not_called()
+		self.assertEqual(list(self.dir.iterdir()), [])
+
+	def test_next_returns_while_the_writer_is_blocked_and_close_writes_the_last_state(self):
+		entered, release, saved = threading.Event(), threading.Event(), []
+
+		def blocked_save(counter, date, number):
+			saved.append((date, number))
+			entered.set()
+			release.wait(WRITER_BLOCK_S)
+
+		with mock.patch.object(ShotCounter, "_save", blocked_save):
+			counter = self._counter()
+			counter.next(PST)
+			self.assertTrue(entered.wait(5), "the writer never started")
+			t0 = time.monotonic()
+			numbers = [counter.next(PST + i)[1] for i in (1, 2, 3)]
+			self.assertLess(time.monotonic() - t0, 1.0)
+			release.set()
+			counter.close()
+		self.assertEqual(numbers, [1, 2, 3])
+		self.assertEqual(saved, [(20260115, 0), (20260115, 3)])  # latest wins: 1 and 2 were never written
 
 	def test_failed_write_counts_on_in_memory(self):
-		self.path.parent.parent.joinpath("blocked").write_text("a file where the state directory should be")
-		counter = ShotCounter(self.path.parent.parent / "blocked" / "shot_counter.json")
+		(self.dir / "blocked").write_text("a file where the state directory should be")
+		counter = ShotCounter(self.dir / "blocked" / "shot_counter.json")
+		self.addCleanup(counter.close)
 		with self.assertLogs("interf_shot", logging.WARNING) as logs:
 			numbers = [counter.next(PST + i)[1] for i in range(3)]
+			counter.close()  # the writes happen on the writer thread; close() waits for the last
 		self.assertEqual(numbers, [0, 1, 2])
 		self.assertEqual(len(logs.records), 1)  # throttled: the outage start only
 
@@ -165,7 +257,7 @@ class HandleShotTests(unittest.TestCase):
 		output = mock.Mock()
 		output.write.side_effect = lambda shot: seen.append((shot.shot_date, shot.shot_number, shot.shot_time, shot.time_source))
 		shots = [make_raw_shot(4096, host_time=PST + 3 * i, rng=np.random.default_rng(i)) for i in range(2)]
-		identifier = ShotIdentifier(_temp_counter(self))
+		identifier = ShotIdentifier(ShotCounter(None))
 		with self.assertLogs("interf_main", logging.INFO) as logs:
 			prev = interf_main._handle_shot(shots[0], None, identifier, [output])
 			interf_main._handle_shot(shots[1], prev, identifier, [output])
@@ -178,7 +270,7 @@ class HandleShotTests(unittest.TestCase):
 	def test_shot_without_a_trigger_time_resets_dt(self):
 		shot = RawShot(PST, {}, {}, {"lecroy": "C1 not read"}, 0.0)
 		with self.assertLogs("interf_main", logging.WARNING):
-			self.assertIsNone(interf_main._handle_shot(shot, PST - 3, ShotIdentifier(_temp_counter(self))))
+			self.assertIsNone(interf_main._handle_shot(shot, PST - 3, ShotIdentifier(ShotCounter(None))))
 
 
 if __name__ == "__main__":

@@ -1,6 +1,6 @@
 # EPICS live-analysis architecture: decisions
 
-Repo `BaPSF/bapsf_interferometer`, branch `refactor/linux-epics-daq`, head `ebb0b9f` (C4r done, plus the link socket lock).
+Repo `BaPSF/bapsf_interferometer`, branch `refactor/linux-epics-daq` (C4r, the link socket lock and C4s done).
 Status: **all 15 decisions ACCEPTED by J on 2026-10-08.** Every agent follows this file, and
 `HANDOFF_live_epics.md` implements it commit by commit. Anything neither covers goes to J before code is written.
 
@@ -227,9 +227,13 @@ shots dropped by the IOC mailbox.
 - The counter is persisted on disk (date + last number), on a local disk. Numbers are assigned in memory on the
   acquisition thread. The file is written (fsync + atomic replace) by a background thread, so disk speed never holds up
   the main loop.
-- At start, counting resumes from the larger of the state file and the last `shot <date>-<number>` in the acquisition
-  log, plus 1. So one lost or corrupt file never repeats a number. Only if both are lost does a running day restart at
-  0, logged as a warning. `shot_time` stays the unique key in storage (HDF5 dataset names).
+- At start, counting resumes from the later of the state file and the last `shot <date>-<number>` in the acquisition
+  log, plus 1, so a lost last write never repeats a number (J, 2026-10-11):
+  - a readable state file: the later of it and the log;
+  - a missing or unreadable state file: the log's last shot (unreadable is logged as a warning);
+  - neither: counting starts at 0, as on a first start. An unreadable state file with no logged shot is logged as a
+    warning that numbers already used that day may repeat.
+- `shot_time` stays the unique key in storage (HDF5 dataset names).
 - A gap in `shot_number` means a lost shot.
 
 ### D15. Shot time
@@ -262,13 +266,12 @@ shots dropped by the IOC mailbox.
 
 Commit labels and file-level specs are in `HANDOFF_live_epics.md`.
 
-Done: C4r (`4ee26b8`: streamer restored, live link decoupled, shot identity and trigger time) and the link socket lock
-(`ebb0b9f`).
+Done: C4r (`4ee26b8`: streamer restored, live link decoupled, shot identity and trigger time), the link socket lock
+(`ebb0b9f`) and C4s (the shot counter's file write off the acquisition thread, start-up recovery from the acquisition
+log; D14).
 
-1. C4s, one small commit: the shot counter's file write moved off the acquisition thread, and start-up recovery from
-   the acquisition log (D14, from the C4r test findings).
-2. C5, one commit: `interf_ioc.py` per D2, D4, D5, D7, with the prefix from config, `<name>.db` written at start, the
+1. C5, one commit: `interf_ioc.py` per D2, D4, D5, D7, with the prefix from config, `<name>.db` written at start, the
    host's `SHOT:ACK` wait (tested by publishing back-to-back and finding no torn chain), the read-only ACF (D8) and the
    constraints file (D11).
-3. Cloud agent: synthetic C5 scenario (IOC + `interf_sim --ioc-link`, CA readback of the D4 list, STALE after stop, IOC
+2. Cloud agent: synthetic C5 scenario (IOC + `interf_sim --ioc-link`, CA readback of the D4 list, STALE after stop, IOC
    restart mid-run). C6 (PVA storage) is then tested on the Linux machine.

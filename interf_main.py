@@ -12,6 +12,7 @@ from interf_raw import AcqState, acquire_shot, release_scopes
 from interf_shot import ShotCounter, ShotIdentifier, clock, shot_id
 
 LOG_DIR = os.environ.get("INTERF_LOG_DIR", str(Path.home() / "data" / "log"))
+ACQUIRE_LOG = "interf_acquire.log"  # in LOG_DIR
 # State, not a log: kept out of LOG_DIR, whose old files get rotated and cleaned up.
 SHOT_STATE = os.environ.get("INTERF_SHOT_STATE", str(Path.home() / "data" / "state" / "shot_counter.json"))
 
@@ -35,9 +36,17 @@ def _setup_logging():
 	os.makedirs(LOG_DIR, exist_ok=True)
 	# Midnight rotation: ~29k lines/day, unattended for months.
 	file_handler = logging.handlers.TimedRotatingFileHandler(
-		os.path.join(LOG_DIR, "interf_acquire.log"), when="midnight", backupCount=30)
+		os.path.join(LOG_DIR, ACQUIRE_LOG), when="midnight", backupCount=30)
 	logging.basicConfig(level=logging.INFO, format=LOG_FORMAT,
 	                    handlers=[logging.StreamHandler(sys.stdout), file_handler])
+
+
+def _acquire_logs():
+	"""The current acquisition log and its newest rotated copy: rotation is at host midnight, so right after it the
+	last shot is only in the copy."""
+	# TimedRotatingFileHandler's when="midnight" suffix; a stray .gz or .tmp would otherwise sort last.
+	rotated = sorted(Path(LOG_DIR).glob(ACQUIRE_LOG + ".????-??-??"))
+	return [Path(LOG_DIR) / ACQUIRE_LOG, *rotated[-1:]]
 
 
 def _shot_line(shot, prev_trig):
@@ -90,7 +99,8 @@ def _handle_shot(shot, prev_trig, identifier, outputs=()):
 def main(outputs=(), identifier=None):
 	"""Acquire until stopped; each shot goes to every `outputs` item's write(shot). The caller closes them.
 
-	`identifier` (an interf_shot.ShotIdentifier) defaults to one counting in SHOT_STATE with TRIG_LAG_MAX_S.
+	`identifier` (an interf_shot.ShotIdentifier) defaults to one counting in SHOT_STATE with TRIG_LAG_MAX_S,
+	resuming from the acquisition logs; main closes that counter, never a caller's.
 	"""
 	if not hasattr(signal, "setitimer"):
 		sys.exit("interf_main: Linux only (the Rigol deadline needs signal.setitimer)")
@@ -100,8 +110,10 @@ def main(outputs=(), identifier=None):
 	signal.signal(signal.SIGTERM, _request_stop)  # systemd stop
 
 	state = AcqState()
+	counter = None
 	if identifier is None:
-		identifier = ShotIdentifier(ShotCounter(SHOT_STATE))
+		counter = ShotCounter(SHOT_STATE, log_paths=_acquire_logs())
+		identifier = ShotIdentifier(counter)
 	prev_trig = None
 	log.info("acquisition started")
 	try:
@@ -120,6 +132,9 @@ def main(outputs=(), identifier=None):
 		log.info("acquisition stopped")
 	except KeyboardInterrupt:
 		log.warning("forced exit: scope trigger modes not restored")
+	finally:
+		if counter is not None:
+			counter.close()
 
 
 if __name__ == "__main__":

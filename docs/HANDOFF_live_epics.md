@@ -30,6 +30,8 @@ as commits by the local agent; other sessions send them as patch files.
 | 32f40cc C4 | `diag_ioc` host: TOML config, `ModuleHost`, `ShotPipeline`, `StatusRecords` (`STAT:*`), devIocStats, `diag-ioc@.service`, `tests/ioc_harness.py` |
 | 4ee26b8 C4r | Architecture review applied: `streamer/` restored to 642429a; `interf_archive` (offline archive reader); `diag_ioc/framing.py`, `diag_ioc/network.py`; `IocLink` needs an encoder and no longer numbers shots; `interf_payload` (schema 2); `interf_shot` (shot identity and trigger time); C4 test fixes; `docs/` |
 | ebb0b9f | `LinkListener` holds an `flock` on `<path>.lock`, so a second listener on one unix socket path fails at start |
+| 73ccb44 | Docs synced to the latest review; `docs/` on this branch is the single source |
+| C4s | `ShotCounter` writes its state on a daemon thread (latest wins) and resumes from the later of the state file and the acquisition log; the replay persists no counter |
 
 Facts from testing that still matter:
 - Analysis takes 0.18–0.25 s per shot at 1M samples per channel, but 2.35 s at 10M. Measure on the IOC host once the
@@ -47,7 +49,8 @@ Facts from testing that still matter:
   - `interf_payload.encode(shot)` / `decode(variables) -> DecodedShot`, which `analyze_shot` accepts; `decode` raises
     `ValueError` for a `schema_version` other than 2.
   - `interf_shot`: `SHOT_ZONE`, `local_time`, `clock`, `shot_date`, `shot_id`, `trigger_time(wd, host_time)`,
-    `ShotIdentifier(counter, trig_lag_max_s).identify(shot)` (never raises) and `ShotCounter(state_path)`.
+    `ShotIdentifier(counter, trig_lag_max_s).identify(shot)` (never raises) and `ShotCounter(state_path, log_paths=())`
+    (C4s: `None` persists nothing; `close()` writes the last state).
   - `ShotResult` carries `shot_date`, `shot_number`, `shot_time` and `time_source` (None where the shot has none).
   - `interf_archive.iter_steps`/`read_step`/`decode` read the ADIOS archive (streamer's schema 1, no shot identity).
     It imports `streamer.payload` for that schema, which is fine offline; the live path must not.
@@ -124,17 +127,12 @@ on every member change.
 Every commit leaves `python -m unittest discover -s tests -v` green, updates pyproject for new modules, and updates the
 README where users see a change.
 
-C4r is done. The local agent's next steps, in order:
-1. **Sync the docs (once).** Replace `docs/ARCHITECTURE.md` with the supplied `ARCHITECTURE_DECISIONS.md`, keeping the
-   name `docs/ARCHITECTURE.md` (the code and README cite it), and `docs/HANDOFF_live_epics.md` with the supplied handoff.
-   Commit as `docs: sync the architecture and handoff to the latest review` and push. Skip this step if `docs/` already
-   has this text.
-2. **C4s** fixes the shot counter after the C4r tests.
-3. **C5** adds the IOC module.
+C4r, the doc sync (73ccb44) and C4s are done. The local agent's next step is **C5**, the IOC module.
 
 The cloud session runs each commit's tests after it is pushed.
 
-**C4s `fix: keep the shot counter's disk write off the acquisition thread` (D14).** Files: `interf_shot.py`,
+**C4s `fix: keep the shot counter's disk write off the acquisition thread` (D14). Done**; kept as the record of what it
+does. Files (plus `tests/test_streamer.py`, whose counter now persists nothing): `interf_shot.py`,
 `interf_main.py`, `interf_sim/trc_replay.py`, `tests/test_interf_shot.py`, `README.md`. Found by the C4r tests:
 `ShotCounter._save` fsyncs on the acquisition thread (0.7 ms median on a fast disk, unbounded on a slow or network one),
 and a corrupt state file on a running day repeats numbers already used.

@@ -33,7 +33,7 @@ LECROY_IP=<address> python interf_main.py
   - points per channel;
   - time from capture detection to LeCroy re-arm;
   - any missing scope, with the reason.
-- Shot identity ([interf_shot.py](interf_shot.py)): the shot time is the LeCroy trigger time from the WAVEDESC (keep the scope clock NTP-synced), or the host time when a shot has none. A shot is its Los Angeles date plus a number from 0 each day; the counter is saved after every shot, so a restart the same day continues. A gap in the numbers is a lost shot. A host time before the trigger time, or more than `INTERF_TRIG_LAG_MAX_S` after it, is logged as a clock problem.
+- Shot identity ([interf_shot.py](interf_shot.py)): the shot time is the LeCroy trigger time from the WAVEDESC (keep the scope clock NTP-synced), or the host time when a shot has none. A shot is its Los Angeles date plus a number from 0 each day; a background thread saves the counter after every shot, so a restart the same day continues. A gap in the numbers is a lost shot. A host time before the trigger time, or more than `INTERF_TRIG_LAG_MAX_S` after it, is logged as a clock problem.
 - A pause in triggers, or a LeCroy that keeps failing to connect or respond, is logged when it starts, then every 5 min, then once more when capture resumes. After a LeCroy error the next attempt waits `LECROY_RETRY_INTERVAL`.
 - **Ctrl-C** (or SIGTERM from systemd): a shot already being read is finished and logged. The LeCroy is then set to NORM, the Rigol is sent `:RUN` (normally already running), and every connection is closed. A **second** Ctrl-C exits immediately, without restoring the trigger modes.
 
@@ -45,7 +45,7 @@ Each variable is read from the environment at startup; unset means the default. 
 |---|---|---|
 | `INTERF_LOG_DIR` | `~/data/log` | Log directory |
 | `INTERF_IOC_LINK` | unset | `unix:/path` or `tcp:host:port` of a `diag_ioc` listener. When set, every shot is also sent there for live analysis; unset, acquisition runs exactly as before |
-| `INTERF_SHOT_STATE` | `~/data/state/shot_counter.json` | Shot counter state (date and last number), kept apart from the logs. An unreadable file is logged and counting starts at 0 |
+| `INTERF_SHOT_STATE` | `~/data/state/shot_counter.json` | Shot counter state (date and last number). Keep it on a local disk and outside `INTERF_LOG_DIR`, whose rotated files are deleted. At start, counting resumes after the later of this file and the last shot line in `interf_acquire.log` and its newest rotated copy. An unreadable file is logged as a warning; only if the logs hold no shot either can a running day repeat numbers |
 | `INTERF_TRIG_LAG_MAX_S` | 5 s | Largest normal host time − trigger time; outside 0 to this, a clock problem is logged. 0 disables the check |
 | `LECROY_IP` | `10.10.10.10` | **Placeholder; set it** |
 | `LECROY_CHANNELS` | `C1,C2,C3,C4` | Channels read, comma-separated. The first one carries the sweep counter used to detect a fresh capture |
@@ -92,7 +92,7 @@ python -m interf_sim --ioc-link unix:/tmp/interf.sock --limit 20  # also send sh
 - There is no Rigol: every shot has `missing["rigol"]`.
 - When the shots run out, the simulator sends SIGINT, so the Ctrl-C stop and release path runs. The log goes to `interf_sim/log/`.
 - Transfers take only the file read time, so `critical_path_s` is shorter than on the scopes. The logged `dt` follows the recorded trigger times, not `--period`.
-- Shot dates are the recording's, and the shot counter state is `interf_sim/log/shot_counter.json` (`INTERF_SHOT_STATE` is not used), so a replay never adds to acquisition's numbering. The trigger-lag check is off, since recorded trigger times are older than the replay.
+- Shot dates are the recording's. Shot numbers start at 0 on every run and are not saved (`INTERF_SHOT_STATE` is not used), so runs are repeatable and never add to acquisition's numbering. The trigger-lag check is off, since recorded trigger times are older than the replay.
 - `--raw-output` enables the integrated output package. It accepts a direct ADIOS output, an encrypted socket connection file, or a remote server configuration. See [streamer/README.md](streamer/README.md) for the payload and consumer commands.
 
 Without recorded shots, generate synthetic ones with a known phase (a Gaussian bump of about 6 rad), then replay them with `--trc-dir`:

@@ -307,12 +307,13 @@ def run_main(lecroy, log_dir, outputs=()):
 
 	Exhaustion sends SIGINT, as an operator's Ctrl-C, so main's stop and release path runs. The stop
 	flag and signal handlers main changes are restored, so it can run again in the same process.
-	The shot counter state is `log_dir`/shot_counter.json, so a replay never numbers into acquisition's
-	counter. The trigger-lag check is off: recorded trigger times are older than the replay's host_time.
+	The shot counter persists nothing and reads no log, so every replay numbers from 0 (repeatable test runs)
+	and never touches acquisition's counter. The trigger-lag check is off: recorded trigger times are older
+	than the replay's host_time.
 	"""
 	lecroy.on_exhausted = lambda: signal.raise_signal(signal.SIGINT)
 	handlers = {s: signal.getsignal(s) for s in (signal.SIGINT, signal.SIGTERM)}
-	identifier = ShotIdentifier(ShotCounter(Path(log_dir) / "shot_counter.json"), trig_lag_max_s=0)
+	identifier = ShotIdentifier(ShotCounter(None), trig_lag_max_s=0)
 	try:
 		with simulated_scopes(lecroy), mock.patch.object(interf_main, "LOG_DIR", str(log_dir)), \
 				mock.patch.object(interf_main, "_stop", False):

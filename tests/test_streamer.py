@@ -59,9 +59,7 @@ class PayloadTests(unittest.TestCase):
 class MainIntegrationTests(unittest.TestCase):
 	def setUp(self):
 		interf_main._outages.clear()  # main() does this per run; these tests call _handle_shot directly
-		tmp = tempfile.TemporaryDirectory()
-		self.addCleanup(tmp.cleanup)
-		self.identifier = ShotIdentifier(ShotCounter(Path(tmp.name) / "shot_counter.json"))
+		self.identifier = ShotIdentifier(ShotCounter(None))
 
 	def test_handle_shot_writes_before_logging(self):
 		events = []
