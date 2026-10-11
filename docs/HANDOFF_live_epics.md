@@ -1,17 +1,23 @@
 # Handoff: live analysis + EPICS IOC for `bapsf_interferometer`
 
-Repository `BaPSF/bapsf_interferometer`, branch `refactor/linux-epics-daq`. Updated 2026-10-08. This file is the
+Repository `BaPSF/bapsf_interferometer`, branch `refactor/linux-epics-daq`. Updated 2026-10-11. This file is the
 implementation spec for the remaining commits. It implements the decisions in `docs/ARCHITECTURE.md` (D1–D15) and does
-not repeat their reasons. A question neither file answers goes to the user before code is written. The user supplies,
-with this file, `ARCHITECTURE_DECISIONS.md` and `c4-test-fixes.patch`.
+not repeat their reasons. A question neither file answers goes to the user before code is written.
+
+**Single source:** this file is `docs/HANDOFF_live_epics.md` on `refactor/linux-epics-daq`, next to `docs/ARCHITECTURE.md`.
+Every session (the local coding agent, the cloud test agent and `test-on-Bobby`) pulls the branch and reads both before
+any work. Copies elsewhere (the project's shared folder, an agent's memory) are not authoritative. Doc changes land only
+as commits by the local agent; other sessions send them as patch files.
 
 - **Local agent (Windows):** writes and pushes each commit to `origin/refactor/linux-epics-daq`, pulling first. Never
   force-push; no pull request unless asked. It runs no tests unless the user asks; the cloud session tests every pushed commit.
 - **Cloud test session:** for each pushed commit, the user sends `test <sha> (Cn)`. It runs the full suite on Linux and
   that commit's scenario on synthetic data, then reports. It pushes nothing. Linux-only tests (unix sockets, acquisition
   timers, the IOC scenarios) are verified there, not before the push.
-- **Real-data gates** (the user's lab-PC checks, §5) are deferred until the Linux machine with the `.trc` recordings is
-  connected. Mark each stage "pending real-data check"; do no `.trc`-dependent work before then.
+- **`test-on-Bobby`** (the Linux lab machine with the `.trc` recordings): runs the real-data checks (§5), the PVA tests
+  and the PVA bench re-run, then reports. It pushes nothing.
+- **Real-data gates** (§5) are deferred until `test-on-Bobby` is usable. Mark each stage "pending real-data check"; do
+  no `.trc`-dependent work before then.
 
 ## 1. Done so far
 
@@ -22,6 +28,8 @@ with this file, `ARCHITECTURE_DECISIONS.md` and `c4-test-fixes.patch`.
 | 3119997 C3, f26c882 C3a | `diag_ioc/link.py`: `IocLink` (latest-wins sender) and `LinkListener`; `INTERF_IOC_LINK`, `interf_sim --ioc-link`, `interf_sim.listen`; unix paths over 107 bytes rejected |
 | 3ca9aca C3b, 60e4dca C3c/C3d | `streamer.adios_io.iter_steps`/`read_step` (BP5 and BP4, open files end at the last step); C4r moved them to `interf_archive` and restored `streamer/` to 642429a |
 | 32f40cc C4 | `diag_ioc` host: TOML config, `ModuleHost`, `ShotPipeline`, `StatusRecords` (`STAT:*`), devIocStats, `diag-ioc@.service`, `tests/ioc_harness.py` |
+| 4ee26b8 C4r | Architecture review applied: `streamer/` restored to 642429a; `interf_archive` (offline archive reader); `diag_ioc/framing.py`, `diag_ioc/network.py`; `IocLink` needs an encoder and no longer numbers shots; `interf_payload` (schema 2); `interf_shot` (shot identity and trigger time); C4 test fixes; `docs/` |
+| ebb0b9f | `LinkListener` holds an `flock` on `<path>.lock`, so a second listener on one unix socket path fails at start |
 
 Facts from testing that still matter:
 - Analysis takes 0.18–0.25 s per shot at 1M samples per channel, but 2.35 s at 10M. Measure on the IOC host once the
@@ -35,6 +43,14 @@ Facts from testing that still matter:
 - Run single test modules with `python -m unittest discover -s tests -p test_x.py -v`. The dotted form fails, because
   the tests import `ioc_harness` as a top-level module.
 - A disconnected channel that still delivers noise is not caught. A signal-quality (SNR) check waits for real data.
+- C4r APIs that later commits use:
+  - `interf_payload.encode(shot)` / `decode(variables) -> DecodedShot`, which `analyze_shot` accepts; `decode` raises
+    `ValueError` for a `schema_version` other than 2.
+  - `interf_shot`: `SHOT_ZONE`, `local_time`, `clock`, `shot_date`, `shot_id`, `trigger_time(wd, host_time)`,
+    `ShotIdentifier(counter, trig_lag_max_s).identify(shot)` (never raises) and `ShotCounter(state_path)`.
+  - `ShotResult` carries `shot_date`, `shot_number`, `shot_time` and `time_source` (None where the shot has none).
+  - `interf_archive.iter_steps`/`read_step`/`decode` read the ADIOS archive (streamer's schema 1, no shot identity).
+    It imports `streamer.payload` for that schema, which is fine offline; the live path must not.
 
 ## 2. Conventions
 
@@ -53,7 +69,7 @@ Facts from testing that still matter:
 
 ## 3. API facts (verified; rely on these)
 
-**lab_scopes v0.4.1** (the branch pins v0.4.0 until C4r). `LeCroyWavedesc(b).wd` holds the 346-byte WAVEDESC fields. The
+**lab_scopes v0.4.1** (pinned since C4r). `LeCroyWavedesc(b).wd` holds the 346-byte WAVEDESC fields. The
 trigger time is `tt_second` (double), `tt_minute`, `tt_hours`, `tt_days`, `tt_months` and `tt_year`; `tt_year == 0` means
 unset. These are the scope's wall-clock time with no zone. In v0.4.1, `lab_scopes.lecroy.wavedesc.wavedesc_trigger_timestamp(wd)`
 reads them in `SCOPE_TIMEZONE` (`America/Los_Angeles`) with `zoneinfo` and returns epoch seconds, or `None` when unset
@@ -66,8 +82,10 @@ or unparseable. It never raises, and in the repeated fall-back hour it returns t
 - `builder.SetDeviceName(prefix)` takes the prefix with no trailing colon. Constructors: `aIn`, `longIn`, `boolIn`,
   `stringIn`, `longStringIn(length=)`, `WaveformIn(length=, datatype=float)`, `longOut`; EPICS fields go in as keywords.
   In-records default to `SCAN='I/O Intr'`, so pass `SCAN='Passive'` for data records.
-- `rec.set(value, severity=, alarm=, timestamp=)` is thread-safe. On a Passive record it only stores the value; on an
-  I/O Intr record it processes the record and its FLNK chain. With `TSE=-2`, always pass `timestamp` (epoch s).
+- `rec.set(value, severity=, alarm=, timestamp=)` is thread-safe. On a Passive record it only stores the value, and VAL
+  changes only when the record next processes (checked on 4.7.2: a Passive `aIn` set after `iocInit` still reads 0); on an
+  I/O Intr record it processes the record and its FLNK chain. Give fixed values as `initial_value=` at creation (PINI
+  processes them at `iocInit`). With `TSE=-2`, always pass `timestamp` (epoch s).
   Waveforms assert `len <= NELM`, and `longStringIn` asserts the text length.
 - Chains: `diag_ioc.records.chain(makers)` creates records last-to-first, passing `FLNK=<next>`. `rec.FLNK = other` after
   construction also works (checked on 4.7.2: `WriteRecords` shows the link). Use the existing `records.waveform`,
@@ -106,70 +124,44 @@ on every member change.
 Every commit leaves `python -m unittest discover -s tests -v` green, updates pyproject for new modules, and updates the
 README where users see a change.
 
-Two commits remain before Stage 3: **C4r** revises the C1–C4 work to the architecture review, and **C5** adds the IOC
-module. Each part below is a section of one of them; the cloud session runs each commit's tests after it is pushed.
+C4r is done. The local agent's next steps, in order:
+1. **Sync the docs (once).** Replace `docs/ARCHITECTURE.md` with the supplied `ARCHITECTURE_DECISIONS.md`, keeping the
+   name `docs/ARCHITECTURE.md` (the code and README cite it), and `docs/HANDOFF_live_epics.md` with the supplied handoff.
+   Commit as `docs: sync the architecture and handoff to the latest review` and push. Skip this step if `docs/` already
+   has this text.
+2. **C4s** fixes the shot counter after the C4r tests.
+3. **C5** adds the IOC module.
 
-**C4r `refactor: apply the architecture review to the live path`.** Parts (a)–(d):
+The cloud session runs each commit's tests after it is pushed.
 
-**(a) C4 test fixes** (`c4-test-fixes.patch`, supplied with this file):
-- In `test_invalid_configs_name_the_problem`, the key `"unknown top-level"` becomes `"top level: unknown keys"`, the
-  text the code produces.
-- `IocProcess.__exit__` in `tests/ioc_harness.py` closes `self.process.stdout`, which removes a `ResourceWarning` per IOC.
-
-**(b) Docs.** Add `ARCHITECTURE_DECISIONS.md` as `docs/ARCHITECTURE.md` and this file as `docs/HANDOFF_live_epics.md`,
-replacing the old handoff.
-
-**(c) Decouple the live link from streamer (D6, D12).**
-- New `diag_ioc/framing.py`: `send_arrays`, `receive_message`, `send_end`, copied from `streamer/socket_protocol.py`
-  without compression or authentication.
-- New `diag_ioc/network.py`: `ipv4_network`, `create_tcp_listener`, `accept_from_allowed_network`, copied from
-  `streamer/network_access.py`.
-- `IocLink(address, encode, …)`: `encode(item) -> {name: array}` becomes required (`diag_ioc` cannot import `interf_*`).
-  Remove the link's own `seq` counter and the `seq` argument. `shot_number` replaces it (D14).
-- New `interf_payload.py`, copied from `streamer/payload.py`:
-  - `encode(shot)` writes the envelope `schema_version` (2), `shot_date`, `shot_number`, `shot_time`, `time_source`,
-    `host_time`, `critical_path_s` and `missing_json`, then the `lecroy_*`/`rigol_*` arrays as today. The shot fields
-    come from part (d).
-  - `decode(variables)` returns a dataclass that `analyze_shot` accepts, and raises `ValueError` on an unknown version.
-- `interf_main`, `interf_sim` and `interf_sim.listen` use `interf_payload`.
+**C4s `fix: keep the shot counter's disk write off the acquisition thread` (D14).** Files: `interf_shot.py`,
+`interf_main.py`, `interf_sim/trc_replay.py`, `tests/test_interf_shot.py`, `README.md`. Found by the C4r tests:
+`ShotCounter._save` fsyncs on the acquisition thread (0.7 ms median on a fast disk, unbounded on a slow or network one),
+and a corrupt state file on a running day repeats numbers already used.
+- The state file stays where C4r put it: `INTERF_SHOT_STATE`, default `~/data/state/shot_counter.json`
+  (`interf_main.py`). It must be on a local disk and outside `LOG_DIR` (`INTERF_LOG_DIR`, default `~/data/log`),
+  whose rotated files are deleted after 30 days.
+- `ShotCounter(state_path, log_paths=())`:
+  - `next(shot_time)` stays in memory and O(1). It hands `(date, number)` to a daemon writer thread through a single
+    latest-wins slot. That thread runs today's `_save` (temp file, fsync, `os.replace`, the `Outage` logging).
+    `close()` writes the last state and stops the thread; `interf_main` calls it at exit on the counter it created.
+  - `state_path=None` persists nothing. `interf_sim/trc_replay.py` passes `None`, since the simulator is only a test
+    tool, so test runs are repeatable. Update its docstring and the README's simulator notes, which today name
+    `interf_sim/log/shot_counter.json`.
+  - At construction, read the state file, then scan `log_paths` once for the last `interf_main: shot <date>-<number> |`
+    line (the `shot_id` format). `interf_main` passes `interf_acquire.log` and the newest rotated `interf_acquire.log.*` in
+    `LOG_DIR`. Take the later date of the two sources, and for that date the larger number. `next()` continues from it
+    as today.
+  - A state file that exists but cannot be read is logged as a warning. If the log gives no number either, the
+    warning says that numbers already used today may repeat.
+  - Update the class docstring and the README's `INTERF_SHOT_STATE` row, which today say an unreadable file restarts
+    counting at 0.
 - Tests:
-  - the link tests pass;
-  - an encode/decode round trip;
-  - after importing `diag_ioc`, `interf_payload` and (from C5) `interf_ioc` in a subprocess, no `streamer` module is
-    loaded;
-  - `--raw-output` ADIOS files are unchanged.
-
-**(d) Shot identity and trigger time (D14, D15).** Pin lab_scopes to v0.4.1 in pyproject and the README. New
-`interf_shot.py`, with the zone as a constant `America/Los_Angeles` (no setting); `RawShot` gains `shot_date`,
-`shot_number`, `shot_time` and `time_source` (`streamer` ignores them, so ADIOS is unchanged). In `ShotResult`, these four
-replace `shot_index`.
-- `trigger_time(wd, host_time) -> (shot_time, time_source)`:
-  - `t = wavedesc_trigger_timestamp(wd)` on the first LeCroy channel's WAVEDESC.
-  - When `t + 3600` has the same LA wall-clock time as `t` (the repeated fall-back hour), use whichever of `t` and
-    `t + 3600` is closer to `host_time`.
-  - No LeCroy data, or `t is None`, gives `(host_time, "host")`; otherwise `"trigger"`.
-  - Log a throttled warning when `host_time − shot_time` is negative or above `INTERF_TRIG_LAG_MAX_S`. As built:
-    `trigger_time` is a pure conversion; a per-run `ShotIdentifier(counter, trig_lag_max_s)` calls it and the
-    counter, does the lag check, and owns the throttled logging. `_handle_shot` calls `identifier.identify(shot)`.
-- `ShotCounter(state_path).next(shot_time) -> (shot_date, shot_number)`:
-  - `shot_date` is the America/Los_Angeles date of `shot_time` as YYYYMMDD, and the number restarts at 0 when it changes.
-  - Write the state atomically (temp file + `os.replace`) after each shot. On a restart the same day, continue from
-    last + 1.
-  - An unreadable state file is logged and counting starts at 0.
-- `_handle_shot` assigns the fields after the re-arm and before the outputs. It never raises; on failure it uses
-  `host_time` and the in-memory counter. The log line adds `shot <date>-<number>`. `analyze_shot` copies the fields
-  into `ShotResult` when present.
-- Settings:
-  - `INTERF_SHOT_STATE`, default `~/data/state/shot_counter.json` (state, kept out of the rotated log directory;
-    `interf_sim` uses its own log directory);
-  - `INTERF_TRIG_LAG_MAX_S`, default 5, where 0 disables the check. `interf_sim` sets 0, since replays carry old
-    trigger times.
-- Tests:
-  - PST and PDT;
-  - the fall-back hour;
-  - the `host` fallback;
-  - the counter: increment, same-day restart, restart at LA midnight, corrupt state;
-  - `interf_sim.synthetic.make_wavedesc` writes LA-local fields (it uses `time.gmtime` today, matching the old `timegm`).
+  - a corrupt state file recovered from the log;
+  - a log ahead of the state file (a lost last write);
+  - a log line from an earlier date only, and neither source present;
+  - `state_path=None` writes no file;
+  - `next()` returns while the writer is blocked (a stub that waits on an `Event`), and `close()` writes the last state.
 
 **C5 `feat: interferometer IOC module` (D2, D4, D5, D7, D8, D11).** Includes the read-only access file and the version
 pins (parts at the end). Files: `interf_ioc.py`, `deploy/diag-ioc/interferometer.toml`, `diag_ioc/host.py`,
@@ -181,15 +173,15 @@ pins (parts at the end). Files: `interf_ioc.py`, `deploy/diag-ioc/interferometer
 | `SHOT:NUM` | longIn, I/O Intr, TSE −2: chain head, set last |
 | `SHOT:DATE`, `SHOT:LOST` | longIn, Passive, TSE −2, `MDEL=-1` |
 | `SHOT:TIME_SOURCE`, `SHOT:TIME_STR` | stringIn, Passive, TSE −2 |
-| `SHOT:HOST_TIME` (PREC 6), `SHOT:CRIT_PATH` | aIn, Passive, TSE −2 |
+| `SHOT:HOST_TIME` (PREC 6), `SHOT:CRIT_PATH`, `STAT:TRIG_LAG` (s, `host_time − shot_time`) | aIn, Passive, TSE −2 |
 | `SHOT:MISSING` | longStringIn 1024, Passive, TSE −2: each acquisition reason once, then port reasons that add something |
 | `<port>:TIME_ARRAY`, `:PHASE`, `:NE` | WaveformIn f64, NELM `max_points`, Passive, TSE −2 |
 | `<port>:NE_MEAN` | aIn, Passive, TSE −2, `MDEL=-1`; NaN + INVALID when NaN |
-| `<port>:CAL`, `<port>:FREQ` (GHz), `CFG:NE_WINDOW_MS` (2 elements) | set once in `start()`; module option `ne_window_ms`, default `[5.0, 10.0]` |
+| `<port>:CAL`, `<port>:FREQ` (GHz), `CFG:NE_WINDOW_MS` (2 elements) | fixed: `initial_value=` from config in `create_records` (not in the chain); module option `ne_window_ms`, default `[5.0, 10.0]` |
 
 - Ports come from `[[module.options.ports]]` (`name`, `scope`, `ref`, `plasma`, `freq_hz`; default
   `interf_analysis.PORTS`), validated at construction. PVs are created per configured port.
-- Chain: `SHOT:NUM → DATE → TIME_SOURCE → HOST_TIME → TIME_STR → CRIT_PATH → LOST → MISSING → <port>:TIME_ARRAY →
+- Chain: `SHOT:NUM → DATE → TIME_SOURCE → HOST_TIME → TIME_STR → CRIT_PATH → STAT:TRIG_LAG → LOST → MISSING → <port>:TIME_ARRAY →
   PHASE → NE → NE_MEAN → … → <last port>:NE_MEAN → SHOT:ACK`.
 - Group `<P>:SHOT`:
   - `""` (meta) and `num` from `SHOT:NUM`;
@@ -206,15 +198,17 @@ pins (parts at the end). Files: `interf_ioc.py`, `deploy/diag-ioc/interferometer
     baseline.
   - `SHOT:NUM.set(shot_number, timestamp=shot_time)` comes last.
 - Host (generic, every module):
-  - Create `STAT:PUBLISHED` (longIn), `SHOT:ACK` (the ack pattern), `STAT:ACK_TIMEOUTS` (longIn) and `STAT:TRIG_LAG`
-    (aIn, s, `host_time − shot_time`).
+  - Create `STAT:PUBLISHED` (longIn left at the default I/O Intr, no FLNK, so its VAL changes at `set()`; a Passive one
+    would leave the ack reading the old count), `SHOT:ACK` (the ack pattern) and `STAT:ACK_TIMEOUTS` (longIn). `STAT:TRIG_LAG` is
+    the module's (above), since only the module knows the shot's times.
   - `DiagnosticModule.create_records(builder)` now returns its chain's last record (or `None` for a module without a
     chain); update the docstring and `tests/dummy_ioc_module.py`. The host sets `tail.FLNK = ack` before
     `LoadDatabase()`.
   - Before each `publish`, wait until the ack equals the last published count (an `Event` set from `on_update`). The
     wait times out at 2 s, then it logs, increments `STAT:ACK_TIMEOUTS` and proceeds. Then increment and set
     `STAT:PUBLISHED`, and call `publish`.
-  - Write `<ioc name>.db` with `WriteRecords` at every start into the new optional `[ioc] db_dir` (default: the config
+  - Write `<name>.db` (the config file's name, e.g. `interferometer.db`; `__main__` passes the path to `run`) with
+    `WriteRecords` at every start into the new optional `[ioc] db_dir` (default: the config
     file's directory). The systemd unit adds `StateDirectory=diag-ioc`, and the example config sets
     `db_dir = "/var/lib/diag-ioc"`, because the non-root IOC cannot write `/etc/diag-ioc`.
 - `ioc_harness.monitor_all(names, callback, timeout)` implements the pyepics flush rule (§3).
@@ -227,6 +221,7 @@ pins (parts at the end). Files: `interf_ioc.py`, `deploy/diag-ioc/interferometer
   - back-to-back publishing leaves `SHOT:ACK == STAT:PUBLISHED` and `STAT:ACK_TIMEOUTS == 0`;
   - `monitor_all` sees exactly one update per member per shot for 5 shots;
   - a `caget` of `P20:NE` returns the full array.
+- Extend C4r's `test_the_live_path_loads_no_streamer_module` to import `interf_ioc` too.
 - PVA tests (skip without IPv6 and p4p): `<P>:SHOT` matches the shot, and a monitor gets one consistent update per shot.
 - Cloud scenario: `diag_ioc` plus `interf_sim --ioc-link` on synthetic `.trc` files.
   - Read the D4 list over CA.
@@ -234,8 +229,8 @@ pins (parts at the end). Files: `interf_ioc.py`, `deploy/diag-ioc/interferometer
   - Kill and restart the IOC mid-run: acquisition continues, and the link logs the outage and recovery.
 
 **C5, read-only access (D8).** Add `deploy/diag-ioc/readonly.acf` (reads for all, writes for none), installed via the
-new optional `[ioc] acf` path. Making `CFG:NE_WINDOW_MS` writable from the screen is a later change, not part of C5. Test: a CA put is rejected. On an IPv6 machine, check that PVA puts are
-rejected too, and say so in the commit body.
+new optional `[ioc] acf` path. Making `CFG:NE_WINDOW_MS` writable from the screen is a later change, not part of C5.
+Test: a CA put is rejected. On an IPv6 machine, check that PVA puts are rejected too, and say so in the commit body.
 
 **C5, version pins (D11).** Add `constraints.txt` with exact `softioc`, `epicscorelibs`, `pvxslibs` and
 `p4p` versions as tested, and document `-c constraints.txt` in the README.
@@ -286,12 +281,14 @@ rejected too, and say so in the commit body.
 
 **C8 `docs: live analysis, IOC and clients`.** Covers `README.md`, `diag_ioc/README.md` and `deploy/` examples:
 - the architecture, PV table, services, EPICS variables, Phoebus setup and lab checklist;
-- the Files/Configuration tables, including `INTERF_SHOT_STATE` and `INTERF_TRIG_LAG_MAX_S`, and the fixed LA zone;
+- the Files/Configuration tables, including `INTERF_SHOT_STATE` (default `~/data/state/shot_counter.json`) and
+  `INTERF_TRIG_LAG_MAX_S`, and the fixed LA zone;
 - the module contract, and how to add a diagnostic (another `[[module]]`, or another `diag-ioc@<name>`);
 - networking: Phoebus on the IOC machine over loopback, interface address lists, several IOCs on one host, and a
   gateway for the outside group if it is on another subnet;
 - that only the PVA group is atomic, while a CA client that falls behind can drop or tear a shot;
-- operations: run as the non-root `diag-ioc` user, and keep the scope clock NTP-synced.
+- operations: run as the non-root `diag-ioc` user, keep the scope clock NTP-synced, and keep `INTERF_SHOT_STATE` and
+  `INTERF_LOG_DIR` on a local disk (not a network filesystem), with the state file outside the log directory.
 
 ## 5. Real-data checks (user, on the Linux machine; deferred until it is connected)
 

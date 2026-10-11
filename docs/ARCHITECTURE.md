@@ -1,10 +1,15 @@
 # EPICS live-analysis architecture: decisions
 
-Repo `BaPSF/bapsf_interferometer`, branch `refactor/linux-epics-daq`, base head `32f40cc` (C4, `diag_ioc` host).
-Status: **all 15 decisions ACCEPTED by J on 2026-10-08.** Both agents follow this file, and
+Repo `BaPSF/bapsf_interferometer`, branch `refactor/linux-epics-daq`, head `ebb0b9f` (C4r done, plus the link socket lock).
+Status: **all 15 decisions ACCEPTED by J on 2026-10-08.** Every agent follows this file, and
 `HANDOFF_live_epics.md` implements it commit by commit. Anything neither covers goes to J before code is written.
 
-## 0. What exists at 32f40cc
+**Single source:** this file is `docs/ARCHITECTURE.md` on `refactor/linux-epics-daq`, next to
+`docs/HANDOFF_live_epics.md`. Every session (the local coding agent, the cloud test agent and `test-on-Bobby`) pulls the
+branch and reads both before any work. Copies elsewhere (the project's shared folder, an agent's memory) are not
+authoritative. Doc changes land only as commits by the local agent; other sessions send them as patch files.
+
+## 0. What existed at 32f40cc (before C4r)
 
 ```
 interf_main (acquisition, Linux)
@@ -18,14 +23,14 @@ diag_ioc host (pythonSoftIOC, one process per config)  <──────┘
 
 Both outputs currently encode with `streamer.payload.shot_variables`. D6 removes that dependency from the live
 path. Each output keeps its own per-process counter (`streamer/raw_output.py:20`, `diag_ioc/link.py:80`), and
-the record timestamps are `host_time`. D14 and D15 replace both.
+the record timestamps are `host_time`. C4r (`4ee26b8`) replaced both, per D6, D14 and D15.
 
 ## 1. Decisions
 
 | # | Decision | Choice |
 |---|---|---|
 | D1 | IOC technology | pythonSoftIOC, standard record types only |
-| D2 | Record definitions | Python `builder` in the module; host exports `<name>.db` at start |
+| D2 | Record definitions | Python `builder` in the module; host exports `<name>.db` at start (`<name>` = config file name) |
 | D3 | Process layout | One `diag-ioc@<name>` process per diagnostic |
 | D4 | PV naming | Prefix `LAPD:DIAG:INTERF` (config value), fixed sub-tree below |
 | D5 | Where analysis runs | In the IOC process, from raw shots over the link |
@@ -61,7 +66,8 @@ the record timestamps are `host_time`. D14 and D15 replace both.
 ### D2. Record definitions in Python
 - Each module builds its records with `builder` and `diag_ioc/records.py`: one source of truth for names, NELM and
   publish order. A hand-written `.db` would duplicate every name.
-- The host writes the full database with `builder.WriteRecords()` to `<name>.db` at every start, so a current
+- The host writes the full database with `builder.WriteRecords()` to `<name>.db` (e.g. `interferometer.db` for
+  `interferometer.toml`) at every start, so a current
   file listing every PV always exists. It goes in `[ioc] db_dir` (default: the config file's directory). The IOC runs
   as non-root (D10) and cannot write `/etc/diag-ioc`, so the systemd unit points it at its state directory.
 - Lifetime: PVs exist while the IOC runs. After a crash, systemd restarts it within about 5 s and the data PVs are
@@ -83,7 +89,7 @@ use `LAPD:DIAG:<NAME>`. Units and names are the stable interface; everything els
 | `<P>:SHOT:NUM` | shot number within the day, from 0 (D14); FLNK chain head, set last |
 | `<P>:SHOT:TIME_SOURCE` | `trigger` or `host`: where the shot timestamp came from (D15) |
 | `<P>:SHOT:HOST_TIME` | epoch s when the PC detected the capture; cross-check only |
-| `<P>:SHOT:TIME_STR` | shot time as local text, for the screen |
+| `<P>:SHOT:TIME_STR` | shot time as LA local text, for the screen |
 | `<P>:SHOT:CRIT_PATH` | s, acquisition critical path (`critical_path_s`) |
 | `<P>:SHOT:LOST` | running total of shots lost on the live link, from gaps in `SHOT:NUM`; a new day, a decrease, or the first shot after IOC start resets the baseline |
 | `<P>:SHOT:MISSING` | which scope/channel is missing and why |
@@ -91,9 +97,9 @@ use `LAPD:DIAG:<NAME>`. Units and names are the stable interface; everything els
 | `<P>:<port>:PHASE` | rad |
 | `<P>:<port>:NE` | m⁻³, path-averaged density |
 | `<P>:<port>:NE_MEAN` | m⁻³, mean over the `CFG:NE_WINDOW_MS` window |
-| `<P>:<port>:CAL` | m⁻³/rad, calibration factor; set once at start |
-| `<P>:<port>:FREQ` | GHz, the port's interferometer frequency; set once at start |
-| `<P>:CFG:NE_WINDOW_MS` | ms, (start, stop) averaging window, 2 elements; default (5, 10) from config, set at start; to become adjustable from the screen later (D8) |
+| `<P>:<port>:CAL` | m⁻³/rad, calibration factor; fixed from config when the records are created |
+| `<P>:<port>:FREQ` | GHz, the port's interferometer frequency; fixed from config when the records are created |
+| `<P>:CFG:NE_WINDOW_MS` | ms, (start, stop) averaging window, 2 elements; default (5, 10), fixed from config when the records are created; to become adjustable from the screen later (D8) |
 | `<P>:STAT:CONNECTED`, `STALE`, `AGE_S`, `DROPPED`, `ANALYSIS_S`, `ERROR` | host health (exist in C4) |
 | `<P>:SHOT:ACK` | internal: copies `STAT:PUBLISHED` when the chain finishes (D7); read-only, not in the group |
 | `<P>:STAT:PUBLISHED` | shots published by this IOC process (monotonic, restarts at 0 with the IOC) |
@@ -138,12 +144,12 @@ shots dropped by the IOC mailbox.
   in-IOC, and silent). Fix, owned by the `diag_ioc` host so that every module gets it:
   - `SHOT:ACK` = `longOut(OMSL="closed_loop", DOL="<P>:STAT:PUBLISHED", DISP=1, always_update=True, on_update=…)`,
     FLNK'd from the chain's last record. DOL has no PP, so it reads the stored value. DISP=1 blocks CA puts.
-  - `publish()` increments and sets `STAT:PUBLISHED` with the shot. Before setting the next shot, the host waits until
+  - The host increments and sets `STAT:PUBLISHED` just before each `publish()`. Before the next shot, it waits until
     the ack equals the last published count. The wait times out at 2 s, then logs, increments
     `STAT:ACK_TIMEOUTS` and proceeds.
   - The ack follows the IOC's own counter, not `SHOT:NUM`, because `SHOT:NUM` resets each day: a day ending at 0
     followed by a new day's 0 would pass the wait early.
-  - Verified pattern: `repro/chain_overlap_ack.py` in the bench results (0 torn chains in 3000 back-to-back runs, versus
+  - Verified pattern: `repro/chain_overlap_ack.py` in the bench results, outside the repo (0 torn chains in 3000 back-to-back runs, versus
     1703 without the wait).
 - **CA versus PVA delivery (bench F3).** When a CA client falls behind, the server merges its queued updates per
   channel, so the client can see a dropped, duplicated or torn shot. This is inherent to CA. CA clients match a
@@ -189,11 +195,15 @@ shots dropped by the IOC mailbox.
   root (C5).
 
 ### D13. Agent roles and gates
-- **Local agent (Windows):** the only code writer. It runs no tests unless J asks. Pushes the planned commits (C4r, C5, then C6–C8) to `refactor/linux-epics-daq`
+- **Single source (J, 2026-10-11):** see the header. A session that finds the docs and the code disagree reports it
+  rather than working from its own copy.
+- **Local agent (Windows):** the only code writer, `docs/` included. It runs no tests unless J asks. Pushes the planned commits (C4s, C5, then C6–C8) to `refactor/linux-epics-daq`
   on top of the latest head, pulling before each commit.
 - **Cloud agent (Linux):** runs the test suite, including the Linux-only tests, and synthetic scenarios (`interf_sim.synthetic`, `interf_sim --ioc-link`,
   pyepics CA checks) on the latest head, reports results and proposed patches to J, and pushes nothing. PVA
   tests are skipped where the kernel has no IPv6.
+- **`test-on-Bobby` (the Linux lab machine with the `.trc` recordings):** runs the real-data checks (handoff §5), the
+  PVA tests and the PVA bench re-run, reports to J, and pushes nothing.
 - **pyepics monitor rule (bench F2):** pyepics reports a PV connected before it subscribes, so the last monitor
   created can silently never start (8 of 35 trials). Every CA monitor client (the tests, through
   a `tests/ioc_harness.py` helper such as `monitor_all(names, callback, timeout)`) calls `epics.ca.flush_io()` until
@@ -202,9 +212,9 @@ shots dropped by the IOC mailbox.
   CA test clients; `interf_store` uses PVA (D9).
 - **Real-data gates are deferred, not waived:** plausible density, no missing ports on real `.trc` shots, the
   record length that sets `max_points`/`ca_max_array_bytes`, and TRIGGER_TIME resolution. Each stage stays
-  "pending real-data check" until J connects the Linux machine with `.trc` files. No trc-dependent work before then.
+  "pending real-data check" until `test-on-Bobby` is usable. No trc-dependent work before then.
 - **PVA gate:** the PVA group (one update per shot, no torn reads) is untested here, because the cloud has no IPv6, so
-  the cloud skips C6's PVA tests. Run them on the Linux machine, before C6 is called done.
+  the cloud skips the C5 and C6 PVA tests. Run them on the Linux machine, before C6 is called done.
   J re-runs the IOC bench (`ioc_bench.py run --quick`, without `--no-pva`) on an IPv6 machine.
 
 ### D14. Shot identity
@@ -214,7 +224,12 @@ shots dropped by the IOC mailbox.
 - `interf_main` assigns them once per capture and stores them in `RawShot`. The live link and HDF5 carry them.
   ADIOS does not (streamer is not ours, D6). The date is the D15 shot time in America/Los_Angeles local time. A run crossing midnight starts the
   new day at 0.
-- The counter is persisted on disk (date + last number). A restart on the same day continues from last + 1.
+- The counter is persisted on disk (date + last number), on a local disk. Numbers are assigned in memory on the
+  acquisition thread. The file is written (fsync + atomic replace) by a background thread, so disk speed never holds up
+  the main loop.
+- At start, counting resumes from the larger of the state file and the last `shot <date>-<number>` in the acquisition
+  log, plus 1. So one lost or corrupt file never repeats a number. Only if both are lost does a running day restart at
+  0, logged as a warning. `shot_time` stays the unique key in storage (HDF5 dataset names).
 - A gap in `shot_number` means a lost shot.
 
 ### D15. Shot time
@@ -247,9 +262,11 @@ shots dropped by the IOC mailbox.
 
 Commit labels and file-level specs are in `HANDOFF_live_epics.md`.
 
-1. C4r, one commit revising the C1–C4 work: the C4 test fixes; this file as `docs/ARCHITECTURE.md` with the handoff;
-   lab_scopes pinned to v0.4.1; the live link decoupled from streamer (D6, ADIOS output unchanged); shot identity and time (D14, D15) in acquisition,
-   tested with synthetic WAVEDESCs across midnight, the DST change, a restart and a missing trigger time.
+Done: C4r (`4ee26b8`: streamer restored, live link decoupled, shot identity and trigger time) and the link socket lock
+(`ebb0b9f`).
+
+1. C4s, one small commit: the shot counter's file write moved off the acquisition thread, and start-up recovery from
+   the acquisition log (D14, from the C4r test findings).
 2. C5, one commit: `interf_ioc.py` per D2, D4, D5, D7, with the prefix from config, `<name>.db` written at start, the
    host's `SHOT:ACK` wait (tested by publishing back-to-back and finding no torn chain), the read-only ACF (D8) and the
    constraints file (D11).
