@@ -13,8 +13,8 @@ the local agent; other sessions send them to the user as patch files.
   force-push; no pull request unless asked. It runs no tests unless the user asks, and each commit message lists what
   it ran and what it did not.
 - **`test-on-Bobby`** (the Linux lab machine with the `.trc` recordings; the only test session since 2026-10-11): for
-  each pushed commit, runs the full suite, that commit's scenario on real `.trc` files, the real-data checks (§5), the
-  PVA tests and the PVA bench re-run, then reports. It pushes nothing. Linux-only tests (unix sockets, acquisition
+  each pushed commit, runs the full suite (the PVA tests included), that commit's scenario on real `.trc` files and
+  the real-data checks (§5), then reports. It pushes nothing. Linux-only tests (unix sockets, acquisition
   timers, the IOC) are verified there, not before the push. The cloud test session is retired, and no new synthetic
   data generators are needed; the unit tests keep using `interf_sim.synthetic`.
 - Bobby also runs another IOC (prefix `Interferometer:Port31:`) on the default CA 5064 and PVA 5075 ports. Test IOCs
@@ -33,17 +33,29 @@ the local agent; other sessions send them to the user as patch files.
 | ebb0b9f | `LinkListener` holds an `flock` on `<path>.lock`, so a second listener on one unix socket path fails at start |
 | 73ccb44 | Docs synced to the latest review; `docs/` on this branch is the single source |
 | 465b76a C4s | `ShotCounter` writes its state on a daemon thread (latest wins) and resumes from the later of the state file and the acquisition log; the replay persists no counter |
-| C5 (5928659 was pushed before review and reverted by 3b3e143; this is the reviewed redo) | `interf_ioc` module (D4 PVs, chain, PVA group `<P>:SHOT`); host `SHOT:ACK` wait, `STAT:PUBLISHED`/`ACK_TIMEOUTS`, `<name>.db` export to `[ioc] db_dir`, `[ioc] acf` with `readonly.acf`; `create_records` returns the chain tail; `constraints.txt`; `ioc_harness.monitor_all` |
+| b8ecf40 C5 (5928659, pushed before review, was reverted by 3b3e143) | `interf_ioc` module (D4 PVs, chain, PVA group `<P>:SHOT`); host `SHOT:ACK` wait, `STAT:PUBLISHED`/`ACK_TIMEOUTS`, `<name>.db` export to `[ioc] db_dir`, `[ioc] acf` with `readonly.acf`; `create_records` returns the chain tail; `constraints.txt`; `ioc_harness.monitor_all` |
+
+**Tested on Linux with real recordings** (`test-on-Bobby`, 2026-10-11): C4s `465b76a` and C5 `b8ecf40`. 119 of 119
+tests pass, PVA tests included. The 55 recorded shots ran through the real IOC (`interf_sim --ioc-link`), with an IOC
+SIGKILL and restart mid-run. No code changes were needed.
 
 Facts from testing that still matter:
-- The lab record (from `test-on-Bobby`, 2026-10-11): LeCroy HDO4104, channels C1–C4 only, 1,000,002 16-bit samples
-  at 0.1 µs (100 ms). That gives 1953 phase points per port, so `max_points = 2048` keeps them all, and a 2048-point
-  float64 waveform (16 KiB) fits `ca_max_array_bytes = 65536`. The recordings hold no Rigol traces, so P40 is missing
-  on every replayed shot.
+- The recordings (`test-on-Bobby`, 2026-10-11): 216 `.trc` files, 55 shots, LeCroy HDO4104 channels C1–C4 only. No
+  Rigol traces, so P40 is missing on every replayed shot (empty arrays, INVALID, the reason in `SHOT:MISSING`).
+  Known gaps: shot 82435 has only C2 (P20 and P29 missing), 82437 has no C4 (P29 missing), and 82436 is absent.
+- The record: 1,000,002 int16 samples at 0.1 µs (100 ms). `P20:NE` returns 1953 points, so `max_points = 2048` keeps
+  them all, and a 2048-point float64 waveform (16 KiB) fits `ca_max_array_bytes = 65536`.
+- Density: the 5–10 ms mean is about 4.2e18 m⁻³ on P20 and 4.35e18 m⁻³ on P29 (within 4 % of each other). Analysis
+  takes about 0.064 s per real shot on Bobby. (Synthetic shots on other machines took 0.18–0.25 s at 1M samples per
+  channel and 2.35 s at 10M; `scipy.fft.rfft` with `workers=-1` in `correlation_spectrogram` gives the same peaks faster.)
+- `SHOT:LOST` does not count shots missed while the IOC was down (D4): the restart showed only as a `SHOT:NUM` gap,
+  12 to 17, and in the link's outage log.
+- `interf_sim` persists no shot counter since C4s, so a test of counter persistence across runs needs a driver outside
+  the repo.
+- The EPICS libraries bind some UDP sockets on all interfaces at random high ports, even with every address list set
+  to loopback. Harmless; C8's deployment notes say so.
 - Installed and working on Bobby: softioc 4.7.2, epicscorelibs 7.0.10.99.0.2, pvxslibs 1.5.3, p4p 4.3.0, pyepics 3.5.10,
   lab-scopes 0.4.1 (`constraints.txt` pins the EPICS ones).
-- Analysis takes 0.18–0.25 s per shot at 1M samples per channel, but 2.35 s at 10M. Measure on the IOC host;
-  `scipy.fft.rfft` with `workers=-1` in `correlation_spectrogram` gives the same peaks faster.
 - `critical_path_s` is unchanged by the link (median about 4 ms with and without).
 - Two listeners on one unix socket path (one config spelling it two ways, or two IOC processes) used to let the second
   silently take the socket, and stopping the first then removed it. Fixed after C4r: `LinkListener` holds
@@ -134,7 +146,8 @@ on every member change.
 Every commit leaves `python -m unittest discover -s tests -v` green, updates pyproject for new modules, and updates the
 README where users see a change.
 
-Done: C4r, the docs sync (73ccb44, step 1), C4s (465b76a) and C5. The local agent's next step is **C6**.
+Done: C4r, the docs sync (73ccb44, step 1), C4s (465b76a) and C5 (b8ecf40), the last two tested on Linux with real
+recordings (§1). The local agent's next step is **C6**.
 
 `test-on-Bobby` runs each commit's tests after it is pushed.
 
@@ -304,7 +317,8 @@ As built: the CA test checks that the access right itself is refused (DISP=1 alo
   `INTERF_TRIG_LAG_MAX_S`, and the fixed LA zone;
 - the module contract, and how to add a diagnostic (another `[[module]]`, or another `diag-ioc@<name>`);
 - networking: Phoebus on the IOC machine over loopback, interface address lists, several IOCs on one host, and a
-  gateway for the outside group if it is on another subnet;
+  gateway for the outside group if it is on another subnet; the EPICS libraries still bind some UDP sockets on all
+  interfaces at random high ports with every address list set to loopback, which is harmless;
 - that only the PVA group is atomic, while a CA client that falls behind can drop or tear a shot;
 - operations: run as the non-root `diag-ioc` user, keep the scope clock NTP-synced, and keep `INTERF_SHOT_STATE` and
   `INTERF_LOG_DIR` on a local disk (not a network filesystem), with the state file outside the log directory.
@@ -315,14 +329,12 @@ As built: the CA test checks that the access right itself is refused (DISP=1 alo
 - **After C4r**, replaying real recordings:
   - shot IDs carry the recordings' LA dates;
   - trigger times match the scope times `interf_main` logs.
-- **After C5** (`diag_ioc` plus `interf_sim --ioc-link` on real `.trc` files):
+- **After C5** (`diag_ioc` plus `interf_sim --ioc-link` on real `.trc` files), passed 2026-10-11 (§1):
   - plausible density, and no missing P20 or P29 on good shots (P40 is always missing: no Rigol traces recorded);
-  - `pvget <P>:SHOT`;
-  - the PVA tests;
-  - the IOC bench with PVA (`ioc_bench.py run --quick` without `--no-pva`, from the project files, not the repo).
+  - the PVA tests. They replace the PVA bench re-run, which is dropped; the CA bench verdict (keep pythonSoftIOC) stands.
 - **After C8**, with the IOC, `interf_store` and Phoebus running, and `--raw-output raw.bp`:
   - HDF5 dataset names equal the trigger times recomputed from the BP WAVEDESCs;
   - then run live with `INTERF_IOC_LINK=… python interf_main.py`.
 - **Set in C5** from the real record length (§1): `max_points = 2048`, `ca_max_array_bytes = 65536`.
-- **Still open** (config; the user decides later): the systemd user, group and paths.
-- **Deferred by the user:** whether legacy HDF5 readers accept empty P40 arrays in place of zero-filled placeholders.
+- **Still open:** the systemd user, group and paths (config; the user decides later), and whether legacy HDF5 readers
+  accept empty P40 arrays in place of zero-filled placeholders (deferred by the user).

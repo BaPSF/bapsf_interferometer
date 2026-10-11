@@ -1,7 +1,8 @@
 # EPICS live-analysis architecture: decisions
 
-Repo `BaPSF/bapsf_interferometer`, branch `refactor/linux-epics-daq` (C4r `4ee26b8`, the link socket lock `ebb0b9f`,
-C4s `465b76a` and C5 done; `git log` has the current head).
+Repo `BaPSF/bapsf_interferometer`, branch `refactor/linux-epics-daq`. Done: C4r `4ee26b8`, the link socket lock
+`ebb0b9f`, C4s `465b76a` and C5 `b8ecf40`; C4s and C5 are tested on Linux with real recordings. `git log` has the
+current head.
 Status: **all 15 decisions ACCEPTED by J on 2026-10-08.** Every agent follows this file, and
 `HANDOFF_live_epics.md` implements it commit by commit. Anything neither covers goes to J before code is written.
 
@@ -67,10 +68,13 @@ the record timestamps are `host_time`. C4r (`4ee26b8`) replaced both, per D6, D1
 ### D2. Record definitions in Python
 - Each module builds its records with `builder` and `diag_ioc/records.py`: one source of truth for names, NELM and
   publish order. A hand-written `.db` would duplicate every name.
-- The host writes the full database with `builder.WriteRecords()` to `<name>.db` (e.g. `interferometer.db` for
-  `interferometer.toml`) at every start, so a current
-  file listing every PV always exists. It goes in `[ioc] db_dir` (default: the config file's directory). The IOC runs
-  as non-root (D10) and cannot write `/etc/diag-ioc`, so the systemd unit points it at its state directory.
+- The host writes the builder's records with `builder.WriteRecords()` to `<name>.db` (e.g. `interferometer.db` for
+  `interferometer.toml`) at every start, so a current file listing every module PV always exists: 37 for the
+  interferometer, its own 28 plus the host's 9 `STAT:*`/`SHOT:ACK` records. The `<P>:IOC:*` records are not in it:
+  softioc's `devIocStats()` loads them from its own template, outside the builder, and they are the standard
+  devIocStats set, so a copy in the `.db` would add nothing. It goes in
+  `[ioc] db_dir` (default: the config file's directory). The IOC runs as non-root (D10) and cannot write
+  `/etc/diag-ioc`, so the systemd unit points it at its state directory.
 - Lifetime: PVs exist while the IOC runs. After a crash, systemd restarts it within about 5 s and the data PVs are
   INVALID until the next shot. When acquisition stops, PVs keep the last shot and `STAT:STALE` goes MAJOR.
   Copies that survive our restarts are a consumer's own IOC with CA links.
@@ -110,7 +114,9 @@ use `LAPD:DIAG:<NAME>`. Units and names are the stable interface; everything els
 | `<P>:SHOT` | PVA group of the shot's records |
 
 `SHOT:SEQ` from the earlier handoff is dropped. `SHOT:LOST` counts shots lost on the link. `STAT:DROPPED` counts only
-shots dropped by the IOC mailbox.
+shots dropped by the IOC mailbox. `SHOT:LOST` does not count shots missed while the IOC was down, because the first
+shot after an IOC start resets its baseline: a restart shows only as a gap in `SHOT:NUM` and in the link's outage log
+(on Bobby, 2026-10-11, a SIGKILL and restart showed as 12 to 17).
 
 ### D5. Analysis runs in the IOC process
 - Raw shots are not PVs, so analysis must sit on the raw-data path (the link from `interf_main`). Phoebus,
@@ -202,21 +208,22 @@ shots dropped by the IOC mailbox.
   commit message what it ran and what it did not. Pushes the planned commits (C6–C8) to `refactor/linux-epics-daq`
   on top of the latest head, pulling before each commit.
 - **`test-on-Bobby` (the Linux lab machine with the `.trc` recordings), the only test session (J, 2026-10-11):** runs
-  the full suite, including the Linux-only tests, on each pushed commit, plus its scenario on real `.trc` files, the
-  real-data checks (handoff §5), the PVA tests and the PVA bench re-run. It reports results and proposed patches to J,
-  and pushes nothing. The cloud test agent is retired; no new synthetic data generators are needed.
+  the full suite, including the Linux-only tests and the PVA tests, on each pushed commit, plus its scenario on real
+  `.trc` files and the real-data checks (handoff §5). It reports results and proposed patches to J, and pushes
+  nothing. The cloud test agent is retired; no new synthetic data generators are needed.
 - **pyepics monitor rule (bench F2):** pyepics reports a PV connected before it subscribes, so the last monitor
   created can silently never start (8 of 35 trials). Every CA monitor client (the tests, through
   a `tests/ioc_harness.py` helper such as `monitor_all(names, callback, timeout)`) calls `epics.ca.flush_io()` until
   every PV has delivered its first value, then reports ready. Otherwise it fails and names the PVs that never
   delivered. Drop values that arrive before the first shot (the connect-time value is not a shot). The rule applies to
   CA test clients; `interf_store` uses PVA (D9).
-- **Real-data gates** (`test-on-Bobby`, usable since 2026-10-11): plausible density, no missing P20/P29 on real `.trc`
-  shots (they hold no Rigol traces, so P40 is always missing in replay), and TRIGGER_TIME resolution. The record length
-  is known (1,000,002 samples at 0.1 µs) and set `max_points = 2048`, `ca_max_array_bytes = 65536` in C5.
+- **Real-data gates** (`test-on-Bobby`, since 2026-10-11): plausible density, no missing P20/P29 on good real `.trc`
+  shots (they hold no Rigol traces, so P40 is always missing in replay), and TRIGGER_TIME resolution. Passed for C5
+  on 55 recorded shots (handoff §1 has the numbers). The record length (1,000,002 samples at 0.1 µs) set
+  `max_points = 2048` and `ca_max_array_bytes = 65536` in C5.
 - **PVA gate:** the PVA group (one update per shot, no torn reads) needs kernel IPv6; the PVA tests skip without it.
-  Run them on the Linux machine before C6 is called done. J re-runs the IOC bench (`ioc_bench.py run --quick`,
-  without `--no-pva`) on an IPv6 machine.
+  They passed on Bobby against the real IOC for C5 (2026-10-11), which replaces the planned PVA bench re-run. The CA
+  bench verdict (D1: keep pythonSoftIOC) stands.
 
 ### D14. Shot identity
 - LAPD has no facility shot number yet. When one exists, it is added beside ours.
@@ -268,9 +275,9 @@ Commit labels and file-level specs are in `HANDOFF_live_epics.md`.
 
 Done: C4r (`4ee26b8`: streamer restored, live link decoupled, shot identity and trigger time), the link socket lock
 (`ebb0b9f`), C4s (`465b76a`: the shot counter's file write off the acquisition thread, start-up recovery from the
-acquisition log; D14) and C5 (`interf_ioc.py` per D2, D4, D5, D7, the host's `SHOT:ACK` wait, `<name>.db` at start,
-the read-only ACF of D8 and the constraints file of D11).
+acquisition log; D14) and C5 (`b8ecf40`: `interf_ioc.py` per D2, D4, D5, D7, the host's `SHOT:ACK` wait, `<name>.db`
+at start, the read-only ACF of D8 and the constraints file of D11). C5's first push, `5928659`, was reverted by
+`3b3e143` before review. `test-on-Bobby` tested C4s and C5 (119 of 119 tests including PVA; the C5 scenario on 55
+recorded shots with an IOC SIGKILL and restart mid-run).
 
-1. `test-on-Bobby`: the C5 suite and scenario (IOC + `interf_sim --ioc-link` on real `.trc` files, CA readback of the
-   D4 list, STALE after stop, IOC restart mid-run), and the PVA tests where IPv6 works.
-2. C6 (PVA storage), then C7 and C8.
+1. C6 (PVA storage), then C7 and C8.
