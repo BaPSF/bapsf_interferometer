@@ -23,6 +23,7 @@ from diag_ioc.records import INVALID_ALARM, MAJOR_ALARM, SOFT_ALARM, UDF_ALARM, 
 log = logging.getLogger(__name__)
 
 WATCHDOG_PERIOD_S = 1.0
+ACK_TIMEOUT_S = 2.0  # PublishAck.wait; a chain takes milliseconds
 ERROR_TEXT_BYTES = 256  # STAT:ERROR length, NUL included
 READY_MESSAGE = "serving modules"  # logged once every module is started; tests/ioc_harness.py waits for it
 _FACTORY = re.compile(r"[A-Za-z_][\w.]*:[A-Za-z_]\w*")
@@ -35,6 +36,9 @@ _FACTORY = re.compile(r"[A-Za-z_][\w.]*:[A-Za-z_]\w*")
 class IocConfig:
 	name: str  # devIocStats prefix: <name>:HEARTBEAT, ...
 	ca_max_array_bytes: int = 16777216  # applied unless EPICS_CA_MAX_ARRAY_BYTES is already set
+	# Paths; relative ones are relative to the config file (python -m diag_ioc resolves them).
+	db_dir: str | None = None  # where <config file stem>.db is written at every start; None: the config file's directory
+	acf: str | None = None  # access security file installed before iocInit (deploy/diag-ioc/readonly.acf); None: none
 
 
 @dataclass(frozen=True)
@@ -74,6 +78,9 @@ def parse_config(data):
 	ioc_config = IocConfig(**ioc)
 	_require(type(ioc_config.ca_max_array_bytes) is int and ioc_config.ca_max_array_bytes > 0,
 	         "[ioc] ca_max_array_bytes must be a positive integer")
+	for key in ("db_dir", "acf"):
+		value = getattr(ioc_config, key)
+		_require(value is None or (type(value) is str and value), f"[ioc] {key} must be a non-empty path")
 	modules = data.get("module")
 	_require(type(modules) is list and modules, "at least one [[module]] table is required")
 	module_configs = tuple(_module_config(i, m) for i, m in enumerate(modules))
@@ -139,7 +146,7 @@ class StatusRecords:
 		self.age = builder.aIn("STAT:AGE_S", EGU="s", PREC=1, DESC="time since the last shot arrived")
 		# IOC-side only: shots lost before the IOC (IocLink drops, link outages) show as gaps in the shot number instead.
 		self.dropped = builder.longIn("STAT:DROPPED", DESC="shots dropped by the IOC mailbox")
-		self.analysis = builder.aIn("STAT:ANALYSIS_S", EGU="s", PREC=3, DESC="analyze + publish time, last shot")
+		self.analysis = builder.aIn("STAT:ANALYSIS_S", EGU="s", PREC=3, DESC="analyze+ack wait+publish, last shot")
 		self.error = builder.longStringIn("STAT:ERROR", length=ERROR_TEXT_BYTES, DESC="last analysis error")
 
 	def shot_done(self, analysis_s, error):
@@ -163,14 +170,58 @@ class StatusRecords:
 		self.dropped.set(dropped)
 
 
+class PublishAck:
+	"""<prefix>:STAT:PUBLISHED, SHOT:ACK and STAT:ACK_TIMEOUTS of a module with a record chain (D7).
+
+	A set() while the previous shot's chain is still running would publish a mix of both shots, silently. So
+	`with ack: module.publish(...)` first waits until the previous chain has reached SHOT:ACK, FLNK'd from the
+	chain's last record. The ack copies this IOC's own publish count, not SHOT:NUM, which restarts at 0 every day.
+	"""
+
+	def __init__(self, builder, prefix, tail):
+		self._count = 0  # shots published; the ack of the last equals it
+		self._acked = threading.Event()
+		self._acked.set()
+		self._outage = Outage(log, f"{prefix}:SHOT:ACK")
+		# I/O Intr (the default) and no FLNK: set() processes it, so its VAL is current before the chain reads it.
+		self.published = builder.longIn("STAT:PUBLISHED", DESC="shots published by this IOC process")
+		self.timeouts = builder.longIn("STAT:ACK_TIMEOUTS", HIGH=1, HSV="MINOR", DESC="publishes after the ack wait timed out")
+		# DOL without PP reads the stored count; DISP=1 makes CA puts no-ops; on_update runs once the chain has processed.
+		ack = builder.longOut("SHOT:ACK", OMSL="closed_loop", DOL=f"{prefix}:STAT:PUBLISHED", DISP=1, initial_value=0,
+		                      always_update=True, on_update=self._on_ack, DESC="internal: copies STAT:PUBLISHED")
+		tail.FLNK = ack
+
+	def _on_ack(self, value):  # the dispatcher thread
+		if value == self._count:
+			self._acked.set()
+
+	def __enter__(self):
+		"""Wait up to ACK_TIMEOUT_S for the previous shot's ack, then count this shot."""
+		if self._acked.wait(ACK_TIMEOUT_S):
+			self._outage.ended()
+		else:
+			self.timeouts.set(self.timeouts.get() + 1)
+			self._outage.failed(f"no ack of publish {self._count} within {ACK_TIMEOUT_S:g} s",
+			                    "publishing anyway; STAT:ACK_TIMEOUTS counts these")
+		self._count += 1
+		self._acked.clear()
+		self.published.set(self._count)
+
+	def __exit__(self, exc_type, exc, tb):
+		# A publish that raised never set the chain head (modules set it last), so no ack will come: don't wait for one.
+		if exc_type is not None:
+			self._acked.set()
+		return False
+
+
 class ModuleHost:
 	"""One configured module at runtime: its pipeline and status records, and with `listen` its listener."""
 
-	def __init__(self, config, module, status):
+	def __init__(self, config, module, status, ack=None):
 		self.config = config
 		self.module = module
 		self.status = status
-		self.pipeline = ShotPipeline(module, config.mailbox_depth, status.shot_done)
+		self.pipeline = ShotPipeline(module, config.mailbox_depth, status.shot_done, gate=ack)
 		self.listener = None
 
 	def start(self):
@@ -214,13 +265,25 @@ def _factory(spec):
 	return getattr(importlib.import_module(module_name), attribute)
 
 
-def run(config, interactive=False):
+def _write_db(builder, path):
+	"""Every record as a .db file (D2), replaced atomically. A failure is logged, not fatal: the PVs are still served."""
+	tmp = path.with_name(path.name + ".tmp")
+	try:
+		builder.WriteRecords(str(tmp))
+		os.replace(tmp, path)
+	except Exception as e:
+		log.error("record database not written to %s (%s: %s)", path, type(e).__name__, e)
+	else:
+		log.info("record database written to %s", path)
+
+
+def run(config, db_path=None, acf_path=None, interactive=False):
 	"""Build every module's records, start the IOC, serve until SIGINT/SIGTERM (or the shell exits). Does not return.
 
 	Exit runs epicsExit after Python's atexit handlers, which close every listener (removing unix sockets).
 	"""
 	os.environ.setdefault("EPICS_CA_MAX_ARRAY_BYTES", str(config.ioc.ca_max_array_bytes))
-	from softioc import asyncio_dispatcher, builder, softioc
+	from softioc import asyncio_dispatcher, builder, imports, softioc
 
 	dispatcher = asyncio_dispatcher.AsyncioDispatcher()
 	softioc.devIocStats(config.ioc.name)
@@ -228,8 +291,14 @@ def run(config, interactive=False):
 	for module_config in config.modules:
 		module = _factory(module_config.factory)(module_config.name, module_config.options)
 		builder.SetDeviceName(module_config.prefix)
-		module.create_records(builder)
-		hosts.append(ModuleHost(module_config, module, StatusRecords(builder, linked=module_config.listen is not None)))
+		tail = module.create_records(builder)
+		status = StatusRecords(builder, linked=module_config.listen is not None)
+		ack = PublishAck(builder, module_config.prefix, tail) if tail is not None else None
+		hosts.append(ModuleHost(module_config, module, status, ack))
+	if db_path is not None:
+		_write_db(builder, db_path)  # before LoadDatabase, which discards the builder's records
+	if acf_path is not None:
+		imports.install_pv_logging(str(acf_path))
 	builder.LoadDatabase()
 	softioc.iocInit(dispatcher)
 

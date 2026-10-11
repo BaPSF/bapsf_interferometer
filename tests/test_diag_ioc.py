@@ -17,7 +17,7 @@ from diag_ioc.link import IocLink
 from diag_ioc.module import DiagnosticModule, ShotPipeline
 from diag_ioc.records import MAJOR_ALARM, NO_ALARM
 from dummy_ioc_module import WAVE_NELM
-from ioc_harness import IocProcess, as_is, epics_client, free_port, have, wait_for
+from ioc_harness import IocProcess, as_is, free_port, have, read_pv, wait_for
 
 SPEC_EXAMPLE = """
 [ioc]
@@ -72,6 +72,8 @@ class ConfigTests(unittest.TestCase):
 		cases = {
 			"top level: unknown keys": dict(base, extra=1),
 			"[ioc] table is required": {"module": base["module"]},
+			"[ioc] acf must be": dict(base, ioc=dict(base["ioc"], acf="")),
+			"[ioc] db_dir must be": dict(base, ioc=dict(base["ioc"], db_dir=1)),
 			"unknown keys": dict(base, module=[dict(base["module"][0], stale_second=3)]),
 			"prefix must be": dict(base, module=[dict(base["module"][0], prefix="LAPD:DIAG:INTERF:")]),
 			"factory must be": dict(base, module=[dict(base["module"][0], factory="interf_ioc.Module")]),
@@ -138,6 +140,33 @@ class ShotPipelineTests(unittest.TestCase):
 		finally:
 			pipeline.close()
 
+	def test_the_gate_wraps_each_publish_and_sees_its_failure(self):
+		events = []
+
+		class Gate:
+			def __enter__(self):
+				events.append("enter")
+
+			def __exit__(self, exc_type, exc, tb):
+				events.append(("exit", exc_type))
+				return False
+
+		class Module(_RecordingModule):
+			def publish(self, result):
+				events.append(("publish", result))
+				if result == 2:
+					raise ValueError("publish failed")
+
+		done = queue.Queue()
+		pipeline = ShotPipeline(Module(), on_done=lambda seconds, error: done.put(error), gate=Gate())
+		try:
+			for message in ({"fail": 1}, {"i": 1}, {"i": 2}):  # an analyze() failure never reaches the gate
+				pipeline.submit(message)
+				done.get(timeout=5)
+		finally:
+			pipeline.close()
+		self.assertEqual(events, ["enter", ("publish", 1), ("exit", None), "enter", ("publish", 2), ("exit", ValueError)])
+
 	def test_close_discards_late_messages(self):
 		module = _RecordingModule()
 		pipeline = ShotPipeline(module)
@@ -155,14 +184,9 @@ class DiagIocTests(unittest.TestCase):
 		cls.prefix = f"DIAGTEST{os.getpid()}"
 		cls.listen = f"tcp:127.0.0.1:{free_port()}"
 		cls.ioc = cls.enterClassContext(IocProcess(_ioc_config(cls.prefix, cls.listen, cls.STALE_SECONDS), f"{cls.prefix}:IOC:HEARTBEAT"))
-		cls.epics = epics_client()
 
 	def _read(self, suffix, as_string=False):
-		"""{value, severity, timestamp, ...} read fresh from the IOC (not a cached monitor)."""
-		pv = self.epics.get_pv(f"{self.prefix}:{suffix}", form="time", connect=True, timeout=5)
-		data = pv.get_with_metadata(as_string=as_string, use_monitor=False, form="time", timeout=5)
-		self.assertIsNotNone(data, f"{suffix}: no reply\n{self.ioc.log()}")
-		return data
+		return read_pv(f"{self.prefix}:{suffix}", as_string, self.ioc)
 
 	def _wait_read(self, suffix, accept, timeout, what, as_string=False):
 		"""The first fresh read of `suffix` whose metadata dict passes accept()."""
@@ -208,6 +232,21 @@ class DiagIocTests(unittest.TestCase):
 			self._wait_value("SEQ", 301)
 			cleared = self._wait_value("STAT:ERROR", "", as_string=True)
 			self.assertEqual(cleared["severity"], NO_ALARM)
+
+	def test_every_publish_is_acked(self):
+		with IocLink(self.listen, encode=as_is) as link:
+			for seq in range(401, 411):  # back to back: each publish waits for the previous chain's ack
+				link.write({"seq": np.array(seq), "value": np.array(0.0), "wave": np.zeros(WAVE_NELM), "ts": np.array(time.time())})
+			self._wait_value("SEQ", 410)
+		published = self._read("STAT:PUBLISHED")["value"]
+		self.assertGreater(published, 0)
+		self._wait_value("SHOT:ACK", published, timeout=5)
+		self.assertEqual(self._read("STAT:ACK_TIMEOUTS")["value"], 0, self.ioc.log())
+
+	def test_the_db_file_lists_the_module_and_host_records(self):
+		text = self.ioc.db_path.read_text()
+		for suffix in ("SEQ", "VALUE", "WAVE", "STAT:STALE", "STAT:PUBLISHED", "SHOT:ACK", "STAT:ACK_TIMEOUTS"):
+			self.assertIn(f'"{self.prefix}:{suffix}"', text, suffix)
 
 	def test_heartbeat_advances(self):
 		first = self._read("IOC:HEARTBEAT")["value"]

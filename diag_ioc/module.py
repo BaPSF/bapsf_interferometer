@@ -1,4 +1,5 @@
 """The contract between the diag_ioc host and a diagnostic module, and the per-module shot pipeline."""
+import contextlib
 import logging
 import threading
 import time
@@ -25,6 +26,7 @@ class DiagnosticModule:
 		self.options = dict(options)
 
 	def create_records(self, builder):
+		"""The last record of the chain publish() runs (the host FLNKs its SHOT:ACK to it), or None without a chain."""
 		raise NotImplementedError
 
 	def analyze(self, variables):
@@ -46,14 +48,16 @@ class ShotPipeline:
 
 	submit() never blocks: a full mailbox drops its oldest message (`dropped`). After every shot the worker
 	calls on_done(analysis_s, error), error "" for a good shot; a failing shot is also logged (throttled).
+	`gate` (a context manager, e.g. diag_ioc.host.PublishAck) wraps each publish().
 	"""
 
-	def __init__(self, module, depth=2, on_done=None):
+	def __init__(self, module, depth=2, on_done=None, gate=None):
 		self.module = module
 		self.dropped = 0
 		self.last_received = None  # time.time() of the latest submit(); None before the first
 		self._depth = depth
 		self._on_done = on_done
+		self._gate = gate if gate is not None else contextlib.nullcontext()
 		self._queue = deque()
 		self._cond = threading.Condition()
 		self._closing = False
@@ -92,7 +96,9 @@ class ShotPipeline:
 			t0 = time.perf_counter()
 			error = ""
 			try:
-				self.module.publish(self.module.analyze(variables))
+				result = self.module.analyze(variables)
+				with self._gate:
+					self.module.publish(result)
 			except Exception as e:
 				error = f"{type(e).__name__}: {e}"
 				self._outage.failed(e, exc_info=True)

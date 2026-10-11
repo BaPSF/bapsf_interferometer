@@ -14,18 +14,20 @@ def _fields(desc, **fields):
 	return {key: value for key, value in dict(fields, DESC=desc).items() if value is not None}
 
 
-def waveform(builder, name, nelm, egu=None, desc=None, prec=None, **fields):
-	"""Passive float64 WaveformIn of up to `nelm` points with a device timestamp (TSE=-2): set() it with timestamp=.
+def passive(make, name, desc=None, **fields):
+	"""Passive record from a builder constructor (`make`, e.g. builder.longIn) with a device timestamp (TSE=-2):
+	set() it with timestamp=, and it takes the value when its chain processes it."""
+	return make(name, **_fields(desc, TSE=-2, SCAN="Passive", **fields))
 
-	set() asserts len(value) <= nelm, so decimate before publishing.
-	"""
-	return builder.WaveformIn(name, length=nelm, datatype=float,
-	                          **_fields(desc, EGU=egu, PREC=prec, TSE=-2, SCAN="Passive", **fields))
+
+def waveform(builder, name, nelm, egu=None, desc=None, prec=None, **fields):
+	"""passive() float64 WaveformIn of up to `nelm` points. set() asserts len(value) <= nelm, so decimate first."""
+	return passive(builder.WaveformIn, name, desc, length=nelm, datatype=float, EGU=egu, PREC=prec, **fields)
 
 
 def scalar(builder, name, egu=None, desc=None, prec=None, **fields):
-	"""Passive aIn with a device timestamp (TSE=-2) that posts every update, even an unchanged value (MDEL=-1)."""
-	return builder.aIn(name, **_fields(desc, EGU=egu, PREC=prec, TSE=-2, SCAN="Passive", MDEL=-1, **fields))
+	"""passive() aIn that posts every update, even an unchanged value (MDEL=-1)."""
+	return passive(builder.aIn, name, desc, EGU=egu, PREC=prec, MDEL=-1, **fields)
 
 
 def chain(makers):

@@ -42,6 +42,10 @@ def _shots(count):
 	        for i in range(count)]
 
 
+# Unix socket paths must stay under UNIX_PATH_MAX_BYTES; a long TMPDIR would push a socket in the default temp dir over it.
+_SHORT_TMP = "/tmp" if os.path.isdir("/tmp") else None
+
+
 class FramingTests(unittest.TestCase):
 	def _pair(self):
 		left, right = socket.socketpair()
@@ -130,14 +134,14 @@ class RoundTripTests(unittest.TestCase):
 
 	@unittest.skipUnless(hasattr(socket, "AF_UNIX"), "no AF_UNIX on this platform")
 	def test_unix_round_trip_and_socket_removed_on_close(self):
-		with tempfile.TemporaryDirectory() as tmp:
+		with tempfile.TemporaryDirectory(dir=_SHORT_TMP) as tmp:
 			path = Path(tmp) / "link.sock"
 			self._round_trip(f"unix:{path}")
 			self.assertFalse(path.exists())
 
 	@unittest.skipUnless(hasattr(socket, "AF_UNIX"), "no AF_UNIX on this platform")
 	def test_stale_unix_socket_is_replaced(self):
-		with tempfile.TemporaryDirectory() as tmp:
+		with tempfile.TemporaryDirectory(dir=_SHORT_TMP) as tmp:
 			path = Path(tmp) / "link.sock"
 			stale = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
 			stale.bind(str(path))

@@ -1,0 +1,32 @@
+# The interferometer IOC: /etc/diag-ioc/interferometer.toml, run by diag-ioc@interferometer.service.
+# PV list: docs/ARCHITECTURE.md D4. Relative paths are relative to this file.
+
+[ioc]
+name = "LAPD:DIAG:INTERF:IOC"  # devIocStats prefix: LAPD:DIAG:INTERF:IOC:HEARTBEAT, ...
+# Largest CA array: a max_points float64 waveform, 16 KiB at 2048, plus the CA header; 64 KiB leaves room.
+ca_max_array_bytes = 65536
+# interferometer.db (every PV) is written here at each start. The unit's StateDirectory: the non-root IOC
+# cannot write /etc/diag-ioc.
+db_dir = "/var/lib/diag-ioc"
+acf = "readonly.acf"  # every PV read-only over CA and PVA (D8)
+
+[[module]]
+name = "interferometer"
+factory = "interf_ioc:InterferometerModule"
+prefix = "LAPD:DIAG:INTERF"
+listen = "unix:/run/diag-ioc/interferometer/link.sock"  # interf_main's INTERF_IOC_LINK
+mailbox_depth = 2
+stale_seconds = 10
+
+[module.options]
+# A 1,000,002-sample LeCroy record (HDO4104 at 0.1 us) gives 1953 points per port, so none are dropped.
+max_points = 2048
+ne_window_ms = [5.0, 10.0]  # NE_MEAN window, ms from the trigger
+plasma_length_m = 0.4
+# ports defaults to interf_analysis.PORTS; to change them, list every port:
+# [[module.options.ports]]
+# name = "P20"
+# scope = "lecroy"
+# ref = "C1"
+# plasma = "C2"
+# freq_hz = 288e9

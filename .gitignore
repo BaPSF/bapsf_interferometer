@@ -8,3 +8,4 @@ __pycache__/
 build/
 dist/
 interf_sim/log/
+*.egg-info/

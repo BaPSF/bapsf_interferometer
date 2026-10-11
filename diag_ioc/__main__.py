@@ -17,8 +17,13 @@ def main(argv=None):
 		config = load_config(args.config)
 	except (OSError, ValueError) as e:  # tomllib.TOMLDecodeError is a ValueError
 		parser.error(f"{args.config}: {e}")
+	base = args.config.resolve().parent  # an absolute path in the config replaces it
+	db_path = base / (config.ioc.db_dir or ".") / f"{args.config.stem}.db"
+	acf_path = base / config.ioc.acf if config.ioc.acf else None
+	if acf_path is not None and not acf_path.is_file():
+		parser.error(f"{args.config}: [ioc] acf: no file {acf_path}")  # stop here, not in asInit with whatever access it leaves
 	logging.basicConfig(level=logging.INFO, format=LOG_FORMAT, stream=sys.stdout)  # under systemd the journal keeps it
-	run(config, args.interactive)
+	run(config, db_path, acf_path, args.interactive)
 
 
 if __name__ == "__main__":
