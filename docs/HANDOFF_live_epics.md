@@ -1,6 +1,6 @@
 # Handoff: live analysis + EPICS IOC for `bapsf_interferometer`
 
-Repository `BaPSF/bapsf_interferometer`, branch `refactor/linux-epics-daq`. Updated 2026-10-11. This file is the
+Repository `BaPSF/bapsf_interferometer`, branch `refactor/linux-epics-daq`. Updated 2026-10-12. This file is the
 implementation spec for the remaining commits. It implements the decisions in `docs/ARCHITECTURE.md` (D1–D15) and does
 not repeat their reasons. A question neither file answers goes to the user before code is written.
 
@@ -17,8 +17,9 @@ the local agent; other sessions send them to the user as patch files.
   the real-data checks (§5), then reports. It pushes nothing. Linux-only tests (unix sockets, acquisition
   timers, the IOC) are verified there, not before the push. The cloud test session is retired, and no new synthetic
   data generators are needed; the unit tests keep using `interf_sim.synthetic`.
-- Bobby also runs another IOC (prefix `Interferometer:Port31:`) on the default CA 5064 and PVA 5075 ports. Test IOCs
-  run on `ioc_harness.isolated_epics_env()` (private ports, loopback only), so they never meet it.
+- Bobby's old procServ IOC (prefix `Interferometer:Port31:`, default CA 5064 and PVA 5075) was removed by its admin on
+  2026-10-11. Test IOCs still run on `ioc_harness.isolated_epics_env()` (private ports, loopback only), so they never
+  meet a deployed IOC.
 
 ## 1. Done so far
 
@@ -320,8 +321,9 @@ As built: the CA test checks that the access right itself is refused (DISP=1 alo
   gateway for the outside group if it is on another subnet; the EPICS libraries still bind some UDP sockets on all
   interfaces at random high ports with every address list set to loopback, which is harmless;
 - that only the PVA group is atomic, while a CA client that falls behind can drop or tear a shot;
-- operations: run as the non-root `diag-ioc` user, keep the scope clock NTP-synced, and keep `INTERF_SHOT_STATE` and
-  `INTERF_LOG_DIR` on a local disk (not a network filesystem), with the state file outside the log directory.
+- operations: the D10 system units as the `diag-ioc` account, keep the scope clock NTP-synced, and keep
+  `INTERF_SHOT_STATE` and `INTERF_LOG_DIR` on a local disk (not a network filesystem), with the state file outside the
+  log directory (the acquisition unit sets them under `/var/lib` and `/var/log`).
 
 ## 5. Real-data checks (`test-on-Bobby`, connected 2026-10-11)
 
@@ -334,7 +336,10 @@ As built: the CA test checks that the access right itself is refused (DISP=1 alo
   - the PVA tests. They replace the PVA bench re-run, which is dropped; the CA bench verdict (keep pythonSoftIOC) stands.
 - **After C8**, with the IOC, `interf_store` and Phoebus running, and `--raw-output raw.bp`:
   - HDF5 dataset names equal the trigger times recomputed from the BP WAVEDESCs;
-  - then run live with `INTERF_IOC_LINK=… python interf_main.py`.
+  - then run live through `interf-acquire.service` (D10). That first live run also checks acquisition's
+    `/var/log/interferometer` and `/var/lib/interferometer`, which the replay does not use.
 - **Set in C5** from the real record length (§1): `max_points = 2048`, `ca_max_array_bytes = 65536`.
-- **Still open:** the systemd user, group and paths (config; the user decides later), and whether legacy HDF5 readers
-  accept empty P40 arrays in place of zero-filled placeholders (deferred by the user).
+- **D10 system units**, tried on the lab machine 2026-10-12 with the 55-shot replay: all checks passed (D10 has the
+  list). Install steps are in each unit's header.
+- **Still open:** whether legacy HDF5 readers accept empty P40 arrays in place of zero-filled placeholders (deferred by
+  the user).

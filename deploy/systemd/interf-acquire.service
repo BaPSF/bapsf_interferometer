@@ -1,0 +1,41 @@
+# Acquisition (interf_main.py) as a system unit, beside diag-ioc@interferometer. Install as root:
+#   cp deploy/systemd/interf-acquire.service /etc/systemd/system/
+#   install -d /etc/interferometer && cp deploy/systemd/acquire.env.example /etc/interferometer/acquire.env   # set LECROY_IP
+#   # stop any acquisition started by hand first (only one may talk to the scopes), then carry its shot counter over
+#   # so numbering continues: install -o diag-ioc -g diag-ioc -D -m 0644 \
+#   #   ~jia/data/state/shot_counter.json /var/lib/interferometer/shot_counter.json
+#   systemctl daemon-reload && systemctl enable --now interf-acquire
+# Log: journalctl -u interf-acquire, and /var/log/interferometer/interf_acquire.log.
+[Unit]
+Description=Interferometer acquisition (interf_main)
+After=network-online.target diag-ioc@interferometer.service
+Wants=network-online.target diag-ioc@interferometer.service
+# After= orders process starts only: the IOC listens about 1.3 s after it starts, and the link retries until the socket
+# is there. Never Requires=, BindsTo= or PartOf=: an IOC that stops or crashes must never stop acquisition (D5).
+
+[Service]
+Type=simple
+# The IOC's account: the link socket (0660) needs no shared group.
+User=diag-ioc
+Group=diag-ioc
+WorkingDirectory=/opt/bapsf_interferometer
+Environment=INTERF_IOC_LINK=unix:/run/diag-ioc/interferometer/link.sock
+# The service account has no ~/data: the log and the shot counter go to /var/log/interferometer and
+# /var/lib/interferometer (both local disk, the state outside the log directory, D14).
+Environment=INTERF_LOG_DIR=/var/log/interferometer
+Environment=INTERF_SHOT_STATE=/var/lib/interferometer/shot_counter.json
+LogsDirectory=interferometer
+StateDirectory=interferometer
+Environment=PYTHONUNBUFFERED=1
+# LECROY_IP and the other acquisition settings (README, Configuration); it can also override the lines above.
+EnvironmentFile=/etc/interferometer/acquire.env
+ExecStart=/opt/bapsf_interferometer/.venv/bin/python interf_main.py
+# SIGTERM finishes the shot being read, sets the LeCroy to NORM and the Rigol to RUN, then exits; a second signal
+# skips that, so give it time rather than letting systemd SIGKILL it.
+KillSignal=SIGTERM
+TimeoutStopSec=30
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

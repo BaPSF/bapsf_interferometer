@@ -40,7 +40,7 @@ the record timestamps are `host_time`. C4r (`4ee26b8`) replaced both, per D6, D1
 | D7 | Per-shot consistency | One timestamp per shot, `SHOT:NUM` set last, PVA group `<P>:SHOT` |
 | D8 | Outside group | Read-only access to documented PVs; nothing built for them |
 | D9 | Source of record | ADIOS raw archive; IOC-fed HDF5 is best effort |
-| D10 | Supervision | systemd template unit |
+| D10 | Supervision | systemd system units (IOC and acquisition) as the `diag-ioc` account |
 | D11 | Dependencies | Exact pins for `softioc`, `epicscorelibs`, `pvxslibs`, `p4p` |
 | D12 | Repo layout | `diag_ioc` stays here until a 2nd diagnostic exists |
 | D13 | Agent roles | Local agent writes code; `test-on-Bobby` tests every commit on Linux with real `.trc` data |
@@ -187,9 +187,30 @@ shot after an IOC start resets its baseline: a restart shows only as a gap in `S
   from the stored WAVEDESC with the D15 conversion, which also gives `shot_date`.
 
 ### D10. Supervision: systemd
-- `deploy/systemd/diag-ioc@.service` (exists): one instance per `/etc/diag-ioc/<name>.toml`, restart on failure.
-- Runs as the non-root `diag-ioc` user (already in the unit), never as root. As root, EPICS locks all memory in RAM
-  (about 316 MiB vs 62 MiB idle in the bench).
+- System units (J, 2026-10-12): `deploy/systemd/diag-ioc@.service`, one IOC per `/etc/diag-ioc/<name>.toml`, and
+  `deploy/systemd/interf-acquire.service`, acquisition. Install steps are in each unit's header.
+- Both run as the non-root system account `diag-ioc` (no login), never as root and never as `softioc`, the account of
+  the old procServ IOC. Sharing one account, they need no group for the 0660 link socket. As root, EPICS locks all memory
+  in RAM (about 316 MiB vs 62 MiB idle in the bench). Production does not depend on a person's account.
+- Paths: code in `/opt/bapsf_interferometer` (root-owned, with its venv), config in `/etc/diag-ioc/<name>.toml`
+  (+ optional `<name>.env` for `EPICS_*`) and `/etc/interferometer/acquire.env`, `db_dir` `/var/lib/diag-ioc`, link
+  socket `/run/diag-ioc/<name>/link.sock`, acquisition log `/var/log/interferometer`, shot counter
+  `/var/lib/interferometer/shot_counter.json` (copied once from `~jia/data/state`, so numbering continues). Logs also go
+  to the journal.
+- Ordering: `interf-acquire` has `Wants=` and `After=` on `diag-ioc@interferometer` (and `network-online.target`), never
+  `Requires=`/`BindsTo=`/`PartOf=`, so an IOC stop or crash never stops acquisition (D5). `After=` orders process starts,
+  not readiness: the IOC listens about 1.3 s after it starts, and the link's retry covers the gap.
+- Restart: the IOC `always`, acquisition `on-failure`, both 5 s apart; acquisition gets 30 s to stop, so SIGTERM can
+  finish the shot in flight and restore the trigger modes.
+- EPICS ports: the default CA 5064 and PVA 5075. The old procServ IOC (prefix `Interferometer:Port31:`) that used them
+  was removed from the lab machine by its admin on 2026-10-11. If a second IOC runs on that host again, clients there,
+  Phoebus included, must search the broadcast address, not unicast `127.0.0.1`, or only one IOC answers.
+- Evidence (`test-on-Bobby`, lab machine, systemd 257, the 55-shot replay in place of acquisition): as `systemctl --user`
+  units, 9 of 9 checks passed on 2026-10-11 (restart policy, ordering, clean stops, link recovery). As these system
+  units, all checks passed on 2026-10-12: both run as `diag-ioc`, the socket and `/var` directories have the right
+  owner and modes, `diag-ioc` can read the `.trc` data, a full replay (sent 55, dropped 0, failed 0; `SHOT:LOST`,
+  `STAT:DROPPED`, `STAT:ACK_TIMEOUTS` 0), and an IOC SIGKILL mid-replay with restart and link recovery. The replay
+  does not exercise acquisition's `/var/log` and `/var/lib` paths; the first live run does.
 
 ### D11. Pin the EPICS stack
 - Exact versions of `softioc`, `epicscorelibs`, `pvxslibs` and (for C6) `p4p` in a constraints file (pyproject's `softioc>=4.7.2` is only a
@@ -265,7 +286,6 @@ shot after an IOC start resets its baseline: a restart shows only as a gap in `S
 
 ## 2. Open
 
-- Config values still to set (no code change): the systemd user/group/paths.
 - Deferred by J: whether legacy HDF5 readers accept empty P40 arrays where the old writer stored zero-filled
   placeholders (D9).
 

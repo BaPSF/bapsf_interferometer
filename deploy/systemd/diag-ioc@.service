@@ -1,5 +1,11 @@
 # One diag_ioc instance per config: `systemctl enable --now diag-ioc@interferometer` runs
-# /etc/diag-ioc/interferometer.toml. User, group and paths below are placeholders.
+# /etc/diag-ioc/interferometer.toml (D10).
+# Install as root:
+#   useradd --system --home-dir /var/lib/diag-ioc --no-create-home --shell /usr/sbin/nologin diag-ioc
+#   git clone -b refactor/linux-epics-daq ... /opt/bapsf_interferometer   # root-owned; the service only reads it
+#   cd /opt/bapsf_interferometer && python3 -m venv .venv && .venv/bin/pip install -e '.[ioc]' -c constraints.txt
+#   install -d /etc/diag-ioc && cp deploy/diag-ioc/interferometer.toml deploy/diag-ioc/readonly.acf /etc/diag-ioc/
+#   cp deploy/systemd/diag-ioc@.service /etc/systemd/system/ && systemctl daemon-reload
 [Unit]
 Description=diag_ioc EPICS IOC (%i)
 After=network-online.target
@@ -7,11 +13,10 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-# Placeholder account. The acquisition user must be in this group to write to the unix link socket
-# (socket 0660 inside the 0750 runtime directory below).
+# A system account that also runs acquisition (interf-acquire.service), so the unix link socket (0660 inside the
+# 0750 runtime directory below) needs no shared group. Never root, never the old IOC's softioc account.
 User=diag-ioc
 Group=diag-ioc
-# Placeholder checkout with its venv (pip install -e '.[ioc]' -c constraints.txt).
 WorkingDirectory=/opt/bapsf_interferometer
 # EPICS_* settings, e.g. EPICS_CAS_INTF_ADDR_LIST, EPICS_PVAS_INTF_ADDR_LIST, EPICS_CA_MAX_ARRAY_BYTES.
 EnvironmentFile=-/etc/diag-ioc/%i.env
