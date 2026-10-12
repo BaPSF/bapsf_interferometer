@@ -99,15 +99,22 @@ python -m interf_sim --limit 20    # from the repo root; --help lists the option
 python -m interf_sim --limit 20 --repeat-traces  # cycle available traces into 20 synthetic shots
 python -m interf_sim --raw-output raw.bp --limit 20  # write complete raw shots to BP5
 python -m interf_sim --ioc-link unix:/tmp/interf.sock --limit 20  # also send shots to a live-analysis listener
+python -m interf_sim --loop --ioc-link unix:/run/diag-ioc/interferometer/link.sock  # until Ctrl-C or SIGTERM; as diag-ioc, which owns the socket
 ```
 
 `python -m interf_sim.listen ADDRESS [--analyze] [--ne-window-ms START STOP]` is a development listener for `--ioc-link` and `INTERF_IOC_LINK`. It prints one line per shot received, and with `--analyze` adds each port's points and density, or the reason the port is missing. Use `tcp:127.0.0.1:PORT` where unix sockets are unavailable.
 
 - The `.trc` directory is `TRC_DIR` in [interf_sim/trc_replay.py](interf_sim/trc_replay.py) (`D:/data/raw data` on the lab PC). On Linux, edit that line or pass `--trc-dir`.
 - Shots play in trigger-time order, because the file counter wraps. Indexing reads one header per shot: 5–20 s for 29k shots, depending on the disk cache. Each machine trigger, every `--period` s (default 3; 0 = as fast as files load), serves the next shot.
-- `--repeat-traces` requires `--limit`. It cycles the indexed shots until it has exactly that many entries, assigning consecutive counters from the first selected counter. The channel dictionaries refer to the original `.trc` files, so their recorded trigger timestamps do not change.
+- `--repeat-traces` requires `--limit`. It cycles the indexed shots until it has exactly that many entries, assigning consecutive counters from the first selected counter. The channel dictionaries refer to the original `.trc` files, so their recorded trigger timestamps do not change: each cycle repeats the trigger times and runs back in time. For long runs use `--loop`.
+- `--loop` serves the selected shots (`--start-shot`, `--limit`) pass after pass until Ctrl-C or SIGTERM, then stops as acquisition does and prints the link summary. Every pass looks like new shots:
+  - Pass k serves every WAVEDESC with its trigger time moved k × `--loop-offset` seconds later. The files are not changed.
+  - The default offset is the shots' trigger-time span plus their mean spacing, so each pass starts about one shot interval after the last ends. An offset no larger than the span is refused, since it would put trigger times out of order.
+  - Shot numbers continue from pass to pass. When the shifted times cross midnight in Los Angeles, the shot date advances and numbering restarts at 0, as in acquisition (and `SHOT:LOST` restarts its baseline).
+  - Numbering always starts at 0 when the simulator starts, so a second run on the same date repeats the first run's IDs.
+  - `--loop` refuses `--raw-output` and `--repeat-traces`.
 - There is no Rigol: every shot has `missing["rigol"]`.
-- When the shots run out, the simulator sends SIGINT, so the Ctrl-C stop and release path runs. The log goes to `interf_sim/log/`.
+- When the shots run out (never with `--loop`), the simulator sends SIGINT, so the Ctrl-C stop and release path runs. The log goes to `interf_sim/log/` and rotates by size, keeping at most about 250 MB, because a `--loop` or `--period 0` run can log far more per day than acquisition.
 - Transfers take only the file read time, so `critical_path_s` is shorter than on the scopes. The logged `dt` follows the recorded trigger times, not `--period`.
 - Shot dates are the recording's. Shot numbers start at 0 on every run and are not saved (`INTERF_SHOT_STATE` is not used), so runs are repeatable and never add to acquisition's numbering. The trigger-lag check is off, since recorded trigger times are older than the replay.
 - `--raw-output` enables the integrated output package. It accepts a direct ADIOS output, an encrypted socket connection file, or a remote server configuration. See [streamer/README.md](streamer/README.md) for the payload and consumer commands.

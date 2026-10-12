@@ -8,14 +8,16 @@ driver's own; any other call that reaches the transport raises SimFault.
 What a run cannot show:
 - No Rigol: every Rigol connection fails, so every shot has missing["rigol"].
 - Transfers cost only the file read, so RawShot.critical_path_s is shorter than on the scopes.
-- Trigger times come from the recorded WAVEDESCs, so the dt that interf_main logs follows the
-  recording, not `shot_period`, and shot dates and numbers are those of the recording's days.
+- Trigger times come from the recorded WAVEDESCs (shifted per pass when looping), so the dt that interf_main logs
+  follows the recording, not `shot_period`, and shot dates and numbers are those of the recording's days.
 - The patches are per process: a Rigol moved into a worker process would bypass them.
 """
+import logging.handlers
 import math
 import os
 import re
 import signal
+import struct
 import sys
 import time
 from contextlib import contextmanager
@@ -25,10 +27,12 @@ from unittest import mock
 from lab_scopes.errors import ScopeConnectionError
 from lab_scopes.io.lecroy_files import TRACE_DATA_OFFSET, TRC_BLOCK_PREFIX_BYTES
 from lab_scopes.lecroy import LeCroyNoDataError, LeCroyScope, LeCroyWavedesc, wavedesc_trigger_timestamp
+from lab_scopes.lecroy.wavedesc import WAVEDESC_FMT
 
 import interf_main
 import interf_raw
-from interf_shot import ShotCounter, ShotIdentifier
+from diag_ioc.outage import LOG_FORMAT
+from interf_shot import ShotCounter, ShotIdentifier, local_time
 
 # TRC_DIR = Path("D:/data/raw data")  # recorded shots on this PC; on Linux edit this line or pass --trc-dir
 TRC_DIR = Path("/home/adios/shared/Software/LAPD/data")
@@ -39,6 +43,11 @@ _TRC_NAME = re.compile(r"(C[1-8])-interf-shot(\d+)\.trc", re.IGNORECASE)
 # LeCroyScope.acquire_bytes/parse_wavedesc hardcode a 15-byte :WAVEFORM? preamble; a .trc prefix is shorter.
 _PREAMBLE_PAD = b"\0" * (15 - TRC_BLOCK_PREFIX_BYTES)
 _PROGRESS_EVERY = 5000  # header reads between progress lines
+# The replay log rotates by size, not at midnight as acquisition's does: a --loop or --period 0 run can log far more
+# than acquisition's ~7 MB a day, and the daily rotation would keep 30 days of it.
+LOG_MAX_BYTES = 50 * 2**20
+LOG_BACKUPS = 4
+MACHINE_PERIOD_S = 3.0  # LAPD's shot period: the default --period, and the --loop offset of a single shot
 
 
 class SimFault(BaseException):
@@ -65,16 +74,49 @@ def trc_shots(directory=TRC_DIR):
 	print(f"trc_shots: reading the trigger times of {len(shots)} shots in {directory}", file=sys.stderr, flush=True)
 	keyed = []
 	for i, (counter, files) in enumerate(shots.items(), 1):
-		path = files[min(files)]
-		with open(path, "rb", buffering=0) as f:  # unbuffered: a buffered read() fetches 128 KiB, not 357 bytes
-			t = wavedesc_trigger_timestamp(LeCroyWavedesc(_wavedesc(f.read(TRACE_DATA_OFFSET), path)).wd)
-		if t is None:
-			raise ValueError(f"{path}: WAVEDESC has no trigger time, so the shot cannot be ordered")
-		keyed.append((t, counter, files))
+		keyed.append((trc_trigger_time(files), counter, files))
 		if i % _PROGRESS_EVERY == 0:
 			print(f"trc_shots: {i}/{len(shots)}", file=sys.stderr, flush=True)
 	keyed.sort(key=lambda k: k[:2])
 	return [(counter, files) for _, counter, files in keyed]
+
+
+def trc_trigger_time(files):
+	"""Trigger time (Unix s) of one trc_shots() entry's {ch: Path}, from its first channel's WAVEDESC."""
+	path = files[min(files)]
+	with open(path, "rb", buffering=0) as f:  # unbuffered: a buffered read() fetches 128 KiB, not 357 bytes
+		t = wavedesc_trigger_timestamp(LeCroyWavedesc(_wavedesc(f.read(TRACE_DATA_OFFSET), path)).wd)
+	if t is None:
+		raise ValueError(f"{path}: WAVEDESC has no trigger time, so the shot cannot be ordered")
+	return t
+
+
+def loop_offset(shots, offset_s=None):
+	"""--loop's s per pass for trc_shots() entries: `offset_s`, or by default their trigger-time span plus their mean
+	spacing (MACHINE_PERIOD_S for one shot). ValueError unless it exceeds the span: a pass would then start before the
+	previous one ends, and trigger times would run back."""
+	span = trc_trigger_time(shots[-1][1]) - trc_trigger_time(shots[0][1])
+	if offset_s is None:
+		offset_s = span + span / (len(shots) - 1) if len(shots) > 1 else MACHINE_PERIOD_S
+	if not offset_s > span:
+		raise ValueError(f"--loop-offset {offset_s:g} s must exceed the shots' trigger-time span, {span:g} s")
+	return offset_s
+
+
+def shift_trigger(wavedesc, offset_s):
+	"""346-byte `wavedesc` with its trigger time moved by `offset_s`.
+
+	The tt_* fields are the scope's LA wall clock, as wavedesc_trigger_timestamp() reads them. In the hour repeated when
+	DST ends they cannot say which occurrence, as on the scope (interf_shot.trigger_time takes the one nearer
+	host_time), so a shifted time landing there may read back an hour early."""
+	wd = LeCroyWavedesc(wavedesc).wd
+	t = wavedesc_trigger_timestamp(wd)
+	if t is None:
+		return wavedesc
+	t += offset_s
+	local = local_time(t)
+	return struct.pack(WAVEDESC_FMT, *wd._replace(tt_second=local.second + t % 1, tt_minute=local.minute, tt_hours=local.hour,
+	                                              tt_days=local.day, tt_months=local.month, tt_year=local.year))
 
 
 def repeat_trc_shots(shots, limit):
@@ -108,13 +150,18 @@ class ReplayLeCroy:
 	The machine triggers every `shot_period` s (0: at every arm). A SINGLE-armed scope captures the
 	first trigger at or after its arm, so an iteration slower than the period skips a trigger, as on
 	the machine. Each capture loads the next entry of `shots`, so no recorded shot is skipped.
+	With `loop_offset_s` (see loop_offset), `shots` are served again and again, never exhausted; pass k (from 0) moves
+	every trigger time by k * loop_offset_s.
 	"""
 
-	def __init__(self, shots, shot_period=0.0):
+	def __init__(self, shots, shot_period=0.0, loop_offset_s=None):
 		self.shots = list(shots)  # [(counter, {ch: Path})], see trc_shots
 		self.shot_period = shot_period
+		self.loop_offset_s = loop_offset_s
 		self.on_exhausted = None  # called once when armed with no shot left
-		self.captured = []  # counters served, in capture order
+		self.served = 0  # captures so far
+		self.counter = None  # file counter of the last capture
+		self.offset_s = 0.0  # trigger-time shift of the last capture
 		self.mode = "NORM"  # TRIG_MODE? reply
 		self.sweeps = 0
 		self.record = {}  # {ch: Path} of the last capture; kept until the next, like scope memory
@@ -125,7 +172,7 @@ class ReplayLeCroy:
 
 	@property
 	def exhausted(self):
-		return len(self.captured) == len(self.shots)
+		return self.loop_offset_s is None and self.served == len(self.shots)
 
 	def set_mode(self, mode):
 		self.mode = mode
@@ -154,8 +201,10 @@ class ReplayLeCroy:
 			return
 		if self._trigger_at is not None and time.monotonic() < self._trigger_at:
 			return
-		counter, self.record = self.shots[len(self.captured)]
-		self.captured.append(counter)
+		loop_pass, index = divmod(self.served, len(self.shots))
+		self.counter, self.record = self.shots[index]
+		self.offset_s = loop_pass * (self.loop_offset_s or 0.0)
+		self.served += 1
 		self.read = set()
 		self.mode = "STOP"
 		self.sweeps += 1
@@ -209,7 +258,7 @@ class FakeLeCroyScope(LeCroyScope):
 		trace = self.validate_trace(trace)
 		lecroy = self.scope.live()
 		if trace in lecroy.read:
-			raise SimFault(f"{trace} of shot {lecroy.captured[-1]} read twice (same-shot rule 3)")
+			raise SimFault(f"{trace} of shot {lecroy.counter} read twice (same-shot rule 3)")
 		result = super().acquire(trace, seg, raw)
 		lecroy.read.add(trace)
 		return result
@@ -218,11 +267,16 @@ class FakeLeCroyScope(LeCroyScope):
 		trace = self.validate_trace(trace)
 		if seg != 0:
 			raise SimFault(f"acquire(seg={seg}): sequence mode")
-		path = self.scope.live().record.get(trace)
+		lecroy = self.scope.live()
+		path = lecroy.record.get(trace)
 		if path is None:
 			raise LeCroyNoDataError(f"{trace}: no .trc file for this shot")
 		content = path.read_bytes()
-		return _PREAMBLE_PAD + content, _wavedesc(content, path)
+		wavedesc = _wavedesc(content, path)
+		if lecroy.offset_s:  # a later --loop pass: the driver parses the shifted copy, the file is untouched
+			wavedesc = shift_trigger(wavedesc, lecroy.offset_s)
+		view = memoryview(content)  # one copy of the trace, in the join
+		return b"".join((_PREAMBLE_PAD, view[:TRC_BLOCK_PREFIX_BYTES], wavedesc, view[TRACE_DATA_OFFSET:])), wavedesc
 
 	def set_trigger_mode(self, trigger_mode):
 		lecroy = self.scope.live()
@@ -278,7 +332,7 @@ def simulated_scopes(lecroy):
 
 
 def iter_shots(lecroy):
-	"""RawShots from the unmodified interf_raw.acquire_shot() until `lecroy` has served every shot.
+	"""RawShots from the unmodified interf_raw.acquire_shot() until `lecroy` has served every shot (never, when it loops).
 
 	Raises RuntimeError when successive calls capture nothing (a LeCroy error loop) rather than
 	retrying forever.
@@ -303,7 +357,8 @@ def iter_shots(lecroy):
 
 
 def run_main(lecroy, log_dir, outputs=()):
-	"""Run interf_main.main() on the fakes; return after `lecroy` has served every shot.
+	"""Run interf_main.main() on the fakes; return after `lecroy` has served every shot, or, looping, once stopped
+	(Ctrl-C or SIGTERM, which main handles as in acquisition).
 
 	Exhaustion sends SIGINT, as an operator's Ctrl-C, so main's stop and release path runs. The stop
 	flag and signal handlers main changes are restored, so it can run again in the same process.
@@ -314,10 +369,24 @@ def run_main(lecroy, log_dir, outputs=()):
 	lecroy.on_exhausted = lambda: signal.raise_signal(signal.SIGINT)
 	handlers = {s: signal.getsignal(s) for s in (signal.SIGINT, signal.SIGTERM)}
 	identifier = ShotIdentifier(ShotCounter(None), trig_lag_max_s=0)
+	# Installed before main(), so its logging.basicConfig() does nothing and the log rotates by size (LOG_MAX_BYTES).
+	Path(log_dir).mkdir(parents=True, exist_ok=True)
+	root, level = logging.getLogger(), logging.getLogger().level
+	log_handlers = [logging.StreamHandler(sys.stdout),
+	                logging.handlers.RotatingFileHandler(Path(log_dir) / interf_main.ACQUIRE_LOG, maxBytes=LOG_MAX_BYTES,
+	                                                     backupCount=LOG_BACKUPS)]
+	for handler in log_handlers:
+		handler.setFormatter(logging.Formatter(LOG_FORMAT))
+		root.addHandler(handler)
+	root.setLevel(logging.INFO)
 	try:
 		with simulated_scopes(lecroy), mock.patch.object(interf_main, "LOG_DIR", str(log_dir)), \
 				mock.patch.object(interf_main, "_stop", False):
 			interf_main.main(outputs=outputs, identifier=identifier)
 	finally:
+		for handler in log_handlers:
+			root.removeHandler(handler)
+			handler.close()
+		root.setLevel(level)
 		for s, handler in handlers.items():
 			signal.signal(s, handler)
