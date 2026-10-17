@@ -47,6 +47,9 @@ def _env(name, default):
 LECROY_IP = _env("LECROY_IP", "10.10.10.10")  # placeholder until the real address is known
 LECROY_CHANNELS = _env("LECROY_CHANNELS", ("C1", "C2", "C3", "C4"))  # [0] carries the sweep counter
 LECROY_TIMEOUT = _env("LECROY_TIMEOUT", 5.0)  # s, VICP socket timeout; bounds every LeCroy call
+# Given, the driver skips its channel-count probe, which costs a full LECROY_TIMEOUT per open on the HDO4104
+# (C5:TRACE? never answers). _check_lecroy_channels bounds LECROY_CHANNELS by it.
+LECROY_N_CHANNELS = _env("LECROY_N_CHANNELS", 4)
 LECROY_RETRY_INTERVAL = _env("LECROY_RETRY_INTERVAL", 5.0)  # s between attempts while the LeCroy errors
 TRIGGER_TIMEOUT = _env("TRIGGER_TIMEOUT", 10.0)  # s; > 3 shot periods, so a timeout means a pause
 
@@ -67,6 +70,21 @@ _IDLE_LOG_INTERVAL_S = 300.0
 # LeCroy errors after which the VICP stream may hold a late or partial reply, so the connection
 # is not used again this iteration. Any other error comes after a complete reply.
 _LECROY_LINK_ERRORS = (ScopeConnectionError, ScopeTimeoutError, ScopeProtocolError, OSError)
+
+
+def _check_lecroy_channels(channels, n_channels):
+	"""ValueError unless `n_channels` is 2, 4 or 8 and every entry of `channels` is one of C1..C<n_channels>."""
+	# Run at import: a channel the scope lacks never answers, so in the loop it would cost a LECROY_TIMEOUT at every
+	# open (trace discovery of discover_traces=LECROY_CHANNELS) and every shot (the on/off check).
+	if n_channels not in LeCroyScope._VALID_CHANNEL_COUNTS:
+		raise ValueError(f"LECROY_N_CHANNELS={n_channels} must be one of {LeCroyScope._VALID_CHANNEL_COUNTS}")
+	valid = {f"C{i}" for i in range(1, n_channels + 1)}
+	if bad := [ch for ch in channels if ch not in valid]:
+		raise ValueError(f"LECROY_CHANNELS={','.join(channels)}: {', '.join(map(repr, bad))} not among C1..C{n_channels}"
+		                 f" (LECROY_N_CHANNELS={n_channels})")
+
+
+_check_lecroy_channels(LECROY_CHANNELS, LECROY_N_CHANNELS)
 #===============================================================================================================================================
 
 
@@ -88,6 +106,7 @@ class StepTimes:
 	prepare_s: float | None = None
 	prepare_armed: bool = False  # _prepare armed the LeCroy (else it was SINGLE already, or a capture was pending)
 	wait_s: float | None = None  # end of _prepare -> capture detected
+	onoff_s: float | None = None  # _lecroy_displayed(), before the channel reads; timed even when it raised
 	# Every LECROY_CHANNELS entry, in order; None for a channel that failed or was not read.
 	channels_s: dict[str, float | None] = field(default_factory=lambda: dict.fromkeys(LECROY_CHANNELS))
 	rigol_s: float | None = None
@@ -176,12 +195,27 @@ def rigol_run(ip, budget):
 
 def _lecroy_open():
 	# One connection per acquire_shot(): a VICP link held open across shots is not safe.
-	return LeCroyScope(LECROY_IP, verbose=False, timeout=LECROY_TIMEOUT, discover_traces=LECROY_CHANNELS)
+	return LeCroyScope(LECROY_IP, verbose=False, timeout=LECROY_TIMEOUT, discover_traces=LECROY_CHANNELS,
+	                   n_channels=LECROY_N_CHANNELS)
 
 
 def _lecroy_mode(lecroy):
 	"""TRIG_MODE? truncated to SIN, STO, NOR, or AUT."""
 	return lecroy.scope.query("TRIG_MODE?").strip()[:3].upper()
+
+
+def _lecroy_displayed(lecroy):
+	"""LECROY_CHANNELS entries whose :TRACE? reads ON; a reply neither ON nor OFF raises ScopeProtocolError."""
+	# Not LeCroyScope.displayed_channels(): it counts a timed-out reply as off, and a late reply would then answer
+	# the next query. Every error propagates here, so it takes the link-error path.
+	displayed = []
+	for ch in LECROY_CHANNELS:
+		reply = lecroy.scope.query(f"{ch}:TRACE?").strip().upper()
+		if reply.startswith("ON"):
+			displayed.append(ch)
+		elif not reply.startswith("OFF"):
+			raise ScopeProtocolError(f"{ch}:TRACE? replied {reply!r}, neither ON nor OFF")
+	return displayed
 
 
 def _arm_lecroy(lecroy, state):
@@ -264,7 +298,19 @@ def _consume(lecroy, state, stop_requested, times):
 	lecroy_data = {}
 	failed = {}  # {ch: reason}
 	link_ok = True
-	for i, ch in enumerate(LECROY_CHANNELS):
+	t = time.perf_counter()
+	try:
+		displayed = _lecroy_displayed(lecroy)
+	except _LECROY_LINK_ERRORS as e:
+		# As a link error in the reads below: no channel is read, and no re-arm.
+		failed[LECROY_CHANNELS[0]] = f"on/off check failed: {type(e).__name__}: {e}"
+		failed.update((rest, "not read") for rest in LECROY_CHANNELS[1:])
+		link_ok = False
+	times.onoff_s = time.perf_counter() - t
+	for i, ch in enumerate(LECROY_CHANNELS if link_ok else ()):
+		if ch not in displayed:
+			failed[ch] = "trace off"
+			continue
 		t = time.perf_counter()
 		try:
 			lecroy_data[ch] = lecroy.acquire(ch, raw=True)
@@ -274,7 +320,7 @@ def _consume(lecroy, state, stop_requested, times):
 			link_ok = False
 			break
 		except Exception as e:
-			# One channel without data (e.g. trace switched off) must not cost the other port.
+			# One channel without data (e.g. a displayed trace with no capture) must not cost the other port.
 			failed[ch] = f"{type(e).__name__}: {e}"
 		else:
 			times.channels_s[ch] = time.perf_counter() - t

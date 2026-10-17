@@ -61,7 +61,8 @@ class SimFault(BaseException):
 def trc_shots(directory=TRC_DIR):
 	"""[(counter, {ch: Path})] for every shot with a file for any interf_raw.LECROY_CHANNELS, in trigger-time order.
 
-	A channel without a file is served as LeCroyNoDataError, as the scope does for a trace without data.
+	A channel without a file answers :TRACE? OFF (_Transport.query), so interf_raw reports it "trace off" and never
+	reads it.
 	"""
 	shots = {}
 	with os.scandir(directory) as entries:
@@ -215,8 +216,14 @@ class FakeLeCroyScope(LeCroyScope):
 
 	network = {}  # {ip: ReplayLeCroy}; simulated_scopes() patches it
 
-	def __init__(self, ipv4_addr, verbose=True, timeout=5.0, port=1861, transport=None, discover_traces="channels"):
+	def __init__(self, ipv4_addr, verbose=True, timeout=5.0, port=1861, transport=None, discover_traces="channels",
+	             n_channels=None):
 		# LeCroyScope.__init__ is skipped (it probes the scope); its class-level defaults cover the rest.
+		if n_channels is not None:  # as the driver: validated before connecting, and replaces its detection
+			if n_channels not in self._VALID_CHANNEL_COUNTS:
+				raise ValueError(f"n_channels must be one of {self._VALID_CHANNEL_COUNTS}, got {n_channels!r}")
+			self.n_channels = n_channels
+			self.channel_names = tuple(f"C{i}" for i in range(1, n_channels + 1))
 		lecroy = self.network.get(ipv4_addr)
 		if lecroy is None:
 			raise ScopeConnectionError(f"cannot connect to {ipv4_addr}:{port}: no simulated LeCroy there")
@@ -287,7 +294,7 @@ class FakeLeCroyScope(LeCroyScope):
 
 
 class _Transport:
-	"""LeCroyScope.scope: answers only TRIG_MODE? (read by interf_raw directly) and close()."""
+	"""LeCroyScope.scope: answers only TRIG_MODE? and <ch>:TRACE? (read by interf_raw directly) and close()."""
 
 	def __init__(self, lecroy):
 		self._lecroy = lecroy
@@ -300,9 +307,12 @@ class _Transport:
 		return self._lecroy
 
 	def query(self, cmd):
-		if cmd != "TRIG_MODE?":
-			raise SimFault(f"LeCroy query {cmd!r}")
-		return self.live().mode
+		if cmd == "TRIG_MODE?":
+			return self.live().mode
+		if cmd.endswith(":TRACE?"):
+			# A recorded shot without a channel's file had that trace off, as far as the replay can tell.
+			return "ON" if cmd.removesuffix(":TRACE?") in self.live().record else "OFF"
+		raise SimFault(f"LeCroy query {cmd!r}")
 
 	def close(self):
 		self.closed = True

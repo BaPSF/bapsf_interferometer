@@ -26,9 +26,10 @@ dependencies = [
   "matplotlib",
   "adios2",
   "PyNaCl",
-  # LeCroy + Rigol drivers (interf_raw.py). 0.4.1: wavedesc_trigger_timestamp reads the WAVEDESC trigger
+  # LeCroy + Rigol drivers (interf_raw.py). >= 0.4.1: wavedesc_trigger_timestamp reads the WAVEDESC trigger
   # time as America/Los_Angeles (0.4.0 read it as UTC, 7-8 h off), and tzdata comes with it on Windows.
-  "lab-scopes @ git+https://github.com/hjia94/lab_scopes.git@v0.4.1",
+  # 0.4.2: LeCroyScope(n_channels=) skips channel detection (~5 s per open on the HDO4104), and TCP_NODELAY.
+  "lab-scopes @ git+https://github.com/hjia94/lab_scopes.git@v0.4.2",
 ]
 
 [project.optional-dependencies]

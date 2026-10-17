@@ -5,7 +5,7 @@ Acquisition and analysis for the BaPSF microwave interferometers at ports 20, 29
 > **Refactor in progress:** branch `refactor/linux-epics-daq`.
 > Acquisition now reads both scopes directly over Ethernet on Linux and stops once it has the raw samples. Nothing is written to disk but the log and the shot counter, and no phase is computed in the loop. With `INTERF_IOC_LINK` set, each shot also goes to the live analysis IOC, which publishes it to EPICS. The HDF5 layout below is for files written by the previous acquisition, which ran on Windows and read LeCroy `.trc` files.
 
-Requires Python 3.11 or later (developed on 3.14). Acquisition runs on **Linux only**, because the Rigol deadline uses `signal.setitimer`. `pip install .` installs the dependencies, including [`lab-scopes`](https://github.com/hjia94/lab_scopes) `v0.4.1`, which provides both scope drivers and reads the LeCroy trigger time as America/Los_Angeles (on Windows it also installs `tzdata`).
+Requires Python 3.11 or later (developed on 3.14). Acquisition runs on **Linux only**, because the Rigol deadline uses `signal.setitimer`. `pip install .` installs the dependencies, including [`lab-scopes`](https://github.com/hjia94/lab_scopes) `v0.4.2`, which provides both scope drivers and reads the LeCroy trigger time as America/Los_Angeles (on Windows it also installs `tzdata`).
 
 ## Acquisition
 
@@ -37,7 +37,8 @@ LECROY_IP=<address> python interf_main.py
   - `open`: connecting to the LeCroy;
   - `prepare`: reading its trigger mode and arming it if needed, then `armed`, or `not armed` when it was already SINGLE or a capture was pending;
   - `wait`: from the end of `prepare` to capture detection;
-  - `C1` … `C4` (`LECROY_CHANNELS`): each channel's read on its own, which includes the scope's processing and the network transfer; `-` for a channel that failed or was not read;
+  - `onoff`: asking the LeCroy whether each `LECROY_CHANNELS` entry is displayed (`<ch>:TRACE?`), once per shot. A channel that is off is not read, and is missing as `trace off`. If a query fails, times out or gets a reply other than ON/OFF, no channel is read, the first channel's reason says why (`on/off check failed: ...`), and the LeCroy is not re-armed;
+  - `C1` … `C4` (`LECROY_CHANNELS`): each channel's read on its own, which includes the scope's processing and the network transfer; `-` for a channel that is off, failed or was not read;
   - `rigol`: the Rigol read, then `tried`, `skipped` (backoff after a failure) or `disabled` (`RIGOL_IP` empty);
   - `rearm`: the LeCroy re-arm; `-` when it was not re-armed (a stop request or a LeCroy link error);
   - `crit`: the shot line's `path` (capture detection to re-arm), in ms;
@@ -59,8 +60,9 @@ Each variable is read from the environment at startup; unset means the default. 
 | `INTERF_SHOT_STATE` | `~/data/state/shot_counter.json` | Shot counter state (date and last number). Keep it on a local disk and outside `INTERF_LOG_DIR`, whose rotated files are deleted. At start, counting resumes after the later of this file and the last shot line in `interf_acquire.log` and its newest rotated copy. An unreadable file is logged as a warning; only if the logs hold no shot either can a running day repeat numbers |
 | `INTERF_TRIG_LAG_MAX_S` | 5 s | Largest normal host time − trigger time; outside 0 to this, a clock problem is logged. 0 disables the check |
 | `LECROY_IP` | `10.10.10.10` | **Placeholder; set it** |
-| `LECROY_CHANNELS` | `C1,C2,C3,C4` | Channels read, comma-separated. The first one carries the sweep counter used to detect a fresh capture |
+| `LECROY_CHANNELS` | `C1,C2,C3,C4` | Channels read, comma-separated. The first one carries the sweep counter used to detect a fresh capture. Each must be one of `C1` … `C<LECROY_N_CHANNELS>`; otherwise acquisition stops at startup with an error naming the bad entries, since a channel the scope lacks would cost a `LECROY_TIMEOUT` at every connection and every shot |
 | `LECROY_TIMEOUT` | 5 s | VICP socket timeout |
+| `LECROY_N_CHANNELS` | 4 | Input channels on the LeCroy: 2, 4 or 8 (anything else stops acquisition at startup). Passed to the driver so it skips its channel-count probe, which costs a full `LECROY_TIMEOUT` per connection on the HDO4104 |
 | `LECROY_RETRY_INTERVAL` | 5 s | Wait before retrying after a LeCroy error |
 | `TRIGGER_TIMEOUT` | 10 s | How long to wait for a trigger before logging a pause and retrying |
 | `RIGOL_IP`, `RIGOL_REF_CH`, `RIGOL_PLA_CH` | `192.168.7.63`, `C1`, `C2` | Rigol address and channels. `RIGOL_IP=` (empty) disables the Rigol: it is never contacted, and every shot has `missing["rigol"]` = `disabled (RIGOL_IP empty)`, so P40 is published as missing with that reason |

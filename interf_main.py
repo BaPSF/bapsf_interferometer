@@ -72,7 +72,8 @@ def _timing_line(shot, identify_s, outputs_s):
 	if t.prepare_s is not None:
 		prepare += " armed" if t.prepare_armed else " not armed"
 	parts = [f"timing {shot_id(shot.shot_date, shot.shot_number)} (ms)", f"open {ms_text(t.open_s)}", f"prepare {prepare}",
-	         f"wait {ms_text(t.wait_s)}", " ".join(f"{ch} {ms_text(s)}" for ch, s in t.channels_s.items()),
+	         f"wait {ms_text(t.wait_s)}", f"onoff {ms_text(t.onoff_s)}",
+	         " ".join(f"{ch} {ms_text(s)}" for ch, s in t.channels_s.items()),
 	         f"rigol {ms_text(t.rigol_s)}" + (f" {t.rigol}" if t.rigol else ""), f"rearm {ms_text(t.rearm_s)}",
 	         f"crit {ms_text(shot.critical_path_s)}", f"close {ms_text(t.close_s)}", f"identify {ms_text(identify_s)}",
 	         f"outputs {ms_text(outputs_s)}", f"cycle {ms_text(t.cycle_s)}"]

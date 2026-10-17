@@ -274,13 +274,13 @@ class HandleShotTests(unittest.TestCase):
 			self.assertIsNone(interf_main._handle_shot(shot, PST - 3, ShotIdentifier(ShotCounter(None))))
 
 	def test_the_timing_line_gives_every_step_in_ms_and_is_never_read_as_a_shot_line(self):
-		times = StepTimes(open_s=0.0052, prepare_s=0.0031, prepare_armed=True, wait_s=2.95,
+		times = StepTimes(open_s=0.0052, prepare_s=0.0031, prepare_armed=True, wait_s=2.95, onoff_s=0.0083,
 		                  channels_s={"C1": 0.1203, "C2": 0.1189, "C3": None, "C4": 0.119}, rigol_s=0.0, rigol="disabled",
 		                  rearm_s=0.0081, close_s=0.001, cycle_s=3.0012)
 		shot = RawShot(PST, {}, {}, {}, 0.1, shot_date=20260115, shot_number=7, shot_time=PST, time_source="host", timing=times)
 		timing = _log_line(interf_main._timing_line(shot, 0.001, 0.002))
 		self.assertTrue(timing.endswith(
-			" interf_main: timing 20260115-7 (ms) | open 5.2 | prepare 3.1 armed | wait 2950.0 | C1 120.3 C2 118.9 C3 - C4 119.0 "
+			" interf_main: timing 20260115-7 (ms) | open 5.2 | prepare 3.1 armed | wait 2950.0 | onoff 8.3 | C1 120.3 C2 118.9 C3 - C4 119.0 "
 			"| rigol 0.0 disabled | rearm 8.1 | crit 100.0 | close 1.0 | identify 1.0 | outputs 2.0 | cycle 3001.2"), timing)
 		self.assertIsNone(interf_shot._LOGGED_SHOT.search(timing))  # ShotCounter resumes from shot lines only
 		self.assertIsNotNone(interf_shot._LOGGED_SHOT.search(_log_line(interf_main._shot_line(shot, None))))

@@ -56,7 +56,7 @@ Facts from testing that still matter:
 - The EPICS libraries bind some UDP sockets on all interfaces at random high ports, even with every address list set
   to loopback. Harmless; C8's deployment notes say so.
 - Installed and working on Bobby: softioc 4.7.2, epicscorelibs 7.0.10.99.0.2, pvxslibs 1.5.3, p4p 4.3.0, pyepics 3.5.10,
-  lab-scopes 0.4.1 (`constraints.txt` pins the EPICS ones).
+  lab-scopes 0.4.1 (`constraints.txt` pins the EPICS ones). The pin is now lab-scopes 0.4.2 (`n_channels=`, TCP_NODELAY).
 - `critical_path_s` is unchanged by the link (median about 4 ms with and without).
 - Two listeners on one unix socket path (one config spelling it two ways, or two IOC processes) used to let the second
   silently take the socket, and stopping the first then removed it. Fixed after C4r: `LinkListener` holds
@@ -92,7 +92,8 @@ Facts from testing that still matter:
 
 ## 3. API facts (verified; rely on these)
 
-**lab_scopes v0.4.1** (pinned since C4r). `LeCroyWavedesc(b).wd` holds the 346-byte WAVEDESC fields. The
+**lab_scopes v0.4.2** (v0.4.1 pinned since C4r; v0.4.2 adds `LeCroyScope(..., n_channels=)`, which skips channel
+detection, and sets TCP_NODELAY on the VICP socket). `LeCroyWavedesc(b).wd` holds the 346-byte WAVEDESC fields. The
 trigger time is `tt_second` (double), `tt_minute`, `tt_hours`, `tt_days`, `tt_months` and `tt_year`; `tt_year == 0` means
 unset. These are the scope's wall-clock time with no zone. In v0.4.1, `lab_scopes.lecroy.wavedesc.wavedesc_trigger_timestamp(wd)`
 reads them in `SCOPE_TIMEZONE` (`America/Los_Angeles`) with `zoneinfo` and returns epoch seconds, or `None` when unset
