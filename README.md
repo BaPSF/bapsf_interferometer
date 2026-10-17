@@ -26,16 +26,27 @@ So both records hold the same shot. The one exception is an AUTO-forced Rigol ac
 LECROY_IP=<address> python interf_main.py
 ```
 
-- Each LeCroy capture produces one log line, written to stdout and to `$INTERF_LOG_DIR/interf_acquire.log`. The default directory is `~/data/log`, and the log rotates at midnight, keeping 30 days. A line gives:
+- Each LeCroy capture produces a shot line and then a timing line, written to stdout and to `$INTERF_LOG_DIR/interf_acquire.log`. The default directory is `~/data/log`, and the log rotates at midnight, keeping 30 days. A shot line gives:
   - the shot ID, `shot <YYYYMMDD>-<number>`;
   - host time, in Los Angeles time like every time on the line;
   - LeCroy trigger time, and Δt since the previous capture (≈ 3 s steady, ≈ 6 s when a shot is skipped, "-" after a shot with no trigger time);
   - points per channel;
   - time from capture detection to LeCroy re-arm;
   - any missing scope, with the reason.
+- The timing line, always INFO, is `timing <YYYYMMDD>-<number> (ms) | <step> <ms> | ...`: the steps of the loop pass that captured the shot, in the order they run, each in ms with one decimal (`time.perf_counter()`), and `-` for a step that did not run. Grep `interf_main: timing` for them. The shot counter resumes from shot lines only, and the timings are not sent over the link.
+  - `open`: connecting to the LeCroy;
+  - `prepare`: reading its trigger mode and arming it if needed, then `armed`, or `not armed` when it was already SINGLE or a capture was pending;
+  - `wait`: from the end of `prepare` to capture detection;
+  - `C1` … `C4` (`LECROY_CHANNELS`): each channel's read on its own, which includes the scope's processing and the network transfer; `-` for a channel that failed or was not read;
+  - `rigol`: the Rigol read, then `tried`, `skipped` (backoff after a failure) or `disabled` (`RIGOL_IP` empty);
+  - `rearm`: the LeCroy re-arm; `-` when it was not re-armed (a stop request or a LeCroy link error);
+  - `crit`: the shot line's `path` (capture detection to re-arm), in ms;
+  - `close`: closing the LeCroy connection, after the re-arm;
+  - `identify`: assigning the shot identity; `outputs`: every output's `write()` (an `IocLink` only queues the shot);
+  - `cycle`: from the previous capture detection to this one.
 - Shot identity ([interf_shot.py](interf_shot.py)): the shot time is the LeCroy trigger time from the WAVEDESC (keep the scope clock NTP-synced), or the host time when a shot has none. A shot is its Los Angeles date plus a number from 0 each day; a background thread saves the counter after every shot, so a restart the same day continues. A gap in the numbers is a lost shot. A host time before the trigger time, or more than `INTERF_TRIG_LAG_MAX_S` after it, is logged as a clock problem.
 - A pause in triggers, or a LeCroy that keeps failing to connect or respond, is logged when it starts, then every 5 min, then once more when capture resumes. After a LeCroy error the next attempt waits `LECROY_RETRY_INTERVAL`.
-- **Ctrl-C** (or SIGTERM from systemd): a shot already being read is finished and logged. The LeCroy is then set to NORM, the Rigol is sent `:RUN` (normally already running), and every connection is closed. A **second** Ctrl-C exits immediately, without restoring the trigger modes.
+- **Ctrl-C** (or SIGTERM from systemd): a shot already being read is finished and logged. The LeCroy is then set to NORM, the Rigol is sent `:RUN` (normally already running; not when disabled), and every connection is closed. A **second** Ctrl-C exits immediately, without restoring the trigger modes.
 
 ### Configuration
 
@@ -52,7 +63,7 @@ Each variable is read from the environment at startup; unset means the default. 
 | `LECROY_TIMEOUT` | 5 s | VICP socket timeout |
 | `LECROY_RETRY_INTERVAL` | 5 s | Wait before retrying after a LeCroy error |
 | `TRIGGER_TIMEOUT` | 10 s | How long to wait for a trigger before logging a pause and retrying |
-| `RIGOL_IP`, `RIGOL_REF_CH`, `RIGOL_PLA_CH` | `192.168.7.63`, `C1`, `C2` | Rigol address and channels |
+| `RIGOL_IP`, `RIGOL_REF_CH`, `RIGOL_PLA_CH` | `192.168.7.63`, `C1`, `C2` | Rigol address and channels. `RIGOL_IP=` (empty) disables the Rigol: it is never contacted, and every shot has `missing["rigol"]` = `disabled (RIGOL_IP empty)`, so P40 is published as missing with that reason |
 | `RIGOL_RETRY_INTERVAL` | 100 shots | How long the Rigol is skipped after a connect, deadline, or read failure |
 | `RIGOL_CONNECT_TIMEOUT` | 1 s | TCP connect timeout |
 | `RIGOL_OPERATION_TIMEOUT` | 2.5 s | Hard deadline for one Rigol connect, stop, both channel reads, and run (and for `:RUN` on exit). Keep the Rigol at ≤ 1M points: a WORD read takes about 0.77 s per 1M-point channel |
@@ -71,7 +82,7 @@ A Rigol operation that hangs is cut off by `SIGALRM` at its deadline, so it cann
 
 `interf_main.main(outputs)` assigns each shot's identity, writes the shot to every output, then logs it. A failing output is logged (traceback when it starts failing, a count every 5 min, a line on recovery) and never stops the other outputs or the loop. The command-line entry point passes no output unless `INTERF_IOC_LINK` is set.
 
-With `INTERF_IOC_LINK`, the output is an `IocLink` ([diag_ioc/link.py](diag_ioc/link.py)). Its `write()` only queues the shot; a background thread encodes it with [interf_payload.py](interf_payload.py) (schema 2: the shot identity, then the raw arrays) and sends it. It is latest-wins: it keeps at most the 2 newest unsent shots, never blocks acquisition, and does not resend a shot lost during an outage (the raw archive is the complete record). An outage is logged when it starts, every 5 min, and on recovery with the number of shots not delivered; reconnection is retried every 5 s.
+With `INTERF_IOC_LINK`, the output is an `IocLink` ([diag_ioc/link.py](diag_ioc/link.py)). Its `write()` only queues the shot; a background thread encodes it with [interf_payload.py](interf_payload.py) (schema 2: the shot identity, then the raw arrays) and sends it. It is latest-wins: it keeps at most the 2 newest unsent shots, never blocks acquisition, and does not resend a shot lost during an outage (the raw archive is the complete record). An outage is logged when it starts, every 5 min, and on recovery with the number of shots not delivered; reconnection is retried every 5 s. Each delivered shot logs, from the sender thread, `IOC link <address> timing (ms) | encode <ms> | send <ms> | sent <count>`; a reconnect before the send is not counted in it.
 
 ## Live analysis IOC
 
@@ -89,6 +100,7 @@ INTERF_IOC_LINK=unix:/run/diag-ioc/interferometer/link.sock LECROY_IP=<address> 
 - Module options: `max_points` (2048; a 1,000,002-sample record gives 1953 points per port, so none are dropped), `ne_window_ms` (default 5 to 10 ms), `plasma_length_m` (0.4) and `ports` (default P20, P29, P40). `<port>:CAL`, `<port>:FREQ` and `CFG:NE_WINDOW_MS` show them; a change needs an IOC restart.
 - At every start the IOC writes `<config name>.db`, listing every record, into `[ioc] db_dir`. `[ioc] acf` installs an access file; `readonly.acf` makes every PV read-only over CA and PVA.
 - Each publish waits, at most 2 s, until the previous shot's records have all processed (`SHOT:ACK` reaches `STAT:PUBLISHED`), so no update mixes two shots. `STAT:ACK_TIMEOUTS` counts the waits that timed out and should stay 0.
+- Each published shot logs one INFO line to the IOC log (stdout; the journal under systemd): `module interferometer timing <YYYYMMDD>-<number> (ms) | decode <ms> | P20 <ms> | P29 <ms> | P40 <ms> | ack wait <ms> | publish <ms>`. `decode` turns the link message into arrays, each port is its own analysis, `ack wait` is the wait above, and `publish` sets the records. A shot whose analysis or publish failed logs none. `STAT:ANALYSIS_S` is unchanged: the whole of analysis, ack wait and publish.
 
 ## Offline simulation
 
@@ -115,7 +127,7 @@ python -m interf_sim --loop --ioc-link unix:/run/diag-ioc/interferometer/link.so
   - `--loop` refuses `--raw-output` and `--repeat-traces`.
 - There is no Rigol: every shot has `missing["rigol"]`.
 - When the shots run out (never with `--loop`), the simulator sends SIGINT, so the Ctrl-C stop and release path runs. The log goes to `interf_sim/log/` and rotates by size, keeping at most about 250 MB, because a `--loop` or `--period 0` run can log far more per day than acquisition.
-- Transfers take only the file read time, so `critical_path_s` is shorter than on the scopes. The logged `dt` follows the recorded trigger times, not `--period`.
+- Transfers take only the file read time, so `critical_path_s` and the timing line's channel reads are shorter than on the scopes. The logged `dt` follows the recorded trigger times, not `--period`.
 - Shot dates are the recording's. Shot numbers start at 0 on every run and are not saved (`INTERF_SHOT_STATE` is not used), so runs are repeatable and never add to acquisition's numbering. The trigger-lag check is off, since recorded trigger times are older than the replay.
 - `--raw-output` enables the integrated output package. It accepts a direct ADIOS output, an encrypted socket connection file, or a remote server configuration. See [streamer/README.md](streamer/README.md) for the payload and consumer commands.
 

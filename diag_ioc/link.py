@@ -16,7 +16,7 @@ from collections import deque
 
 from diag_ioc.framing import receive_message, send_arrays, send_end
 from diag_ioc.network import accept_from_allowed_network, create_tcp_listener, ipv4_network
-from diag_ioc.outage import Outage
+from diag_ioc.outage import Outage, ms_text
 
 log = logging.getLogger(__name__)
 
@@ -159,9 +159,12 @@ class IocLink:
 		"""False when the link failed (connection dropped); an encoding bug counts as failed but returns True."""
 		try:
 			if self._sock is None:
-				self._sock = self._connect()
+				self._sock = self._connect()  # not in the timing line: only after start or an outage
+			t0 = time.perf_counter()
 			data = self._encode(item)
+			t1 = time.perf_counter()
 			send_arrays(self._sock, data.items())
+			t2 = time.perf_counter()
 		except (OSError, EOFError) as e:
 			self._failed += 1
 			self._disconnect(graceful=False)
@@ -175,6 +178,8 @@ class IocLink:
 			log.exception("IOC link %s: shot not sent (encode failed)", self.address)
 			return True
 		self._sent += 1
+		log.info("IOC link %s timing (ms) | encode %s | send %s | sent %d", self.address, ms_text(t1 - t0), ms_text(t2 - t1),
+		         self._sent)
 		if self._outage.since is not None:
 			self._outage.ended(f"{self._undelivered()} shots not delivered")
 		return True

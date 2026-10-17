@@ -5,7 +5,7 @@ import threading
 import time
 from collections import deque
 
-from diag_ioc.outage import Outage
+from diag_ioc.outage import Outage, ms_text
 
 log = logging.getLogger(__name__)
 
@@ -36,6 +36,11 @@ class DiagnosticModule:
 	def publish(self, result):
 		raise NotImplementedError
 
+	def shot_timing(self, result):
+		"""(shot label, [(step, s or None), ...]): the start of the pipeline's per-shot timing line, before the host's
+		ack wait and publish."""
+		return "-", []
+
 	def start(self, host):
 		"""`host` is the module's diag_ioc.host.ModuleHost; a module with its own data source calls host.pipeline.submit()."""
 
@@ -48,7 +53,8 @@ class ShotPipeline:
 
 	submit() never blocks: a full mailbox drops its oldest message (`dropped`). After every shot the worker
 	calls on_done(analysis_s, error), error "" for a good shot; a failing shot is also logged (throttled).
-	`gate` (a context manager, e.g. diag_ioc.host.PublishAck) wraps each publish().
+	`gate` (a context manager, e.g. diag_ioc.host.PublishAck) wraps each publish(). A good shot also logs one INFO
+	timing line: module.shot_timing(result), then the gate's wait ("ack wait", "-" without a gate) and publish().
 	"""
 
 	def __init__(self, module, depth=2, on_done=None, gate=None):
@@ -57,11 +63,13 @@ class ShotPipeline:
 		self.last_received = None  # time.time() of the latest submit(); None before the first
 		self._depth = depth
 		self._on_done = on_done
+		self._gated = gate is not None
 		self._gate = gate if gate is not None else contextlib.nullcontext()
 		self._queue = deque()
 		self._cond = threading.Condition()
 		self._closing = False
 		self._outage = Outage(log, f"module {module.name}")
+		self._timing_outage = Outage(log, f"module {module.name} timing line")
 		self._thread = threading.Thread(target=self._run, name=f"pipeline-{module.name}", daemon=True)
 		self._thread.start()
 
@@ -97,15 +105,31 @@ class ShotPipeline:
 			error = ""
 			try:
 				result = self.module.analyze(variables)
+				t_analyzed = time.perf_counter()
 				with self._gate:
+					t_open = time.perf_counter()
 					self.module.publish(result)
+					t_published = time.perf_counter()
 			except Exception as e:
 				error = f"{type(e).__name__}: {e}"
 				self._outage.failed(e, exc_info=True)
 			else:
 				self._outage.ended()
+			analysis_s = time.perf_counter() - t0  # STAT:ANALYSIS_S, so it excludes the timing line below
+			if not error:
+				self._log_timing(result, t_open - t_analyzed if self._gated else None, t_published - t_open)
 			if self._on_done is not None:
 				try:
-					self._on_done(time.perf_counter() - t0, error)
+					self._on_done(analysis_s, error)
 				except Exception:
 					log.exception("module %s: status update failed", self.module.name)
+
+	def _log_timing(self, result, ack_wait_s, publish_s):
+		try:
+			label, steps = self.module.shot_timing(result)
+			steps = [*steps, ("ack wait", ack_wait_s), ("publish", publish_s)]
+			log.info("module %s timing %s (ms) | %s", self.module.name, label, " | ".join(f"{k} {ms_text(s)}" for k, s in steps))
+		except Exception as e:  # a module bug: the shot is published, so STAT:ERROR stays clear
+			self._timing_outage.failed(e, exc_info=True)
+		else:
+			self._timing_outage.ended()

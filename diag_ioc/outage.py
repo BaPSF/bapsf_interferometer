@@ -5,6 +5,11 @@ LOG_FORMAT = "%(asctime)s %(levelname)s %(name)s: %(message)s"  # interf_main, d
 OUTAGE_LOG_INTERVAL_S = 300.0
 
 
+def ms_text(seconds):
+	"""A timing-line value: `seconds` in ms with one decimal, or "-" for None (the step did not run)."""
+	return "-" if seconds is None else f"{seconds * 1e3:.1f}"
+
+
 class Outage:
 	"""Logs a failure once when it starts, every OUTAGE_LOG_INTERVAL_S while it lasts, and once when it ends.
 

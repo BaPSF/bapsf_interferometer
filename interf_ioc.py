@@ -6,6 +6,8 @@ Imports neither softioc (the host passes `builder`) nor streamer (D6).
 """
 import math
 import re
+import time
+from dataclasses import dataclass
 from functools import partial
 
 import numpy as np
@@ -13,8 +15,8 @@ import numpy as np
 import interf_payload
 from diag_ioc.module import DiagnosticModule
 from diag_ioc.records import INVALID_ALARM, READ_ALARM, UDF_ALARM, add_group, chain, fit_text, passive, scalar, waveform
-from interf_analysis import PORTS, Port, analyze_shot, get_calibration_factor
-from interf_shot import clock, local_time
+from interf_analysis import PORTS, Port, ShotResult, analyze_shot, get_calibration_factor
+from interf_shot import clock, local_time, shot_id
 
 # Points per port waveform (NELM). A 1,000,002-sample LeCroy record (HDO4104 at 0.1 us) gives 1953 phase points at
 # FT_len 512, so every point fits; a longer record is decimated by analyze_shot to fit.
@@ -82,6 +84,13 @@ class LostShots:
 			self.total += number - self._last[1] - 1
 		self._last = (date, number)
 		return self.total
+
+
+@dataclass(frozen=True)
+class Analyzed:
+	"""analyze() -> publish(): the analysis, and the s it took to decode the link message (the IOC timing line)."""
+	shot: ShotResult
+	decode_s: float
 
 
 class InterferometerModule(DiagnosticModule):
@@ -152,10 +161,18 @@ class InterferometerModule(DiagnosticModule):
 			add_group(r[(port.name, "ne_mean")], group, {f"{field}.ne_mean": {"+type": "plain", **trigger}})
 
 	def analyze(self, variables):
-		return analyze_shot(interf_payload.decode(variables), ports=self.ports, plasma_length=self.plasma_length_m,
-		                    max_points=self.max_points, ne_window_ms=self.ne_window_ms)
+		t0 = time.perf_counter()
+		shot = interf_payload.decode(variables)
+		decode_s = time.perf_counter() - t0
+		return Analyzed(analyze_shot(shot, ports=self.ports, plasma_length=self.plasma_length_m, max_points=self.max_points,
+		                             ne_window_ms=self.ne_window_ms), decode_s)
 
-	def publish(self, result):
+	def shot_timing(self, analyzed):
+		shot = analyzed.shot
+		return shot_id(shot.shot_date, shot.shot_number), [("decode", analyzed.decode_s), *shot.port_analysis_s.items()]
+
+	def publish(self, analyzed):
+		result = analyzed.shot
 		r, ts = self._records, result.shot_time
 		r["date"].set(result.shot_date, timestamp=ts)
 		r["time_source"].set(result.time_source, timestamp=ts)

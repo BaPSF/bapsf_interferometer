@@ -279,6 +279,7 @@ class ShotResult:
 	acq_missing: dict[str, str]  # shot.missing as acquired
 	ports: dict[str, PortResult]
 	analysis_s: float
+	port_analysis_s: dict[str, float]  # s per port, keyed and ordered like `ports`
 
 
 def analyze_shot(shot, ports=PORTS, plasma_length=0.4, ft_len=FT_len, max_points=None, ne_window_ms=None):
@@ -293,10 +294,14 @@ def analyze_shot(shot, ports=PORTS, plasma_length=0.4, ft_len=FT_len, max_points
 	if ne_window_ms is not None and not ne_window_ms[0] < ne_window_ms[1]:
 		raise ValueError(f"ne_window_ms {ne_window_ms}: start must be before stop")
 	t0 = time.perf_counter()
-	results = {p.name: _analyze_port(shot, p, plasma_length, ft_len, max_points, ne_window_ms) for p in ports}
+	results, port_s = {}, {}
+	for p in ports:
+		t = time.perf_counter()
+		results[p.name] = _analyze_port(shot, p, plasma_length, ft_len, max_points, ne_window_ms)
+		port_s[p.name] = time.perf_counter() - t
 	return ShotResult(**{name: getattr(shot, name, None) for name in _IDENTITY}, host_time=shot.host_time,
 	                  critical_path_s=shot.critical_path_s, acq_missing=dict(shot.missing), ports=results,
-	                  analysis_s=time.perf_counter() - t0)
+	                  analysis_s=time.perf_counter() - t0, port_analysis_s=port_s)
 
 
 def _analyze_port(shot, port, plasma_length, ft_len, max_points, ne_window_ms):

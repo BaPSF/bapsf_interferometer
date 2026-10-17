@@ -91,7 +91,9 @@ class MainIntegrationTests(unittest.TestCase):
 		self.assertEqual(events, ["write", "log"] * 3)
 		warning.assert_called_once()  # the outage start; the repeat waits OUTAGE_LOG_INTERVAL_S
 		self.assertTrue(warning.call_args.kwargs["exc_info"])  # with the traceback
-		info.assert_called_once()  # recovery
+		messages = [c.args[0] for c in info.call_args_list]
+		self.assertEqual(sum("recovered" in m for m in messages), 1)  # recovery
+		self.assertEqual(sum(m.startswith("timing ") for m in messages), 3)  # one per shot
 
 	def test_unhashable_output_is_isolated_and_recovers(self):
 		@dataclasses.dataclass
@@ -118,7 +120,9 @@ class MainIntegrationTests(unittest.TestCase):
 		self.assertEqual(events, ["log", "log"])  # the shot line survived the failing write
 		self.assertEqual(output.written, [shot])
 		warning.assert_called_once()
-		info.assert_called_once()
+		messages = [c.args[0] for c in info.call_args_list]
+		self.assertEqual(sum("recovered" in m for m in messages), 1)
+		self.assertEqual(sum(m.startswith("timing ") for m in messages), 2)
 
 	def test_repeated_output_failure_warns_with_count(self):
 		broken = mock.Mock()

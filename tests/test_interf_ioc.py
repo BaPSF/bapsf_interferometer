@@ -119,11 +119,19 @@ class PureHelperTests(unittest.TestCase):
 	def test_analyze_equals_analyze_shot_of_the_decoded_shot(self):
 		shot = _shot(0, 2)
 		module = InterferometerModule("m", {"ne_window_ms": list(WINDOW_MS)})
-		result, expected = module.analyze(interf_payload.encode(shot)), _expected(shot)
+		result, expected = module.analyze(interf_payload.encode(shot)).shot, _expected(shot)
 		self.assertEqual((result.shot_date, result.shot_number, result.shot_time), (expected.shot_date, 2, shot.shot_time))
 		for name, port in expected.ports.items():
 			np.testing.assert_array_equal(result.ports[name].ne, port.ne)
 			self.assertEqual(result.ports[name].ne_mean, port.ne_mean)
+
+	def test_shot_timing_gives_the_shot_id_the_decode_and_each_port(self):
+		module = InterferometerModule("m", {})
+		analyzed = module.analyze(interf_payload.encode(_shot(0, 2)))
+		label, steps = module.shot_timing(analyzed)
+		self.assertEqual(label, f"{analyzed.shot.shot_date}-2")
+		self.assertEqual([name for name, _ in steps], ["decode", *(p.name for p in PORTS)])
+		self.assertTrue(all(s >= 0 for _, s in steps), steps)
 
 
 class _FakeRecord:

@@ -23,7 +23,7 @@ import os
 import signal
 import time
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import numpy as np
 from lab_scopes.errors import ScopeConnectionError, ScopeProtocolError, ScopeTimeoutError
@@ -50,7 +50,8 @@ LECROY_TIMEOUT = _env("LECROY_TIMEOUT", 5.0)  # s, VICP socket timeout; bounds e
 LECROY_RETRY_INTERVAL = _env("LECROY_RETRY_INTERVAL", 5.0)  # s between attempts while the LeCroy errors
 TRIGGER_TIMEOUT = _env("TRIGGER_TIMEOUT", 10.0)  # s; > 3 shot periods, so a timeout means a pause
 
-RIGOL_IP = _env("RIGOL_IP", "192.168.7.63")
+RIGOL_IP = _env("RIGOL_IP", "192.168.7.63")  # "": Rigol disabled, never contacted (missing["rigol"] says so)
+RIGOL_DISABLED = "disabled (RIGOL_IP empty)"
 RIGOL_REF_CH = _env("RIGOL_REF_CH", "C1")
 RIGOL_PLA_CH = _env("RIGOL_PLA_CH", "C2")
 RIGOL_RETRY_INTERVAL = _env("RIGOL_RETRY_INTERVAL", 100)  # shots the Rigol is skipped after a failure
@@ -77,6 +78,23 @@ class AcqState:
 	idle_kind: str | None = None  # throttled idle logging, see _note_idle
 	idle_since: float = 0.0
 	idle_logged: float = 0.0
+	last_detected: float | None = None  # perf_counter() at the last capture detection, for StepTimes.cycle_s
+
+
+@dataclass
+class StepTimes:
+	"""s per step of the acquire_shot() call that captured a shot, by time.perf_counter(); None: the step did not run."""
+	open_s: float | None = None
+	prepare_s: float | None = None
+	prepare_armed: bool = False  # _prepare armed the LeCroy (else it was SINGLE already, or a capture was pending)
+	wait_s: float | None = None  # end of _prepare -> capture detected
+	# Every LECROY_CHANNELS entry, in order; None for a channel that failed or was not read.
+	channels_s: dict[str, float | None] = field(default_factory=lambda: dict.fromkeys(LECROY_CHANNELS))
+	rigol_s: float | None = None
+	rigol: str | None = None  # "tried", "skipped" (backoff) or "disabled" (RIGOL_IP empty)
+	rearm_s: float | None = None  # None: not re-armed (stop request or link error); a failed re-arm is timed
+	close_s: float | None = None
+	cycle_s: float | None = None  # the previous capture detection -> this one; None for the first
 
 
 @dataclass
@@ -92,6 +110,8 @@ class RawShot:
 	shot_number: int | None = None  # from 0 each shot_date
 	shot_time: float | None = None  # epoch s: the LeCroy trigger time, or host_time when time_source is "host"
 	time_source: str | None = None  # "trigger" | "host"
+	# Logged by interf_main only: interf_payload and streamer.payload encode named fields, so neither carries it.
+	timing: StepTimes = field(default_factory=StepTimes)
 
 
 #===============================================================================================================================================
@@ -172,44 +192,59 @@ def _arm_lecroy(lecroy, state):
 
 
 def _prepare(lecroy, state):
-	"""Get the LeCroy listening without disturbing a pending capture."""
+	"""Get the LeCroy listening without disturbing a pending capture; True if it armed the LeCroy."""
 	mode = _lecroy_mode(lecroy)
 	if mode == "SIN":
 		# Waiting for the next shot: re-arming would only clear the sweep counter for nothing.
 		state.lecroy_armed = True
-	elif mode == "STO" and state.lecroy_armed and lecroy.sweeps_per_acq(LECROY_CHANNELS[0]) >= 1:
-		pass  # an unconsumed capture is waiting (it may have landed after last iteration's wait)
-	elif mode in ("STO", "NOR", "AUT"):
+		return False
+	if mode == "STO" and state.lecroy_armed and lecroy.sweeps_per_acq(LECROY_CHANNELS[0]) >= 1:
+		return False  # an unconsumed capture is waiting (it may have landed after last iteration's wait)
+	if mode in ("STO", "NOR", "AUT"):
 		# STO with nothing to consume (rule 3): already consumed, predates us, or stopped by hand.
 		# NOR/AUT: rule 2.
 		_arm_lecroy(lecroy, state)
-	else:
-		raise RuntimeError(f"unexpected LeCroy TRIG_MODE {mode!r}")
+		return True
+	raise RuntimeError(f"unexpected LeCroy TRIG_MODE {mode!r}")
 
 
-def _arm_and_wait(lecroy, state, stop_requested):
+def _arm_and_wait(lecroy, state, stop_requested, times):
 	"""True once a fresh capture is present; False on TRIGGER_TIMEOUT or a stop request.
 
 	Raises on LeCroy communication errors.
 	"""
-	_prepare(lecroy, state)
+	t0 = time.perf_counter()
+	times.prepare_armed = _prepare(lecroy, state)
+	t_prepared = time.perf_counter()
+	times.prepare_s = t_prepared - t0
 	t_end = time.monotonic() + TRIGGER_TIMEOUT
 	while time.monotonic() < t_end:
 		if stop_requested():
 			return False
 		if lecroy.wait_for_stop_then_complete(LECROY_CHANNELS[0], timeout=_WAIT_SLICE_S):
+			detected = time.perf_counter()
+			times.wait_s = detected - t_prepared
+			if state.last_detected is not None:
+				times.cycle_s = detected - state.last_detected
+			state.last_detected = detected
 			return True
 	# No state change: the next iteration's _prepare re-classifies the LeCroy.
 	_note_idle(state, "no trigger", f"none within {TRIGGER_TIMEOUT:g} s")
 	return False
 
 
-def _read_rigol(state, missing):
+def _read_rigol(state, missing, times):
 	"""Rigol data for this shot, or {} with missing["rigol"] set."""
+	if not RIGOL_IP:
+		times.rigol = "disabled"
+		missing["rigol"] = RIGOL_DISABLED
+		return {}
 	if state.rigol_skip_shots > 0:
+		times.rigol = "skipped"
 		state.rigol_skip_shots -= 1
 		missing["rigol"] = f"backoff, {state.rigol_skip_shots} shots left"
 		return {}
+	times.rigol = "tried"
 	try:
 		return rigol_read(RIGOL_IP, (RIGOL_REF_CH, RIGOL_PLA_CH), RIGOL_OPERATION_TIMEOUT)
 	except _RIGOL_ERRORS as e:
@@ -218,7 +253,7 @@ def _read_rigol(state, missing):
 	return {}
 
 
-def _consume(lecroy, state, stop_requested):
+def _consume(lecroy, state, stop_requested, times):
 	"""Read a detected capture from both scopes, then re-arm the LeCroy."""
 	host_time, t0 = time.time(), time.monotonic()
 	_note_resumed(state)
@@ -230,6 +265,7 @@ def _consume(lecroy, state, stop_requested):
 	failed = {}  # {ch: reason}
 	link_ok = True
 	for i, ch in enumerate(LECROY_CHANNELS):
+		t = time.perf_counter()
 		try:
 			lecroy_data[ch] = lecroy.acquire(ch, raw=True)
 		except _LECROY_LINK_ERRORS as e:
@@ -240,18 +276,24 @@ def _consume(lecroy, state, stop_requested):
 		except Exception as e:
 			# One channel without data (e.g. trace switched off) must not cost the other port.
 			failed[ch] = f"{type(e).__name__}: {e}"
+		else:
+			times.channels_s[ch] = time.perf_counter() - t
 	if failed:
 		missing["lecroy"] = "; ".join(f"{ch} {why}" for ch, why in failed.items())
 	# Rule 1: the Rigol :STOP must precede the LeCroy re-arm below.
-	rigol_data = _read_rigol(state, missing)
+	t = time.perf_counter()
+	rigol_data = _read_rigol(state, missing, times)
+	times.rigol_s = time.perf_counter() - t
 
 	# Not re-armed on a stop request (release_scopes() sets NORM), nor after a link error (the
 	# next iteration reconnects and re-arms).
 	if not stop_requested() and link_ok:
+		t = time.perf_counter()
 		try:
 			_arm_lecroy(lecroy, state)
 		except Exception as e:
 			log.warning("LeCroy re-arm failed (%s); next iteration re-arms", e)
+		times.rearm_s = time.perf_counter() - t
 	return RawShot(host_time, lecroy_data, rigol_data, missing, time.monotonic() - t0)
 
 
@@ -289,23 +331,33 @@ def acquire_shot(state, stop_requested):
 	`stop_requested()` is polled between waits; once it is true the scopes are left un-re-armed
 	and the caller must call release_scopes() before exiting.
 	"""
+	times = StepTimes()
+	t = time.perf_counter()
 	try:
 		lecroy = _lecroy_open()
 	except Exception as e:
 		_lecroy_failed(state, e, stop_requested)
 		return None
+	times.open_s = time.perf_counter() - t
+	shot = None
 	try:
 		try:
-			captured = _arm_and_wait(lecroy, state, stop_requested)
+			captured = _arm_and_wait(lecroy, state, stop_requested, times)
 		except Exception as e:
 			lecroy.rm_close()  # before the retry sleep
 			_lecroy_failed(state, e, stop_requested)
 			return None
 		# Outside the except above: _consume handles scope errors itself, so anything it raises is
 		# a bug for the caller to log with a traceback, not a LeCroy error.
-		return _consume(lecroy, state, stop_requested) if captured else None
+		if captured:
+			shot = _consume(lecroy, state, stop_requested, times)
 	finally:
+		t = time.perf_counter()
 		lecroy.rm_close()
+		times.close_s = time.perf_counter() - t
+	if shot is not None:
+		shot.timing = times
+	return shot
 
 
 def release_scopes():
@@ -318,6 +370,8 @@ def release_scopes():
 			lecroy.rm_close()
 	except Exception as e:
 		log.error("LeCroy not set to NORM: %s", e)
+	if not RIGOL_IP:
+		return
 	try:
 		rigol_run(RIGOL_IP, RIGOL_OPERATION_TIMEOUT)  # normally already running; covers a failed read
 	except _RIGOL_ERRORS as e:

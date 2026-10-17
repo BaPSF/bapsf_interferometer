@@ -7,7 +7,7 @@ import sys
 import time
 from pathlib import Path
 
-from diag_ioc.outage import LOG_FORMAT, Outage
+from diag_ioc.outage import LOG_FORMAT, Outage, ms_text
 from interf_raw import AcqState, acquire_shot, release_scopes
 from interf_shot import ShotCounter, ShotIdentifier, clock, shot_id
 
@@ -34,7 +34,7 @@ def stop_requested():
 
 def _setup_logging():
 	os.makedirs(LOG_DIR, exist_ok=True)
-	# Midnight rotation: ~29k lines/day, unattended for months.
+	# Midnight rotation: ~29k shots/day, each a shot and a timing line (plus a link line with INTERF_IOC_LINK).
 	file_handler = logging.handlers.TimedRotatingFileHandler(
 		os.path.join(LOG_DIR, ACQUIRE_LOG), when="midnight", backupCount=30)
 	logging.basicConfig(level=logging.INFO, format=LOG_FORMAT,
@@ -65,6 +65,20 @@ def _shot_line(shot, prev_trig):
 	return " | ".join(parts)
 
 
+def _timing_line(shot, identify_s, outputs_s):
+	"""Step times in ms. "timing", not "shot", after the logger name: ShotCounter resumes from shot lines only."""
+	t = shot.timing
+	prepare = ms_text(t.prepare_s)
+	if t.prepare_s is not None:
+		prepare += " armed" if t.prepare_armed else " not armed"
+	parts = [f"timing {shot_id(shot.shot_date, shot.shot_number)} (ms)", f"open {ms_text(t.open_s)}", f"prepare {prepare}",
+	         f"wait {ms_text(t.wait_s)}", " ".join(f"{ch} {ms_text(s)}" for ch, s in t.channels_s.items()),
+	         f"rigol {ms_text(t.rigol_s)}" + (f" {t.rigol}" if t.rigol else ""), f"rearm {ms_text(t.rearm_s)}",
+	         f"crit {ms_text(shot.critical_path_s)}", f"close {ms_text(t.close_s)}", f"identify {ms_text(identify_s)}",
+	         f"outputs {ms_text(outputs_s)}", f"cycle {ms_text(t.cycle_s)}"]
+	return " | ".join(parts)
+
+
 # {id(output): (output, Outage)} for outputs in an outage. Keyed by id() so any object can be an
 # output (a plain @dataclass is unhashable); the strong reference keeps the id from being reused
 # by another object while its entry exists.
@@ -87,10 +101,15 @@ def _write_outputs(shot, outputs):
 
 
 def _handle_shot(shot, prev_trig, identifier, outputs=()):
-	"""Assign the shot identity, write the shot to every output, then log it; return the trigger time for the next dt."""
+	"""Assign the shot identity, write the shot to every output, then log it and its step times; return the trigger
+	time for the next dt."""
+	t0 = time.perf_counter()
 	identifier.identify(shot)  # never raises
-	_write_outputs(shot, outputs)
+	t1 = time.perf_counter()
+	_write_outputs(shot, outputs)  # an IocLink only queues here; its sender logs encode and send times
+	t2 = time.perf_counter()
 	log.log(logging.WARNING if shot.missing else logging.INFO, _shot_line(shot, prev_trig))
+	log.info(_timing_line(shot, t1 - t0, t2 - t1))
 	# None after a shot without a trigger time, so the next dt prints "-" rather than spanning
 	# two captures and reading as a skipped shot.
 	return shot.shot_time if shot.time_source == "trigger" else None

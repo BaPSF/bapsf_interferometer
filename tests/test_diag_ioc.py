@@ -167,6 +167,25 @@ class ShotPipelineTests(unittest.TestCase):
 			pipeline.close()
 		self.assertEqual(events, ["enter", ("publish", 1), ("exit", None), "enter", ("publish", 2), ("exit", ValueError)])
 
+	def test_a_published_shot_logs_one_timing_line(self):
+		class Module(_RecordingModule):
+			def shot_timing(self, result):
+				return f"shot{result}", [("decode", 0.0012), ("unrun", None)]
+
+		done = queue.Queue()
+		pipeline = ShotPipeline(Module(), on_done=lambda seconds, error: done.put(error))
+		try:
+			with self.assertLogs("diag_ioc.module", "INFO") as logs:
+				for message in ({"fail": 1}, {"i": 1}):  # a failed shot logs no timing line
+					pipeline.submit(message)
+					done.get(timeout=5)
+		finally:
+			pipeline.close()
+		timing = [m for m in (r.getMessage() for r in logs.records) if " timing " in m]
+		self.assertEqual(len(timing), 1, timing)
+		# No gate: no ack wait to time.
+		self.assertRegex(timing[0], r"^module recording timing shot1 \(ms\) \| decode 1\.2 \| unrun - \| ack wait - \| publish \d+\.\d$")
+
 	def test_close_discards_late_messages(self):
 		module = _RecordingModule()
 		pipeline = ShotPipeline(module)
