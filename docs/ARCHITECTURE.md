@@ -1,8 +1,8 @@
 # EPICS live-analysis architecture: decisions
 
 Repo `BaPSF/bapsf_interferometer`, branch `refactor/linux-epics-daq`. Done: C4r `4ee26b8`, the link socket lock
-`ebb0b9f`, C4s `465b76a` and C5 `b8ecf40`; C4s and C5 are tested on Linux with real recordings. `git log` has the
-current head.
+`ebb0b9f`, C4s `465b76a`, C5 `b8ecf40` and C6 `442c405`; C4s and C5 are tested on Linux with real recordings. `git log`
+has the current head.
 Status: **all 15 decisions ACCEPTED by J on 2026-10-08.** Every agent follows this file, and
 `HANDOFF_live_epics.md` implements it commit by commit. Anything neither covers goes to J before code is written.
 
@@ -328,6 +328,8 @@ Done: C4r (`4ee26b8`: streamer restored, live link decoupled, shot identity and 
 acquisition log; D14) and C5 (`b8ecf40`: `interf_ioc.py` per D2, D4, D5, D7, the host's `SHOT:ACK` wait, `<name>.db`
 at start, the read-only ACF of D8 and the constraints file of D11). C5's first push, `5928659`, was reverted by
 `3b3e143` before review. `test-on-Bobby` tested C4s and C5 (119 of 119 tests including PVA; the C5 scenario on 55
-recorded shots with an IOC SIGKILL and restart mid-run).
+recorded shots with an IOC SIGKILL and restart mid-run). C6 (`442c405`: `interf_store` per D9, `<port>:MISSING`,
+`interf-store.service` per D10): on Bobby its suite ran 143 of 150 passed, 6 skipped, and 1 failed from a test bug in
+`test_interf_store`, fixed after `442c405`.
 
-1. C6 (PVA storage), then C7 and C8.
+1. C7, then C8.

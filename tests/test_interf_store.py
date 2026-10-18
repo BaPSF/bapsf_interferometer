@@ -159,7 +159,8 @@ class StoreShotTests(_StoreAssertions):
 		for flat, missing in ((("C1",), {"P20"}), (("C1", "C3"), {"P20", "P29"})):
 			with self.subTest(missing=sorted(missing)):
 				shot = _shot(5 + len(missing), flat=flat, rigol=False)
-				stored = _stored(self.dir)[str(self._store(shot)[1].shot_time)]
+				result = self._store(shot)[1]
+				stored = _stored(self.dir)[str(result.shot_time)]
 				t_ms = stored["time_array"][0]
 				self.assertEqual(t_ms.size == 0, missing == {"P20", "P29"})  # both missing: no LeCroy time axis
 				for port in ("P20", "P29"):
@@ -168,6 +169,8 @@ class StoreShotTests(_StoreAssertions):
 					self.assertEqual(bool(np.isnan(phase).all()) if phase.size else True, port in missing, port)
 					self.assertEqual(attrs.get("missing", False), port in missing, port)
 				self.assertEqual(stored["phase_p40"][0].size, 0)  # P40 stays empty
+
+	def test_a_shot_already_stored_is_skipped(self):
 		shot = _shot(3)
 		self.assertTrue(self._store(shot)[0])
 		self.assertFalse(self._store(shot)[0])

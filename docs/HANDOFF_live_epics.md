@@ -1,6 +1,6 @@
 # Handoff: live analysis + EPICS IOC for `bapsf_interferometer`
 
-Repository `BaPSF/bapsf_interferometer`, branch `refactor/linux-epics-daq`. Updated 2026-10-12. This file is the
+Repository `BaPSF/bapsf_interferometer`, branch `refactor/linux-epics-daq`. Updated 2026-10-18. This file is the
 implementation spec for the remaining commits. It implements the decisions in `docs/ARCHITECTURE.md` (D1–D15) and does
 not repeat their reasons. A question neither file answers goes to the user before code is written.
 
@@ -35,6 +35,7 @@ the local agent; other sessions send them to the user as patch files.
 | 73ccb44 | Docs synced to the latest review; `docs/` on this branch is the single source |
 | 465b76a C4s | `ShotCounter` writes its state on a daemon thread (latest wins) and resumes from the later of the state file and the acquisition log; the replay persists no counter |
 | b8ecf40 C5 (5928659, pushed before review, was reverted by 3b3e143) | `interf_ioc` module (D4 PVs, chain, PVA group `<P>:SHOT`); host `SHOT:ACK` wait, `STAT:PUBLISHED`/`ACK_TIMEOUTS`, `<name>.db` export to `[ioc] db_dir`, `[ioc] acf` with `readonly.acf`; `create_records` returns the chain tail; `constraints.txt`; `ioc_harness.monitor_all` |
+| 442c405 C6 | `interf_store` (PVA client of `<P>:SHOT`, own process, daily HDF5 in the legacy layout; missing P20/P29 as NaN); `<port>:MISSING` PVs; `interf_file` `lecroy_missing=`/`shot=`, `ShotExists`; `interf-store.service` as `diag-ioc`; `p4p` in `clients`; `ioc_harness.ChildProcess` |
 
 **Tested on Linux with real recordings** (`test-on-Bobby`, 2026-10-11): C4s `465b76a` and C5 `b8ecf40`. 119 of 119
 tests pass, PVA tests included. The 55 recorded shots ran through the real IOC (`interf_sim --ioc-link`), with an IOC
@@ -149,7 +150,8 @@ Every commit leaves `python -m unittest discover -s tests -v` green, updates pyp
 README where users see a change.
 
 Done: C4r, the docs sync (73ccb44, step 1), C4s (465b76a) and C5 (b8ecf40), the last two tested on Linux with real
-recordings (§1), and C6 (as built below, not yet tested on Linux). The local agent's next step is **C7**.
+recordings (§1), and C6 (442c405, as built below). On Bobby the suite at 442c405 ran 143 of 150 passed, 6 skipped, and
+1 failed from a test bug in `test_interf_store`, fixed after 442c405. The local agent's next step is **C7**.
 
 `test-on-Bobby` runs each commit's tests after it is pushed.
 
