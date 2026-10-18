@@ -86,7 +86,7 @@ Facts from testing that still matter:
   `packages`, in the same commit.
 - Conventional commit prefixes (`feat:`, `fix:`, `refactor:`, `test:`, `docs:`, `chore:`), with a short body saying why.
   Keep the README "Files" and "Configuration" tables current.
-- Setup: `pip install -e '.[ioc,clients]' -c constraints.txt`, plus `p4p` for PVA tests (C6 adds it to `clients`).
+- Setup: `pip install -e '.[ioc,clients]' -c constraints.txt` (`clients` includes `p4p` since C6).
 - `interf_main`'s main thread owns SIGALRM and the LeCroy re-arm. Anything added there is O(1), never blocks, never
   raises into the loop, and never imports EPICS.
 
@@ -149,7 +149,7 @@ Every commit leaves `python -m unittest discover -s tests -v` green, updates pyp
 README where users see a change.
 
 Done: C4r, the docs sync (73ccb44, step 1), C4s (465b76a) and C5 (b8ecf40), the last two tested on Linux with real
-recordings (§1). The local agent's next step is **C6**.
+recordings (§1), and C6 (as built below, not yet tested on Linux). The local agent's next step is **C7**.
 
 `test-on-Bobby` runs each commit's tests after it is pushed.
 
@@ -201,6 +201,7 @@ long TMPDIR pushed the socket path over 107 bytes). The PV names are the D4 list
 | `SHOT:MISSING` | longStringIn 1024, Passive, TSE −2: each acquisition reason once, then port reasons that add something |
 | `<port>:TIME_ARRAY`, `:PHASE`, `:NE` | WaveformIn f64, NELM `max_points`, Passive, TSE −2 |
 | `<port>:NE_MEAN` | aIn, Passive, TSE −2, `MDEL=-1`; NaN + INVALID when NaN |
+| `<port>:MISSING` (added in C6) | longStringIn 1024, Passive, TSE −2: the port's own reason (`PortResult.missing`), `""` when it has data; no alarm |
 | `<port>:CAL`, `<port>:FREQ` (GHz), `CFG:NE_WINDOW_MS` (2 elements) | fixed: `initial_value=` from config in `create_records` (not in the chain); module option `ne_window_ms`, default `[5.0, 10.0]` |
 
 - Module options, validated at construction (unknown keys are errors): `ports`, `max_points` (default 2048, see §1),
@@ -208,11 +209,11 @@ long TMPDIR pushed the socket path over 107 bytes). The PV names are the D4 list
 - Ports come from `[[module.options.ports]]` (`name`, `scope`, `ref`, `plasma`, `freq_hz`; default
   `interf_analysis.PORTS`). PVs are created per configured port; the group field is the lower-case name.
 - Chain: `SHOT:NUM → DATE → TIME_SOURCE → HOST_TIME → TIME_STR → CRIT_PATH → STAT:TRIG_LAG → LOST → MISSING → <port>:TIME_ARRAY →
-  PHASE → NE → NE_MEAN → … → <last port>:NE_MEAN → SHOT:ACK`.
+  PHASE → NE → MISSING → NE_MEAN → … → <last port>:NE_MEAN → SHOT:ACK` (24 records before the ack).
 - Group `<P>:SHOT`:
   - `""` (meta) and `num` from `SHOT:NUM`;
   - `date`, `time_source`, `host_time`, `lost`, `missing` (plain);
-  - `<port>.time_array`, `.phase` and `.ne` (scalar), and `.ne_mean` (plain);
+  - `<port>.time_array`, `.phase` and `.ne` (scalar), and `.missing` and `.ne_mean` (plain);
   - `+trigger: "*"` on the last port's `NE_MEAN`.
 - `analyze(variables)` is `interf_payload.decode` plus `analyze_shot(..., ports=, max_points=, ne_window_ms=)`.
 - `publish(result)`:
@@ -269,9 +270,10 @@ As built: the CA test checks that the access right itself is refused (DISP=1 alo
 `p4p` versions as tested, and document `-c constraints.txt` in the README. As built: Bobby's versions (§1), plus
 `pyepics`.
 
-**C6 `feat: store analyzed shots in the daily HDF5 file` (D9).** Files: `interf_store.py`, `interf_file.py`,
-`deploy/systemd/interf-store.service`, `tests/test_interf_store.py`; add `p4p` to the `clients` extra and the script
-`interf-store`.
+**C6 `feat: store analyzed shots in the daily HDF5 file` (D9). Done**; kept as the record of what it does. Files:
+`interf_store.py`, `interf_file.py`, `deploy/systemd/interf-store.service`, `tests/test_interf_store.py`; add `p4p` to
+the `clients` extra and the script `interf-store`. As built also `interf_ioc.py` and `tests/test_interf_ioc.py`
+(`<port>:MISSING`), `tests/ioc_harness.py`, `tests/test_interf_payload.py` and the `diag-ioc@.service` install line.
 - `interf_file.create_sourcefile_dataset(..., lecroy_missing=None, shot=None)`. The new arguments are additive:
   - missing P20/P29 get `missing`/`missing_reason` attributes;
   - P40 keeps `rigol_missing`/`rigol_missing_reason`;
@@ -297,6 +299,33 @@ As built: the CA test checks that the access right itself is refused (DISP=1 alo
     change, and the attributes.
   - PVA integration (skip without IPv6, so it runs on the Linux machine): 3 shots give 3 datasets, and a restart adds no
     duplicates.
+- As built:
+  - The separate-process rule and the HDF5 keys are in D9; the unit is the third of D10.
+  - The IOC publishes each port's own reason as `<port>:MISSING` (C5 record table), in the chain after `<port>:NE` and
+    in the group as `<port>.missing`. `missing_reason` (P20, P29) and `rigol_missing_reason` (P40) hold it;
+    `SHOT:MISSING` (the whole shot's text, cut at 1023 bytes) is not used by the store. `create_sourcefile_dataset`
+    writes a missing P20/P29 phase as NaN of `len(t_ms)` (D9); P40 stays empty. The `shot` attributes go on the
+    `phase_p20` dataset.
+  - A duplicate is `interf_file.ShotExists` (a `ValueError`). An update with `date` or `timeStamp` 0 (the IOC's state
+    before its first shot after a start, sent to every new or reconnected monitor) is not a shot.
+  - `interf-store.service`: `diag-ioc`, `StateDirectory=interferometer`, `INTERF_DATA_DIR=/var/lib/interferometer/hdf5`
+    (`interf_store` creates `hdf5`), `EnvironmentFile=-/etc/interferometer/store.env`, `After=` only on the IOC,
+    `Restart=always`, `TimeoutStopSec=30`. `interf_store.STOP_TIMEOUT_S` is 20 s, under that, so the exit summary is
+    logged before SIGKILL.
+  - `shot_time` is the group's top-level `timeStamp`. softioc stores it as whole s plus truncated ns, which rounds back
+    to the same float64, so the dataset name equals `str()` of the trigger time.
+  - `<port>.missing` is read as a string or as a NUL-terminated char array, since which one QSRV serves for a
+    `longStringIn` group field is not yet checked (`test-on-Bobby` reports it).
+  - Disconnects, a full queue (100 shots) and failed writes use `diag_ioc.outage.Outage`. The callback ignores the
+    `Disconnected` that p4p sends before the first connection. Each stored shot is logged.
+  - `tests/test_interf_store.py` also has `RecordedShotTests` for `test-on-Bobby` (skipped without the `.trc` files in
+    `interf_sim.trc_replay.TRC_DIR`). It runs the real IOC, `interf_store` and `python -m interf_sim --ioc-link` on
+    every recorded shot, then checks every stored shot against `analyze_shot` of the same replayed shot. It also
+    checks the known gaps (82435: P20 and P29 missing; 82437: P29 missing; P40 missing on every shot).
+  - Gaps use `interf_ioc.LostShots`, the rule of `SHOT:LOST`. `create_sourcefile_dataset` no longer prints a line
+    per shot; the store logs one.
+  - `tests/ioc_harness.py`: `ChildProcess` (which `IocProcess` now extends) runs the store, and
+    `interferometer_config` and `publish` moved there from `tests/test_interf_ioc.py`.
 
 **C7 `feat: Phoebus screens`.** Files: `phoebus/interf_overview.bob`, `phoebus/diag_ioc_health.bob`, `phoebus/settings.ini`,
 `tests/test_phoebus_screens.py`.
@@ -342,5 +371,5 @@ As built: the CA test checks that the access right itself is refused (DISP=1 alo
 - **Set in C5** from the real record length (§1): `max_points = 2048`, `ca_max_array_bytes = 65536`.
 - **D10 system units**, tried on the lab machine 2026-10-12 with the 55-shot replay: all checks passed (D10 has the
   list). Install steps are in each unit's header.
-- **Still open:** whether legacy HDF5 readers accept empty P40 arrays in place of zero-filled placeholders (deferred by
-  the user).
+- **Closed 2026-10-18:** empty P40 arrays. The main-branch writer has stored empty P40 arrays with `rigol_missing=True`
+  since `33ca795` (2026-05-12), so the store's empty arrays match the legacy files.

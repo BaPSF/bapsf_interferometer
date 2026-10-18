@@ -17,7 +17,8 @@ from streamer.payload import shot_variables
 from test_interf_analysis import HOST_TIME, REPO_ROOT, _assert_channels_equal
 # The live path: everything IocLink, the IOC host and its modules import.
 LIVE_MODULES = ["diag_ioc", "diag_ioc.framing", "diag_ioc.host", "diag_ioc.link", "diag_ioc.module", "diag_ioc.network",
-                "diag_ioc.outage", "diag_ioc.records", "interf_analysis", "interf_ioc", "interf_payload", "interf_shot"]
+                "diag_ioc.outage", "diag_ioc.records", "interf_analysis", "interf_file", "interf_ioc", "interf_payload", "interf_shot",
+                "interf_store"]
 
 
 def _shot(shot_number=3, **kw):

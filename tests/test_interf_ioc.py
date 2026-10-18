@@ -16,8 +16,8 @@ from interf_analysis import PORTS, analyze_shot, get_calibration_factor
 from interf_ioc import MAX_POINTS, NE_WINDOW_MS, PLASMA_LENGTH_M, InterferometerModule, LostShots, missing_text, time_text
 from interf_shot import SHOT_ZONE
 from interf_sim.synthetic import make_raw_shot
-from ioc_harness import (REPO, IocProcess, epics_client, free_port, have, isolated_epics_env, monitor_all, pva_available,
-                         read_pv, wait_for)
+from ioc_harness import (REPO, IocProcess, epics_client, free_port, have, interferometer_config, isolated_epics_env, monitor_all,
+                         publish, pva_available, read_pv, wait_for)
 
 DEPLOY = REPO / "deploy" / "diag-ioc"
 WINDOW_MS = (0.1, 0.3)  # inside the 0.65 ms synthetic records, so NE_MEAN is a number
@@ -26,7 +26,7 @@ DAY_S = 86400.0
 # 2026-10-09 14:30:00.125 PDT; each test publishes on its own date (day offset), so SHOT:LOST baselines never mix.
 T0 = datetime.datetime(2026, 10, 9, 14, 30, 0, tzinfo=SHOT_ZONE).timestamp() + 0.125
 CHAIN = ["SHOT:NUM", "SHOT:DATE", "SHOT:TIME_SOURCE", "SHOT:HOST_TIME", "SHOT:TIME_STR", "SHOT:CRIT_PATH", "STAT:TRIG_LAG",
-         "SHOT:LOST", "SHOT:MISSING"] + [f"{p.name}:{s}" for p in PORTS for s in ("TIME_ARRAY", "PHASE", "NE", "NE_MEAN")]
+         "SHOT:LOST", "SHOT:MISSING"] + [f"{p.name}:{s}" for p in PORTS for s in ("TIME_ARRAY", "PHASE", "NE", "MISSING", "NE_MEAN")]
 
 
 def _shot(day, number, n=SAMPLES, **kw):
@@ -36,28 +36,6 @@ def _shot(day, number, n=SAMPLES, **kw):
 
 def _expected(shot, ports=PORTS):
 	return analyze_shot(shot, ports=ports, plasma_length=PLASMA_LENGTH_M, max_points=MAX_POINTS, ne_window_ms=WINDOW_MS)
-
-
-def _config(prefix, listen):
-	"""The deployed config's sizes and access file, with a private prefix and link."""
-	deployed = tomllib.loads((DEPLOY / "interferometer.toml").read_text())
-	return f"""
-[ioc]
-name = "{prefix}:IOC"
-ca_max_array_bytes = {deployed["ioc"]["ca_max_array_bytes"]}
-acf = "{(DEPLOY / deployed["ioc"]["acf"]).as_posix()}"
-
-[[module]]
-name = "interferometer"
-factory = "interf_ioc:InterferometerModule"
-prefix = "{prefix}"
-listen = "{listen}"
-stale_seconds = 60
-
-[module.options]
-max_points = {deployed["module"][0]["options"]["max_points"]}
-ne_window_ms = [{WINDOW_MS[0]}, {WINDOW_MS[1]}]
-"""
 
 
 class OptionTests(unittest.TestCase):
@@ -187,7 +165,7 @@ class RecordLayoutTests(unittest.TestCase):
 				self.assertEqual((key, list(value)), ("Q:group", ["X:SHOT"]))
 				fields.update(value["X:SHOT"])
 		expected = {"", "num", "date", "time_source", "host_time", "lost", "missing"}
-		expected |= {f"{p.name.lower()}.{k}" for p in PORTS for k in ("time_array", "phase", "ne", "ne_mean")}
+		expected |= {f"{p.name.lower()}.{k}" for p in PORTS for k in ("time_array", "phase", "ne", "missing", "ne_mean")}
 		self.assertEqual(set(fields), expected)
 		self.assertEqual([name for name, spec in fields.items() if "+trigger" in spec], ["p40.ne_mean"])
 		self.assertEqual(fields[""]["+type"], "meta")
@@ -203,6 +181,7 @@ class RecordLayoutTests(unittest.TestCase):
 		for name in ("P40:TIME_ARRAY", "P40:PHASE", "P40:NE"):
 			self.assertEqual((len(p40[name][0]), p40[name][1]["severity"]), (0, INVALID_ALARM), name)
 		self.assertTrue(math.isnan(p40["P40:NE_MEAN"][0]))
+		self.assertEqual(p40["P40:MISSING"], ("synthetic shot without Rigol", {"timestamp": shot.shot_time}))  # no alarm
 
 
 class _IocTestCase(unittest.TestCase):
@@ -213,7 +192,7 @@ class _IocTestCase(unittest.TestCase):
 	def setUpClass(cls):
 		cls.prefix = f"{cls.PREFIX_STEM}{os.getpid()}"
 		cls.listen = f"tcp:127.0.0.1:{free_port()}"
-		cls.ioc = cls.enterClassContext(IocProcess(_config(cls.prefix, cls.listen), f"{cls.prefix}:IOC:HEARTBEAT"))
+		cls.ioc = cls.enterClassContext(IocProcess(interferometer_config(cls.prefix, cls.listen, WINDOW_MS), f"{cls.prefix}:IOC:HEARTBEAT"))
 		cls.link = cls.enterClassContext(IocLink(cls.listen, encode=interf_payload.encode))
 		cls.epics = epics_client()
 
@@ -221,10 +200,7 @@ class _IocTestCase(unittest.TestCase):
 		return read_pv(f"{self.prefix}:{suffix}", as_string, self.ioc)
 
 	def _publish(self, shot, timeout=15):
-		"""Send `shot` and wait until SHOT:NUM shows it (number and time)."""
-		self.link.write(shot)
-		wait_for(lambda: (d := self._read("SHOT:NUM"))["value"] == shot.shot_number and abs(d["timestamp"] - shot.shot_time) < 1e-5,
-		         timeout, f"shot {shot.shot_number} at {shot.shot_time} on SHOT:NUM\n{self.ioc.log()}")
+		publish(self.link, shot, self.prefix, self.ioc, timeout)
 
 
 @unittest.skipUnless(have("softioc", "epics"), "needs softioc and pyepics (pip install -e '.[ioc,clients]' -c constraints.txt)")
@@ -235,6 +211,9 @@ class InterferometerIocTests(_IocTestCase):
 		"""(the record's NORD values, metadata): pyepics may pad a waveform to NELM."""
 		data = self._read(suffix)
 		return np.asarray(data["value"]).ravel()[:int(self._read(f"{suffix}.NORD")["value"])], data
+
+	def _port_missing(self):
+		return {p.name: self._read(f"{p.name}:MISSING", as_string=True)["value"] for p in PORTS}
 
 	def _assert_published(self, shot):
 		expected = _expected(shot)
@@ -252,6 +231,9 @@ class InterferometerIocTests(_IocTestCase):
 				np.testing.assert_array_equal(read, values, err_msg=f"{name}:{suffix}")
 				self.assertEqual(data["severity"], INVALID_ALARM if port.missing else NO_ALARM, f"{name}:{suffix}")
 				self.assertAlmostEqual(data["timestamp"], shot.shot_time, places=5, msg=f"{name}:{suffix}")
+			reason = self._read(f"{name}:MISSING", as_string=True)
+			self.assertEqual(reason["value"], port.missing or "", f"{name}:MISSING")
+			self.assertAlmostEqual(reason["timestamp"], shot.shot_time, places=5, msg=f"{name}:MISSING")
 			mean = self._read(f"{name}:NE_MEAN")
 			if math.isnan(port.ne_mean):
 				self.assertTrue(math.isnan(mean["value"]))
@@ -275,6 +257,17 @@ class InterferometerIocTests(_IocTestCase):
 		self._assert_published(shot)
 		self.assertIn("rigol: synthetic shot without Rigol", self._read("SHOT:MISSING", as_string=True)["value"])
 		self.assertEqual(len(self._array("P40:NE")[0]), 0)
+		self.assertEqual(self._port_missing(), {"P20": "", "P29": "", "P40": "synthetic shot without Rigol"})  # no "rigol: " prefix
+
+	def test_a_shot_without_c4_gives_p29_the_lecroy_reason(self):
+		shot = _shot(3, 2)
+		reason = "C4 read failed (timeout)"  # as interf_raw reports a failed channel: missing["lecroy"], C4 not in lecroy
+		shot = dataclasses.replace(shot, lecroy={ch: v for ch, v in shot.lecroy.items() if ch != "C4"},
+		                           missing={**shot.missing, "lecroy": reason})
+		self._publish(shot)
+		self._assert_published(shot)
+		missing = self._port_missing()
+		self.assertEqual((missing["P29"], missing["P20"]), (reason, ""))
 
 	def test_lost_counts_gaps_and_resets(self):
 		def lost():
@@ -296,7 +289,7 @@ class InterferometerIocTests(_IocTestCase):
 		np.testing.assert_array_equal(self._array("CFG:NE_WINDOW_MS")[0], WINDOW_MS)
 
 	def test_back_to_back_publishing_waits_for_every_ack(self):
-		# test_diag_ioc covers the ack on a 3-record chain; this is the interferometer's 21 records.
+		# test_diag_ioc covers the ack on a 3-record chain; this is the interferometer's 24 records.
 		shots = [_shot(6, i) for i in range(8)]
 		for shot in shots[:-1]:  # as fast as the link takes them; the link and mailbox may drop some, which is fine here
 			self.link.write(shot)

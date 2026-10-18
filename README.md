@@ -3,7 +3,7 @@
 Acquisition and analysis for the BaPSF microwave interferometers at ports 20, 29, and 40.
 
 > **Refactor in progress:** branch `refactor/linux-epics-daq`.
-> Acquisition now reads both scopes directly over Ethernet on Linux and stops once it has the raw samples. Nothing is written to disk but the log and the shot counter, and no phase is computed in the loop. With `INTERF_IOC_LINK` set, each shot also goes to the live analysis IOC, which publishes it to EPICS. The HDF5 layout below is for files written by the previous acquisition, which ran on Windows and read LeCroy `.trc` files.
+> Acquisition now reads both scopes directly over Ethernet on Linux and stops once it has the raw samples. It writes nothing to disk but its log and the shot counter, and computes no phase in the loop. With `INTERF_IOC_LINK` set, each shot also goes to the live analysis IOC, which publishes it to EPICS. `interf_store`, a separate process fed only by the IOC's PVA group, writes the IOC's shots to the daily HDF5 file in the layout below, which the previous acquisition (on Windows, from LeCroy `.trc` files) also wrote.
 
 Requires Python 3.11 or later (developed on 3.14). Acquisition runs on **Linux only**, because the Rigol deadline uses `signal.setitimer`. `pip install .` installs the dependencies, including [`lab-scopes`](https://github.com/hjia94/lab_scopes) `v0.4.2`, which provides both scope drivers and reads the LeCroy trigger time as America/Los_Angeles (on Windows it also installs `tzdata`).
 
@@ -51,7 +51,7 @@ LECROY_IP=<address> python interf_main.py
 
 ### Configuration
 
-Each variable is read from the environment at startup; unset means the default. The first three are in [interf_main.py](interf_main.py), `INTERF_TRIG_LAG_MAX_S` in [interf_shot.py](interf_shot.py), the rest in [interf_raw.py](interf_raw.py). The time zone of trigger times and shot dates is always America/Los_Angeles, not a setting.
+Each variable is read from the environment at startup; unset means the default. The first three are in [interf_main.py](interf_main.py), `INTERF_TRIG_LAG_MAX_S` in [interf_shot.py](interf_shot.py), `INTERF_DATA_DIR` in [interf_store.py](interf_store.py) (not acquisition), the rest in [interf_raw.py](interf_raw.py). The time zone of trigger times and shot dates is always America/Los_Angeles, not a setting.
 
 | Variable | Default | Meaning |
 |---|---|---|
@@ -59,6 +59,7 @@ Each variable is read from the environment at startup; unset means the default. 
 | `INTERF_IOC_LINK` | unset | `unix:/path` or `tcp:host:port` of a `diag_ioc` listener. When set, every shot is also sent there for live analysis; unset, acquisition runs exactly as before |
 | `INTERF_SHOT_STATE` | `~/data/state/shot_counter.json` | Shot counter state (date and last number). Keep it on a local disk and outside `INTERF_LOG_DIR`, whose rotated files are deleted. At start, counting resumes after the later of this file and the last shot line in `interf_acquire.log` and its newest rotated copy. An unreadable file is logged as a warning; only if the logs hold no shot either can a running day repeat numbers |
 | `INTERF_TRIG_LAG_MAX_S` | 5 s | Largest normal host time − trigger time; outside 0 to this, a clock problem is logged. 0 disables the check |
+| `INTERF_DATA_DIR` | `~/data/interferometer` | `interf_store`'s directory of the daily HDF5 files, created if missing; `interf-store.service` sets `/var/lib/interferometer/hdf5`. `--data-dir` overrides it |
 | `LECROY_IP` | `10.10.10.10` | **Placeholder; set it** |
 | `LECROY_CHANNELS` | `C1,C2,C3,C4` | Channels read, comma-separated. The first one carries the sweep counter used to detect a fresh capture. Each must be one of `C1` … `C<LECROY_N_CHANNELS>`; otherwise acquisition stops at startup with an error naming the bad entries, since a channel the scope lacks would cost a `LECROY_TIMEOUT` at every connection and every shot |
 | `LECROY_TIMEOUT` | 5 s | VICP socket timeout |
@@ -98,11 +99,25 @@ INTERF_IOC_LINK=unix:/run/diag-ioc/interferometer/link.sock LECROY_IP=<address> 
 
 - [deploy/diag-ioc/interferometer.toml](deploy/diag-ioc/interferometer.toml) is the production config, run by `diag-ioc@interferometer` from `/etc/diag-ioc/` with `readonly.acf` beside it. For a trial run, copy it and change the prefix, `listen` and `db_dir`.
 - Every PV of a shot carries the shot time as its timestamp. `SHOT:NUM` is set last, and the PVA group `<prefix>:SHOT` updates once per shot with every value of it. A CA client that falls behind can miss or mix values of a shot; only the group is atomic.
-- A port without data (P40 when the Rigol is missing, which is every shot replayed from LeCroy-only `.trc` files) gets empty arrays with INVALID severity, and `SHOT:MISSING` says why.
+- A port without data (P40 when the Rigol is missing, which is every shot replayed from LeCroy-only `.trc` files) gets empty arrays with INVALID severity. `<port>:MISSING` gives that port's own reason (`""` when it has data, no alarm), and `SHOT:MISSING` lists every reason of the shot.
 - Module options: `max_points` (2048; a 1,000,002-sample record gives 1953 points per port, so none are dropped), `ne_window_ms` (default 5 to 10 ms), `plasma_length_m` (0.4) and `ports` (default P20, P29, P40). `<port>:CAL`, `<port>:FREQ` and `CFG:NE_WINDOW_MS` show them; a change needs an IOC restart.
 - At every start the IOC writes `<config name>.db`, listing every record, into `[ioc] db_dir`. `[ioc] acf` installs an access file; `readonly.acf` makes every PV read-only over CA and PVA.
 - Each publish waits, at most 2 s, until the previous shot's records have all processed (`SHOT:ACK` reaches `STAT:PUBLISHED`), so no update mixes two shots. `STAT:ACK_TIMEOUTS` counts the waits that timed out and should stay 0.
 - Each published shot logs one INFO line to the IOC log (stdout; the journal under systemd): `module interferometer timing <YYYYMMDD>-<number> (ms) | decode <ms> | P20 <ms> | P29 <ms> | P40 <ms> | ack wait <ms> | publish <ms>`. `decode` turns the link message into arrays, each port is its own analysis, `ack wait` is the wait above, and `publish` sets the records. A shot whose analysis or publish failed logs none. `STAT:ANALYSIS_S` is unchanged: the whole of analysis, ack wait and publish.
+
+### HDF5 store
+
+```bash
+python -m interf_store --prefix LAPD:DIAG:INTERF   # or interf-store; --data-dir, default $INTERF_DATA_DIR or ~/data/interferometer
+```
+
+[interf_store.py](interf_store.py) monitors the PVA group `<prefix>:SHOT` (p4p, from the `clients` extra) and writes each shot to `interferometer_data_<YYYY-MM-DD>.hdf5` (the shot's Los Angeles date), in the layout below.
+- It is its own process, fed only by the group. Acquisition and the IOC never import it, call it or wait on it, and its monitor callback only queues the shot (at most 100).
+- It is best effort: a shot published while the store is stopped or disconnected, or dropped on a full queue or a failed write (a file error, a full disk), is not stored and is logged. Gaps in the shot number are logged. The raw archive (`--raw-output`) is the complete record.
+- A shot's date, number and data all come from the same group update. The dataset name is the shot time, the LeCroy trigger time.
+- The IOC sends its latest shot to every new connection, so after a restart or reconnect that shot is found already stored and skipped. Before the IOC's first shot after a start (date or timestamp 0) it sends no shot, and nothing is stored.
+- SIGTERM or Ctrl-C stores what is queued and logs a summary: shots stored, already stored, not received (gaps), dropped, failed writes and unreadable updates.
+- [deploy/systemd/interf-store.service](deploy/systemd/interf-store.service) runs it as `diag-ioc`, with `INTERF_DATA_DIR=/var/lib/interferometer/hdf5`. systemd creates `/var/lib/interferometer` as 0755, and the files come out 0644, so every local user can read them and only `diag-ioc` can write. Install steps are in its header.
 
 ## Offline simulation
 
@@ -166,12 +181,13 @@ for shot in iter_shots(ReplayLeCroy(trc_shots()[:10])):
 | [interf_shot.py](interf_shot.py) | Shot time (LeCroy trigger time, Los Angeles zone, host-time fallback) and the persisted per-day shot counter |
 | [interf_payload.py](interf_payload.py) | Live-link message of one shot (`encode` for `IocLink`, `decode` for the IOC); independent of `streamer/` |
 | [interf_archive.py](interf_archive.py) | Reads the `--raw-output` ADIOS archive back shot by shot (`iter_steps`, `read_step`, `decode`) for offline reanalysis with `analyze_shot`. Kept outside `streamer/`, which another group maintains |
-| [interf_file.py](interf_file.py) | HDF5 schema and writers for the daily interferometer file (previous acquisition) |
+| [interf_file.py](interf_file.py) | HDF5 schema and writers for the daily interferometer file (previous acquisition, and `interf_store`) |
+| [interf_store.py](interf_store.py) | `interf-store`: a separate process, PVA client of the IOC's `<prefix>:SHOT` group, that stores each shot in the daily HDF5 file |
 | [interf_sim/](interf_sim/) | Offline simulation: scope fakes that replay `.trc` files, `synthetic.py`, which generates shots with a known phase, and `listen.py`, a development listener for the IOC link |
 | [diag_ioc/](diag_ioc/) | Diagnostic IOC host (pythonSoftIOC; Linux). `python -m diag_ioc --config FILE.toml` serves each configured module's records over CA and PVA, plus `STAT:*` link and analysis status, the publish ack (`SHOT:ACK`, `STAT:PUBLISHED`, `STAT:ACK_TIMEOUTS`) and the devIocStats health records. Modules subclass `module.DiagnosticModule` (`create_records`, which returns its chain's last record, `analyze`, `publish`) and build records with `records.py`. `link.py` is the latest-wins shot link from acquisition (`IocLink`) to the IOC (`LinkListener`, which refuses a message announcing more than 1 GiB, about 80× today's shot), with its own framing (`framing.py`) and allow-list (`network.py`), so the package never imports `streamer/`; `outage.py` logs a persisting failure when it starts, every 5 min, and on recovery. Importing the package never loads softioc, so acquisition can use the link. `pip install -e '.[ioc]' -c constraints.txt` |
 | [interf_ioc.py](interf_ioc.py) | The interferometer's `diag_ioc` module: link message -> `analyze_shot` -> the D4 PVs and the PVA group `<prefix>:SHOT` |
 | [deploy/diag-ioc/](deploy/diag-ioc/) | `interferometer.toml`, the production IOC config, and `readonly.acf`, its read-only access file |
-| [deploy/systemd/](deploy/systemd/) | System units, run as the `diag-ioc` account: `diag-ioc@.service` (one IOC per `/etc/diag-ioc/<name>.toml`) and `interf-acquire.service` (acquisition), with `acquire.env.example`; install steps in their headers |
+| [deploy/systemd/](deploy/systemd/) | System units, run as the `diag-ioc` account: `diag-ioc@.service` (one IOC per `/etc/diag-ioc/<name>.toml`), `interf-acquire.service` (acquisition) and `interf-store.service` (the HDF5 store), with `acquire.env.example`; install steps in their headers |
 | [constraints.txt](constraints.txt) | Exact versions of the EPICS stack (`softioc`, `epicscorelibs`, `pvxslibs`, `p4p`, `pyepics`), for `pip install -c` |
 | [docs/](docs/) | `ARCHITECTURE.md`: decisions D1–D15 for the live analysis and EPICS IOC; `HANDOFF_live_epics.md`: the commit-by-commit plan |
 | [streamer/](streamer/) | Buffered ADIOS/socket raw output, metadata encoding, consumer, security, compression, and remote restart support |
@@ -188,6 +204,12 @@ Each daily file is named `interferometer_data_YYYY-MM-DD.hdf5`. Its groups each 
 | `time_array/` | LeCroy time base | ms |
 | `time_array_p40/` | Rigol time base, separate from `time_array` | ms |
 
-- `phase_p40` datasets have per-shot attributes `rigol_missing` and `rigol_missing_reason`. When the Rigol was down, the dataset is a zero-filled placeholder.
+- `phase_p40` datasets have per-shot attributes `rigol_missing` and `rigol_missing_reason`. When the Rigol was down, the previous acquisition wrote empty arrays since `33ca795` (2026-05-12), and a zero-filled placeholder before.
 - Files from before port 40 was added have only `phase_p20`, `phase_p29`, and `time_array`.
 - Timestamps mark when the LeCroy saved its C4 file, which can be slightly later than the shot.
+
+Files written by `interf_store` differ:
+- Dataset names are the LeCroy trigger time.
+- A missing P20 or P29 is stored as NaN, as long as `time_array`, since legacy readers plot both phases against that one axis. Its dataset carries `missing` (true) and `missing_reason`. With both missing, all three are empty. A missing P40 has empty `phase_p40` and `time_array_p40` and carries `rigol_missing` and `rigol_missing_reason`, as before. No missing port is ever written as zeros, and each reason is that port's own `<port>:MISSING`. `interf_plot.py` from `main` fails on a NaN shot (its `np.min` axis limits); the Phoebus screens (C7) replace it.
+- `time_array` holds port 20's time axis, or port 29's when port 20 has none.
+- Each `phase_p20` dataset carries `shot_date`, `shot_number` and `time_source`.

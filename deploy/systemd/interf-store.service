@@ -1,0 +1,37 @@
+# The HDF5 store (interf_store) as a system unit, beside diag-ioc@interferometer: monitors the IOC's PVA group
+# <prefix>:SHOT and writes the daily files. Its own process: acquisition and the IOC never wait on it (D9).
+# Install as root, after diag-ioc@.service's steps (the diag-ioc account, /opt/bapsf_interferometer and its venv,
+# installed with .venv/bin/pip install -e '.[ioc,clients]' -c constraints.txt; clients brings p4p):
+#   cp deploy/systemd/interf-store.service /etc/systemd/system/
+#   # optional: /etc/interferometer/store.env for EPICS_PVA_* and overrides (e.g. INTERF_DATA_DIR)
+#   systemctl daemon-reload && systemctl enable --now interf-store
+# Log: journalctl -u interf-store. Files: /var/lib/interferometer/hdf5/interferometer_data_YYYY-MM-DD.hdf5. systemd
+# creates the state directory 0755 and interf_store the hdf5 subdirectory; with the default umask both are 0755 and
+# the files 0644, so every local user can read them and only diag-ioc can write.
+[Unit]
+Description=Interferometer HDF5 store (interf_store, PVA client of diag-ioc@interferometer)
+After=network-online.target diag-ioc@interferometer.service
+Wants=network-online.target
+# After= only: the store waits for the group itself (p4p reconnects). No Wants=, Requires=, BindsTo= or PartOf= on the
+# IOC, so the store never starts or stops it, and an IOC stop or crash never stops the store.
+
+[Service]
+Type=simple
+# The account of the IOC and acquisition (D10).
+User=diag-ioc
+Group=diag-ioc
+WorkingDirectory=/opt/bapsf_interferometer
+# /var/lib/interferometer, shared with interf-acquire.service (its shot counter); the files go in its hdf5 subdirectory.
+StateDirectory=interferometer
+Environment=INTERF_DATA_DIR=/var/lib/interferometer/hdf5
+Environment=PYTHONUNBUFFERED=1
+EnvironmentFile=-/etc/interferometer/store.env
+ExecStart=/opt/bapsf_interferometer/.venv/bin/python -m interf_store --prefix LAPD:DIAG:INTERF
+# SIGTERM: stops monitoring, stores what is queued (up to interf_store.STOP_TIMEOUT_S), logs a summary and exits.
+KillSignal=SIGTERM
+TimeoutStopSec=30
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

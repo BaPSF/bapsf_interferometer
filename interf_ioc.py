@@ -23,7 +23,7 @@ from interf_shot import clock, local_time, shot_id
 MAX_POINTS = 2048
 NE_WINDOW_MS = (5.0, 10.0)
 PLASMA_LENGTH_M = 0.4
-MISSING_TEXT_BYTES = 1024  # SHOT:MISSING, NUL included
+MISSING_TEXT_BYTES = 1024  # SHOT:MISSING and each <port>:MISSING, NUL included
 _OPTIONS = {"ports", "max_points", "ne_window_ms", "plasma_length_m"}
 _PORT_KEYS = {"name", "scope", "ref", "plasma", "freq_hz"}
 _PORT_NAME = re.compile(r"[A-Za-z][A-Za-z0-9_]{0,7}")  # a PV name part, and lower-cased a PVA group field name
@@ -133,6 +133,7 @@ class InterferometerModule(DiagnosticModule):
 				((p, "time_array"), partial(waveform, builder, f"{p}:TIME_ARRAY", self.max_points, egu="ms", desc="time axis, trigger-relative")),
 				((p, "phase"), partial(waveform, builder, f"{p}:PHASE", self.max_points, egu="rad", desc="phase")),
 				((p, "ne"), partial(waveform, builder, f"{p}:NE", self.max_points, egu="m^-3", desc="path-averaged density")),
+				((p, "missing"), partial(passive, builder.longStringIn, f"{p}:MISSING", "why this port has no data", length=MISSING_TEXT_BYTES)),
 				((p, "ne_mean"), partial(scalar, builder, f"{p}:NE_MEAN", egu="m^-3", desc="mean NE over CFG:NE_WINDOW_MS")),
 			]
 		keys, makes = zip(*makers)
@@ -157,6 +158,7 @@ class InterferometerModule(DiagnosticModule):
 			field = port.name.lower()
 			for key in ("time_array", "phase", "ne"):
 				add_group(r[(port.name, key)], group, {f"{field}.{key}": {"+type": "scalar"}})
+			add_group(r[(port.name, "missing")], group, {f"{field}.missing": {"+type": "plain"}})
 			trigger = {"+trigger": "*"} if port is self.ports[-1] else {}
 			add_group(r[(port.name, "ne_mean")], group, {f"{field}.ne_mean": {"+type": "plain", **trigger}})
 
@@ -187,6 +189,8 @@ class InterferometerModule(DiagnosticModule):
 			bad = {"severity": INVALID_ALARM, "alarm": READ_ALARM} if port.missing else {}
 			for key, values in (("time_array", port.t_ms), ("phase", port.phase), ("ne", port.ne)):
 				r[(name, key)].set(values, timestamp=ts, **bad)
+			# This port's own reason; no alarm (the arrays carry INVALID). SHOT:MISSING has every reason.
+			r[(name, "missing")].set(fit_text(port.missing or "", MISSING_TEXT_BYTES), timestamp=ts)
 			if not bad and math.isnan(port.ne_mean):  # window not inside the trace, see PortResult.ne_mean
 				bad = {"severity": INVALID_ALARM, "alarm": UDF_ALARM}
 			r[(name, "ne_mean")].set(port.ne_mean, timestamp=ts, **bad)

@@ -1,4 +1,5 @@
-"""Shared test support: link helpers, and diag_ioc in a subprocess (C4-C7) with isolated EPICS and a CA client.
+"""Shared test support: link helpers, and diag_ioc and its clients in subprocesses (C4-C7) with isolated EPICS and a CA
+client.
 
 IOC data is read back over CA (pyepics), which also works where PVA cannot (no kernel IPv6). Importing this
 module needs neither softioc nor pyepics.
@@ -12,6 +13,7 @@ import sys
 import tempfile
 import threading
 import time
+import tomllib
 from pathlib import Path
 
 from diag_ioc.host import READY_MESSAGE
@@ -129,59 +131,86 @@ def wait_for(predicate, timeout, what):
 		time.sleep(0.1)
 
 
-class IocProcess:
-	"""`python -m diag_ioc` on `config_text` with isolated EPICS, ready once `ready_pv` connects over CA.
+def publish(link, shot, prefix, ioc, timeout=15):
+	"""Send `shot` over `link` (an IocLink) and wait until <prefix>:SHOT:NUM shows it (number and time) on `ioc`.
 
-	A context manager; `output` collects the process's stdout and stderr lines, and every failure message
-	includes them. The process imports test modules from tests/ (PYTHONPATH). The config is `dir`/ioc.toml, so with
-	no db_dir the IOC writes `db_path`.
+	One at a time: the link and the IOC mailbox are latest-wins, so shots written back to back may be dropped.
+	"""
+	link.write(shot)
+	try:
+		wait_for(lambda: (d := read_pv(f"{prefix}:SHOT:NUM", ioc=ioc))["value"] == shot.shot_number
+		         and abs(d["timestamp"] - shot.shot_time) < 1e-5,
+		         timeout, f"shot {shot.shot_number} at {shot.shot_time} on {prefix}:SHOT:NUM")
+	except AssertionError as e:
+		raise AssertionError(f"{e}\n{ioc.log()}") from None
+
+
+def interferometer_config(prefix, listen, ne_window_ms):
+	"""diag_ioc config text: the deployed interferometer config's sizes and access file, with a private prefix and link."""
+	deploy = REPO / "deploy" / "diag-ioc"
+	deployed = tomllib.loads((deploy / "interferometer.toml").read_text())
+	return f"""
+[ioc]
+name = "{prefix}:IOC"
+ca_max_array_bytes = {deployed["ioc"]["ca_max_array_bytes"]}
+acf = "{(deploy / deployed["ioc"]["acf"]).as_posix()}"
+
+[[module]]
+name = "interferometer"
+factory = "interf_ioc:InterferometerModule"
+prefix = "{prefix}"
+listen = "{listen}"
+stale_seconds = 60
+
+[module.options]
+max_points = {deployed["module"][0]["options"]["max_points"]}
+ne_window_ms = [{ne_window_ms[0]}, {ne_window_ms[1]}]
+"""
+
+
+class ChildProcess:
+	"""`python <args>` from the repo root with isolated EPICS and tests/ on PYTHONPATH (minus the `drop_env` variables).
+
+	A context manager that stops it on exit; `output` collects its stdout and stderr lines. One run per instance.
 	"""
 
-	def __init__(self, config_text, ready_pv, start_timeout=30.0):
-		self.config_text = config_text
-		self.ready_pv = ready_pv
-		self.start_timeout = start_timeout
+	def __init__(self, args, drop_env=()):
+		self.args = [str(a) for a in args]
+		self.drop_env = drop_env
 		self.output = []
 		self.process = None
-		self._dir = None
 
 	def __enter__(self):
-		self._dir = tempfile.TemporaryDirectory()
-		self.dir = Path(self._dir.name)
-		self.db_path = self.dir / "ioc.db"
-		path = self.dir / "ioc.toml"
-		path.write_text(self.config_text)
 		paths = [str(REPO), str(TESTS)] + ([os.environ["PYTHONPATH"]] if os.environ.get("PYTHONPATH") else [])
 		env = dict(os.environ, **isolated_epics_env(), PYTHONPATH=os.pathsep.join(paths), PYTHONUNBUFFERED="1")
-		env.pop("EPICS_CA_MAX_ARRAY_BYTES")  # the client's; the IOC takes the config's ca_max_array_bytes, as deployed
-		self.process = subprocess.Popen([sys.executable, "-m", "diag_ioc", "--config", str(path)], cwd=REPO, env=env,
+		for key in self.drop_env:
+			env.pop(key, None)
+		self.process = subprocess.Popen([sys.executable, *self.args], cwd=REPO, env=env,
 		                                stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
 		threading.Thread(target=self._collect, daemon=True).start()
-		try:
-			self._wait_ready()
-		except BaseException:
-			self.__exit__(None, None, None)
-			raise
 		return self
 
 	def _collect(self):
 		for line in self.process.stdout:
 			self.output.append(line.rstrip("\n"))
 
-	def _wait_ready(self):
-		# The ready log line comes after every module's listener is bound (HEARTBEAT exists earlier, from
-		# iocInit); the PV connection then proves the CA client reaches the IOC.
-		pv = epics_client().PV(self.ready_pv)
-		deadline = time.monotonic() + self.start_timeout
+	def lines(self, text):
+		"""Output lines so far that contain `text`."""
+		return [line for line in list(self.output) if text in line]
+
+	def wait_for_lines(self, text, count=1, timeout=30.0):
+		"""Wait until `count` output lines contain `text`; AssertionError with the output on timeout or exit."""
+		def enough():
+			if len(self.lines(text)) >= count:
+				return True
+			if self.process.poll() is not None:
+				raise AssertionError(f"{' '.join(self.args)} exited with {self.process.returncode} before {count} lines "
+				                     f"with {text!r}")
+			return False
 		try:
-			while not (any(READY_MESSAGE in line for line in self.output) and pv.wait_for_connection(timeout=0.5)):
-				if self.process.poll() is not None:
-					raise RuntimeError(f"diag_ioc exited with {self.process.returncode}:\n{self.log()}")
-				if time.monotonic() > deadline:
-					raise RuntimeError(f"diag_ioc not ready ({self.ready_pv}) after {self.start_timeout} s:\n{self.log()}")
-				time.sleep(0.1)
-		finally:
-			pv.disconnect()
+			wait_for(enough, timeout, f"{count} lines with {text!r}")
+		except AssertionError as e:
+			raise AssertionError(f"{e}\n{self.log()}") from None
 
 	def log(self):
 		return "\n".join(self.output)
@@ -195,14 +224,57 @@ class IocProcess:
 			except subprocess.TimeoutExpired:
 				self.process.kill()
 				self.process.wait()
-				raise AssertionError(f"diag_ioc ignored SIGTERM for {timeout} s:\n{self.log()}") from None
+				raise AssertionError(f"{' '.join(self.args)} ignored SIGTERM for {timeout} s:\n{self.log()}") from None
 		return self.process.returncode
 
 	def __exit__(self, *exc):
-		try:
-			if self.process is not None and self.process.poll() is None:
+		if self.process is not None:
+			try:
 				self.stop()
-		finally:
-			if self.process is not None:
+			finally:
 				self.process.stdout.close()
+
+
+class IocProcess(ChildProcess):
+	"""`python -m diag_ioc` on `config_text`, ready once `ready_pv` connects over CA.
+
+	The process imports test modules from tests/. The config is `dir`/ioc.toml, so with no db_dir the IOC writes
+	`db_path`.
+	"""
+
+	def __init__(self, config_text, ready_pv, start_timeout=30.0):
+		self._dir = tempfile.TemporaryDirectory()
+		self.dir = Path(self._dir.name)
+		self.db_path = self.dir / "ioc.db"
+		config = self.dir / "ioc.toml"
+		config.write_text(config_text)
+		# The client's EPICS_CA_MAX_ARRAY_BYTES is dropped: the IOC takes the config's ca_max_array_bytes, as deployed.
+		super().__init__(["-m", "diag_ioc", "--config", config], drop_env=("EPICS_CA_MAX_ARRAY_BYTES",))
+		self.ready_pv = ready_pv
+		self.start_timeout = start_timeout
+
+	def __enter__(self):
+		try:
+			super().__enter__()
+			self._wait_ready()
+		except BaseException:
+			self.__exit__(None, None, None)
+			raise
+		return self
+
+	def _wait_ready(self):
+		# The ready log line comes after every module's listener is bound (HEARTBEAT exists earlier, from
+		# iocInit); the PV connection then proves the CA client reaches the IOC.
+		self.wait_for_lines(READY_MESSAGE, timeout=self.start_timeout)
+		pv = epics_client().PV(self.ready_pv)
+		try:
+			if not pv.wait_for_connection(timeout=self.start_timeout):
+				raise AssertionError(f"{self.ready_pv} did not connect in {self.start_timeout} s:\n{self.log()}")
+		finally:
+			pv.disconnect()
+
+	def __exit__(self, *exc):
+		try:
+			super().__exit__(*exc)
+		finally:
 			self._dir.cleanup()

@@ -40,7 +40,7 @@ the record timestamps are `host_time`. C4r (`4ee26b8`) replaced both, per D6, D1
 | D7 | Per-shot consistency | One timestamp per shot, `SHOT:NUM` set last, PVA group `<P>:SHOT` |
 | D8 | Outside group | Read-only access to documented PVs; nothing built for them |
 | D9 | Source of record | ADIOS raw archive; IOC-fed HDF5 is best effort |
-| D10 | Supervision | systemd system units (IOC and acquisition) as the `diag-ioc` account |
+| D10 | Supervision | systemd system units (IOC, acquisition and HDF5 store) as the `diag-ioc` account |
 | D11 | Dependencies | Exact pins for `softioc`, `epicscorelibs`, `pvxslibs`, `p4p` |
 | D12 | Repo layout | `diag_ioc` stays here until a 2nd diagnostic exists |
 | D13 | Agent roles | Local agent writes code; `test-on-Bobby` tests every commit on Linux with real `.trc` data |
@@ -69,8 +69,8 @@ the record timestamps are `host_time`. C4r (`4ee26b8`) replaced both, per D6, D1
 - Each module builds its records with `builder` and `diag_ioc/records.py`: one source of truth for names, NELM and
   publish order. A hand-written `.db` would duplicate every name.
 - The host writes the builder's records with `builder.WriteRecords()` to `<name>.db` (e.g. `interferometer.db` for
-  `interferometer.toml`) at every start, so a current file listing every module PV always exists: 37 for the
-  interferometer, its own 28 plus the host's 9 `STAT:*`/`SHOT:ACK` records. The `<P>:IOC:*` records are not in it:
+  `interferometer.toml`) at every start, so a current file listing every module PV always exists: 40 for the
+  interferometer, its own 31 plus the host's 9 `STAT:*`/`SHOT:ACK` records. The `<P>:IOC:*` records are not in it:
   softioc's `devIocStats()` loads them from its own template, outside the builder, and they are the standard
   devIocStats set, so a copy in the `.db` would add nothing. It goes in
   `[ioc] db_dir` (default: the config file's directory). The IOC runs as non-root (D10) and cannot write
@@ -102,6 +102,7 @@ use `LAPD:DIAG:<NAME>`. Units and names are the stable interface; everything els
 | `<P>:<port>:PHASE` | rad |
 | `<P>:<port>:NE` | m⁻³, path-averaged density |
 | `<P>:<port>:NE_MEAN` | m⁻³, mean over the `CFG:NE_WINDOW_MS` window |
+| `<P>:<port>:MISSING` | why this port has no data, `""` when it has; no alarm (its arrays carry INVALID) |
 | `<P>:<port>:CAL` | m⁻³/rad, calibration factor; fixed from config when the records are created |
 | `<P>:<port>:FREQ` | GHz, the port's interferometer frequency; fixed from config when the records are created |
 | `<P>:CFG:NE_WINDOW_MS` | ms, (start, stop) averaging window, 2 elements; default (5, 10), fixed from config when the records are created; to become adjustable from the screen later (D8) |
@@ -162,8 +163,8 @@ shot after an IOC start resets its baseline: a restart shows only as a gap in `S
   channel, so the client can see a dropped, duplicated or torn shot. This is inherent to CA. CA clients match a
   shot's records by identical timestamp and expire incomplete shots. Only the PVA group is atomic under client stalls,
   so `interf_store` uses it (D9).
-- Missing data is published as an empty array with INVALID alarm and the reason in `SHOT:MISSING`, never as
-  fabricated zeros.
+- Missing data is published as an empty array with INVALID alarm, the port's own reason in `<port>:MISSING` and
+  every reason of the shot in `SHOT:MISSING` (cut at 1023 bytes), never as fabricated zeros.
 
 ### D8. The outside group is a read-only client
 - Read access to the D4 PVs over CA/PVA, nothing else: no write access, no code or design changes for them, no
@@ -182,6 +183,26 @@ shot after an IOC start resets its baseline: a restart shows only as a gap in `S
 - `interf_store` subscribes to the PVA group `<P>:SHOT` with p4p (J, 2026-10-08), so each shot arrives as one complete
   update. J has run the same PVA workflow on the Linux machine for another application (`bapsf_tx`). Its callback
   only copies; file writes happen on its own thread.
+- **Separate process (J, 2026-10-18):** `interf_store` is its own process, fed only by `<P>:SHOT`. It runs in parallel
+  with acquisition, never inside the `interf_main` loop and never in series with it, and nothing in `interf_main`,
+  `interf_raw` or the IOC imports it, calls it or waits on it. The p4p callback never blocks: it only puts the value on
+  a bounded queue (100). On any write trouble (a full queue, a file error, a full disk) the store drops that shot, logs
+  it and goes on. A shot missing from HDF5 is acceptable, because the raw stream is the ground truth. A shot stored
+  with the wrong `shot_date` or `shot_number` is not, so both come from the `date` and `num` fields of that same group
+  update, and every gap is logged.
+- HDF5 keys: the shot ID (`shot_date` + `shot_number`, D14; attributes of the `phase_p20` dataset, with `time_source`)
+  and the trigger time (the dataset name). No PNG run or shot fields: HDF5 stores analyzed shots whether or not a PNG
+  run is going.
+- Missing ports in HDF5 (J, 2026-10-18): main never stored a shot with P20 or P29 missing (the error skipped the
+  shot), so every legacy shot has both phases as long as `time_array`, and the readers rely on that. A missing P20 or
+  P29 phase is NaN of that length, with `missing`/`missing_reason`; the shot is still stored. With both missing,
+  everything stays empty. P40 stays empty, as main writes it. Main's `interf_plot.py` axis limits (`np.min`) fail on a
+  NaN shot; Phoebus replaces it (C7).
+- As built (C6): a missing port's reason is its own `<port>:MISSING` group field (`missing_reason` on P20 and P29,
+  `rigol_missing_reason` on P40). An update with `date` or `timeStamp` 0 is the IOC's state before its first shot after
+  a start, not a shot, and is skipped; a duplicate after a reconnect is skipped and counted. On SIGTERM or SIGINT it
+  drains the queue and logs a summary. `interf-store.service` runs it as `diag-ioc` (D10) with
+  `INTERF_DATA_DIR=/var/lib/interferometer/hdf5`; without the variable the directory is `~/data/interferometer`.
 - The ADIOS raw archive is the record. Anything analyzed can be regenerated with `analyze_shot` over
   `interf_archive.iter_steps` (our reader; streamer only writes the archive). ADIOS carries no D14 fields. An archived shot is identified by its shot time, recomputed
   from the stored WAVEDESC with the D15 conversion, which also gives `shot_date`.
@@ -189,19 +210,26 @@ shot after an IOC start resets its baseline: a restart shows only as a gap in `S
 ### D10. Supervision: systemd
 - System units (J, 2026-10-12): `deploy/systemd/diag-ioc@.service`, one IOC per `/etc/diag-ioc/<name>.toml`, and
   `deploy/systemd/interf-acquire.service`, acquisition. Install steps are in each unit's header.
-- Both run as the non-root system account `diag-ioc` (no login), never as root and never as `softioc`, the account of
-  the old procServ IOC. Sharing one account, they need no group for the 0660 link socket. As root, EPICS locks all memory
+- The third unit (J, 2026-10-18): `deploy/systemd/interf-store.service`, the HDF5 store (C6, D9), under the same account.
+- All three run as the non-root system account `diag-ioc` (no login), never as root and never as `softioc`, the account
+  of the old procServ IOC. Sharing one account, the IOC and acquisition need no group for the 0660 link socket. As root, EPICS locks all memory
   in RAM (about 316 MiB vs 62 MiB idle in the bench). Production does not depend on a person's account.
 - Paths: code in `/opt/bapsf_interferometer` (root-owned, with its venv), config in `/etc/diag-ioc/<name>.toml`
   (+ optional `<name>.env` for `EPICS_*`) and `/etc/interferometer/acquire.env`, `db_dir` `/var/lib/diag-ioc`, link
   socket `/run/diag-ioc/<name>/link.sock`, acquisition log `/var/log/interferometer`, shot counter
-  `/var/lib/interferometer/shot_counter.json` (copied once from `~jia/data/state`, so numbering continues). Logs also go
-  to the journal.
+  `/var/lib/interferometer/shot_counter.json` (copied once from `~jia/data/state`, so numbering continues), HDF5 files
+  `/var/lib/interferometer/hdf5` (`INTERF_DATA_DIR`; systemd makes the state directory 0755 and the files come out 0644,
+  so every local user reads them and only `diag-ioc` writes), store overrides `/etc/interferometer/store.env`. Logs also
+  go to the journal.
 - Ordering: `interf-acquire` has `Wants=` and `After=` on `diag-ioc@interferometer` (and `network-online.target`), never
   `Requires=`/`BindsTo=`/`PartOf=`, so an IOC stop or crash never stops acquisition (D5). `After=` orders process starts,
-  not readiness: the IOC listens about 1.3 s after it starts, and the link's retry covers the gap.
-- Restart: the IOC `always`, acquisition `on-failure`, both 5 s apart; acquisition gets 30 s to stop, so SIGTERM can
-  finish the shot in flight and restore the trigger modes.
+  not readiness: the IOC listens about 1.3 s after it starts, and the link's retry covers the gap. `interf-store` has
+  only `After=` on the IOC (no `Wants=`, never `Requires=`/`BindsTo=`/`PartOf=`), so it never starts or stops the IOC;
+  p4p reconnects to the group by itself.
+- Restart: the IOC and the store `always`, acquisition `on-failure`, all 5 s apart; acquisition gets 30 s to stop, so
+  SIGTERM can finish the shot in flight and restore the trigger modes, and the store 30 s to drain its queue (its writer
+  gets 20 s, so the summary is logged before SIGKILL).
+- The prefix `LAPD:DIAG:INTERF` appears in the store unit's `ExecStart` (`--prefix`) only, never in code or tests (D4).
 - EPICS ports: the default CA 5064 and PVA 5075. The old procServ IOC (prefix `Interferometer:Port31:`) that used them
   was removed from the lab machine by its admin on 2026-10-11. If a second IOC runs on that host again, clients there,
   Phoebus included, must search the broadcast address, not unicast `127.0.0.1`, or only one IOC answers.
@@ -210,7 +238,8 @@ shot after an IOC start resets its baseline: a restart shows only as a gap in `S
   units, all checks passed on 2026-10-12: both run as `diag-ioc`, the socket and `/var` directories have the right
   owner and modes, `diag-ioc` can read the `.trc` data, a full replay (sent 55, dropped 0, failed 0; `SHOT:LOST`,
   `STAT:DROPPED`, `STAT:ACK_TIMEOUTS` 0), and an IOC SIGKILL mid-replay with restart and link recovery. The replay
-  does not exercise acquisition's `/var/log` and `/var/lib` paths; the first live run does.
+  does not exercise acquisition's `/var/log` and `/var/lib` paths; the first live run does. The store unit is not yet
+  tried on the lab machine.
 
 ### D11. Pin the EPICS stack
 - Exact versions of `softioc`, `epicscorelibs`, `pvxslibs` and (for C6) `p4p` in a constraints file (pyproject's `softioc>=4.7.2` is only a
@@ -286,8 +315,9 @@ shot after an IOC start resets its baseline: a restart shows only as a gap in `S
 
 ## 2. Open
 
-- Deferred by J: whether legacy HDF5 readers accept empty P40 arrays where the old writer stored zero-filled
-  placeholders (D9).
+- Nothing open. Closed 2026-10-18: empty P40 arrays (D9). The main-branch writer has stored empty P40 arrays with
+  `rigol_missing=True` since `33ca795` (2026-05-12), so the store's empty arrays match the legacy files; only files
+  from before then hold zero-filled placeholders.
 
 ## 3. Next steps (in order)
 

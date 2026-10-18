@@ -3,7 +3,7 @@
 # Install as root:
 #   useradd --system --home-dir /var/lib/diag-ioc --no-create-home --shell /usr/sbin/nologin diag-ioc
 #   git clone -b refactor/linux-epics-daq ... /opt/bapsf_interferometer   # root-owned; the service only reads it
-#   cd /opt/bapsf_interferometer && python3 -m venv .venv && .venv/bin/pip install -e '.[ioc]' -c constraints.txt
+#   cd /opt/bapsf_interferometer && python3 -m venv .venv && .venv/bin/pip install -e '.[ioc,clients]' -c constraints.txt   # clients: interf-store.service
 #   install -d /etc/diag-ioc && cp deploy/diag-ioc/interferometer.toml deploy/diag-ioc/readonly.acf /etc/diag-ioc/
 #   cp deploy/systemd/diag-ioc@.service /etc/systemd/system/ && systemctl daemon-reload
 [Unit]
