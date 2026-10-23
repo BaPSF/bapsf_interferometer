@@ -27,7 +27,7 @@ Environment=INTERF_SHOT_STATE=/var/lib/interferometer/shot_counter.json
 LogsDirectory=interferometer
 StateDirectory=interferometer
 Environment=PYTHONUNBUFFERED=1
-# LECROY_IP and the other acquisition settings (README, Configuration); it can also override the lines above.
+# LECROY_IP and the other acquisition settings (docs/ACQUISITION.md, Configuration); it can also override the lines above.
 EnvironmentFile=/etc/interferometer/acquire.env
 ExecStart=/opt/bapsf_interferometer/.venv/bin/python interf_main.py
 # SIGTERM finishes the shot being read, sets the LeCroy to NORM and the Rigol to RUN, then exits; a second signal
