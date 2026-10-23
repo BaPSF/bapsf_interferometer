@@ -43,6 +43,7 @@ clients = ["pyepics>=3.5.10", "p4p>=4.3.0"]
 interf-stream-consumer = "streamer.consumer:main"
 diag-ioc = "diag_ioc.__main__:main"
 interf-store = "interf_store:main"
+interf-wanstream-consumer = "streamer.wanstreamer_consumer:main"
 interf-stream-analyze = "streamer.analyze_remote_experiment:main"
 
 [tool.setuptools]
