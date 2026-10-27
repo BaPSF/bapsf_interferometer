@@ -87,3 +87,65 @@ In production the IOC, acquisition and the store run as systemd units from [depl
 | [tests/](tests/) | `python -m unittest discover -s tests -v` |
 
 The live GUI will be re-implemented under EPICS (Phoebus, C7). The HDF5 readers and the datarun merge scripts may return later on this branch.
+
+## From raw codes to phase and density
+
+`analyze_shot` runs this once per port: P20 and P29 come from the LeCroy, P40 from the Rigol. Read left to right. Box colors give the file: **orange** is the [`lab-scopes`](https://github.com/hjia94/lab_scopes) package (`src/lab_scopes/`), **blue** is [interf_analysis.py](interf_analysis.py), and grey slanted boxes are data.
+
+```mermaid
+flowchart LR
+  accTitle: Raw scope codes to phase and density
+  accDescr: Three stages, left to right. Stage 1 converts raw codes to volts in two lanes: the LeCroy lane unpacks the WAVEDESC for its scaling and timing fields, and the Rigol lane uses the scaling metadata queried at the read. Stage 2 removes each channel's mean and tracks the cross-spectral density phase window by window, then unwraps it. Stage 3 multiplies the phase by a calibration factor to give density, averages it over a window, and returns a PortResult.
+
+  %% Stages are linked subgraph to subgraph: a node edge leaving a subgraph would make Mermaid ignore its direction TB.
+  subgraph S1["① Raw codes → volts"]
+    direction TB
+    subgraph LC["LeCroy · P20, P29"]
+      direction TB
+      l0[/"int16 codes + WAVEDESC (346 B)"/]
+      l1["<b>LeCroyWavedesc</b> <i>lecroy/wavedesc.py</i><br/>struct.unpack, '=' native order<br/>vertical_gain f32@156 · vertical_offset f32@160<br/>horiz_interval f32@176 · horiz_offset f64@180<br/>wave_array_1 i32@60 · comm_type i16@32"]
+      l2["<b>.time_array</b><br/>t = horiz_offset + i · horiz_interval<br/>i = 0 … wave_array_1 / 2 − 1"]
+      l3["<b>lecroy_trace</b><br/>V = vertical_gain · code − vertical_offset<br/><i>wd.wd fields, not the text properties</i>"]
+      l0 --> l1 --> l2 --> l3
+    end
+    subgraph RG["Rigol · P40"]
+      direction TB
+      r0["<b>RigolDHO800.read_channel</b> <i>rigol/dho800.py</i><br/>:WAVeform: X/Y INCrement? ORigin? REFerence?"]
+      r1[/"uint16 codes + metadata"/]
+      r2["<b>rigol_trace</b><br/>V = (code − y_origin − y_reference) · y_increment<br/>t = x_origin + (i − x_reference) · x_increment"]
+      r0 --> r1 --> r2
+    end
+  end
+
+  subgraph S2["② Volts → phase"]
+    direction TB
+    m1["<b>_analyze_port</b><br/>subtract each channel's mean"]
+    m2["<b>correlation_spectrogram</b><br/>512-pt Hanning windows (FT_len)<br/>FFT → CSD, phase at peak bin"]
+    m3["<b>phase_from_raw</b><br/>np.unwrap − mean of first 5 windows"]
+    m1 --> m2 --> m3
+  end
+
+  subgraph S3["③ Phase → density"]
+    direction TB
+    c0["<b>get_calibration_factor</b><br/>cal (m⁻³/rad) from freq_hz, plasma_length"]
+    n1["<b>_analyze_port</b><br/>ne = phase · cal (m⁻³)"]
+    n2["<b>_window_mean</b><br/>ne_mean over ne_window_ms"]
+    out[/"PortResult: t_ms, phase, ne, ne_mean"/]
+    c0 --> n1 --> n2 --> out
+  end
+
+  S1 -->|"t, ref V, plasma V"| S2
+  S2 -->|"t_ms, phase (rad)"| S3
+
+  classDef lab fill:#fde2c4,stroke:#d55e00,color:#000
+  classDef ana fill:#d4e8f7,stroke:#0072b2,color:#000
+  classDef data fill:#eeeeee,stroke:#777777,color:#000
+  class l1,l2,r0 lab
+  class l3,r2,m1,m2,m3,c0,n1,n2 ana
+  class l0,r1,out data
+  style S1 fill:transparent,stroke:#999999
+  style S2 fill:transparent,stroke:#999999
+  style S3 fill:transparent,stroke:#999999
+  style LC fill:transparent,stroke:#bbbbbb,stroke-dasharray:4 3
+  style RG fill:transparent,stroke:#bbbbbb,stroke-dasharray:4 3
+```
