@@ -14,12 +14,23 @@ class RawOutputSettings:
 	output_interval_seconds: float = 3.0
 	compression_config: str | None = None
 	engine: str = "BP5"
+	launch_mode: str = "none"
+	launch_command: str | None = None
+	retry_interval_seconds: float = 1.0
+	reconnect_timeout_seconds: float = 0.0
 
 
 def positive_float(value):
 	converted = float(value)
 	if not math.isfinite(converted) or converted <= 0:
 		raise ValueError("must be greater than zero")
+	return converted
+
+
+def nonnegative_float(value):
+	converted = float(value)
+	if not math.isfinite(converted) or converted < 0:
+		raise ValueError("must be zero or greater")
 	return converted
 
 
@@ -57,6 +68,28 @@ def add_raw_output_arguments(parser, default_timing_log):
 		default="BP5",
 		help="ADIOS engine for a direct output (default: BP5)",
 	)
+	group.add_argument(
+		"--raw-output-launch-mode",
+		choices=("none", "system"),
+		default="none",
+		help="WANStreamer consumer launch policy (default: none)",
+	)
+	group.add_argument(
+		"--raw-output-launch-command",
+		help="trusted command template for WANStreamer LaunchMode=system",
+	)
+	group.add_argument(
+		"--raw-output-retry-interval-seconds",
+		type=positive_float,
+		default=1.0,
+		help="WANStreamer reconnect interval (default: 1)",
+	)
+	group.add_argument(
+		"--raw-output-reconnect-timeout-seconds",
+		type=nonnegative_float,
+		default=0.0,
+		help="WANStreamer reconnect deadline; zero retries forever (default: 0)",
+	)
 
 
 def settings_from_args(args):
@@ -70,4 +103,8 @@ def settings_from_args(args):
 		output_interval_seconds=args.period if args.period > 0 else 3.0,
 		compression_config=args.raw_output_compression_config,
 		engine=args.raw_output_engine,
+		launch_mode=args.raw_output_launch_mode,
+		launch_command=args.raw_output_launch_command,
+		retry_interval_seconds=args.raw_output_retry_interval_seconds,
+		reconnect_timeout_seconds=args.raw_output_reconnect_timeout_seconds,
 	)

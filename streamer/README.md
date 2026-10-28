@@ -58,9 +58,9 @@ selection on every step. Scalar values remain ADIOS scalars.
 
 ## Buffering and timing logs
 
-Output is queued and written by a dedicated background thread so a slow
-destination does not normally pause acquisition. The queue holds 600 seconds
-of output by default; change it with:
+For the original BP5 and single-socket paths, output is queued and written by
+a Python background thread so a slow destination does not normally pause
+acquisition. The queue holds 600 seconds of output by default; change it with:
 
 ```bash
 --raw-output-buffer-seconds SECONDS
@@ -72,6 +72,12 @@ snapshot is discarded to admit the newest snapshot. The selection advances
 through the queue so the same position is not always discarded. Remaining
 snapshots are flushed during an orderly producer shutdown.
 
+WANStreamer is the exception: it does not use this Python `BufferedIO`. The
+same duration and shot interval are converted to the native engine's
+`ReplayBufferSteps` capacity. WANStreamer retains unacknowledged steps,
+reconnects and replays in C++, applies backpressure rather than dropping when
+its queue is full, and drains the queue during an orderly close.
+
 Producer timing records are line-delimited JSON. The default simulator log is
 `interf_sim/log/raw_output.jsonl`; choose another path with
 `--raw-output-timing-log FILE`. It records each `raw_output.write` enqueue and
@@ -79,7 +85,9 @@ each `io.buffer_drop`, including the dropped and incoming shot indexes.
 
 The consumer timing log records socket receives and output writes. Remote
 launches, reconnects, retries, SSH-certificate waits, and notification failures
-are also recorded when those features are enabled.
+are also recorded when those features are enabled. Receive and write records
+include both the consumer-local step and the payload's run-wide shot index so
+analysis remains aligned across consumer restarts.
 
 ## Keys and connection security
 
@@ -103,7 +111,8 @@ The producer rejects plaintext socket connection information and envelopes
 with another format identifier. Socket output therefore requires
 `--raw-output-private-key FILE`; direct ADIOS output does not.
 
-Consumers require at least one producer IPv4 range in CIDR notation. Repeat
+The original single-socket consumer requires at least one producer IPv4 range
+in CIDR notation. Repeat
 `--allow-ip-range` to permit more than one range. Connections outside these
 ranges are closed before key authentication or protocol parsing. For an
 Internet- or site-facing listener, enforce the same restriction with a host
@@ -145,6 +154,8 @@ only after its output write completes, allowing the producer to distinguish a
 completed step from a stalled consumer or a connection that failed during
 transfer.
 
+This original consumer and protocol remain available unchanged.
+
 The connection information advertises protocol version 4. Its array framing
 supports arbitrary named NumPy arrays, encoded-payload lengths, shapes, dtypes,
 and optional operation metadata. The initial hello lists the first step's
@@ -167,6 +178,37 @@ python -m streamer.consumer connection.json received \
     --bind-host 0.0.0.0 \
     --advertise-host RECEIVER_HOST
 ```
+
+## WANStreamer consumer
+
+WANStreamer is an additional ADIOS2-native transfer mechanism. Start its
+separate consumer before a producer configured with the WANStreamer engine:
+
+```bash
+python -m streamer.wanstreamer_consumer wan-connection.json received \
+    --public-key keys/interf.pub \
+    --bind-host 0.0.0.0 \
+    --advertise-host consumer.example \
+    --timing-log wan-consumer-timing.jsonl
+```
+
+Then select WANStreamer explicitly on the producer:
+
+```bash
+python -m interf_sim --limit 10 \
+    --raw-output wan-connection.json \
+    --raw-output-engine WANStreamer \
+    --raw-output-private-key keys/interf.key
+```
+
+The WAN consumer has only application-level work: read a WANStreamer step,
+write the step with BP5, and call the WAN reader's `end_step()`. That last
+call is the transport acknowledgement and must happen only after BP5
+`end_step()` succeeds. Listening, encrypted rendezvous, authentication,
+buffering, reconnect, replay, and duplicate suppression are implemented by
+the engine. Use `--raw-output-launch-mode system` and a trusted
+`--raw-output-launch-command` when the producer should launch or relaunch this
+consumer through SSH or a site scheduler.
 
 ## Payload operations and compression
 
@@ -350,6 +392,34 @@ valid certificate. It resumes recovery after that replacement appears.
 Notification failures never interrupt output. Main-process failures are
 recorded as `notification.failed` timing events. The certificate monitor stops
 with the producer and does not itself open an SSH connection.
+
+## Analyzing a remote experiment
+
+Generate a point-in-time Markdown report from a remote-server configuration:
+
+```bash
+python -m streamer.analyze_remote_experiment \
+    streamer/conf/bobby_to_nersc_24h_20261001.conf \
+    bobby-nersc-report.md \
+    --total-shots 28800 \
+    --interval-seconds 3
+```
+
+An installed package also provides the equivalent `interf-stream-analyze`
+command. The analyzer derives local producer timing and stdout log names from
+the configured consumer logs; use `--producer-log` or `--producer-stdout` to
+override either path. `--total-shots` is optional for an ongoing acquisition,
+and the shot interval is inferred from the producer timing log when it is not
+specified.
+
+The report covers progress, failures, cadence and latency distributions,
+buffer occupancy, remote storage, process state, sampled raw payload volume,
+latency incidents, and an estimate of configured wire compression. It uses one
+multiplexed SSH connection for every remote read. To borrow a control
+connection owned by an active producer, pass `--ssh-control-path PATH` or set
+`BAPSF_INTERFEROMETER_SSH_CONTROL_PATH`; the analyzer does not close a borrowed
+connection. `--skip-compression` avoids re-encoding sampled arrays while still
+measuring their raw size.
 
 ## Running a consumer without ADIOS2
 
