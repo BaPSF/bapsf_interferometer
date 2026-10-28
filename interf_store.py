@@ -24,7 +24,7 @@ from diag_ioc.outage import LOG_FORMAT, Outage
 from diag_ioc.records import INVALID_ALARM
 from interf_file import ShotExists, create_sourcefile_dataset, init_hdf5_file
 from interf_ioc import LostShots
-from interf_shot import shot_id
+from interf_shot import shot_date, shot_id
 
 log = logging.getLogger(__name__)
 
@@ -79,12 +79,31 @@ def shot_from_group(value):
 	return GroupShot(date, int(value["num"]), shot_time, str(value["time_source"]), phase, t_ms, missing)
 
 
+def daily_path(data_dir, date):
+	"""data_dir/interferometer_data_<YYYY-MM-DD>.hdf5 of `date` (YYYYMMDD)."""
+	day = datetime.date(date // 10000, date // 100 % 100, date % 100)
+	return Path(data_dir) / f"interferometer_data_{day.isoformat()}.hdf5"
+
+
+def last_stored(data_dir, date):
+	"""(shot_date, shot_number) of the latest-trigger shot in `date`'s file that carries them, or None: no file, or no
+	such shot (the previous acquisition's files have none). Reads dataset names and those shots' attributes only."""
+	path = daily_path(data_dir, date)
+	if not path.exists():
+		return None
+	with h5py.File(path, "r") as f:
+		index = f.get("phase_p20")  # the reader index, which holds the shot attributes
+		for name in sorted(index or (), key=float, reverse=True):
+			attrs = index[name].attrs
+			if "shot_number" in attrs:
+				return int(attrs["shot_date"]), int(attrs["shot_number"])
+	return None
+
+
 def store_shot(data_dir, shot):
-	"""Write `shot` (a GroupShot) to interferometer_data_<YYYY-MM-DD of shot_date>.hdf5 in data_dir, in the previous
-	acquisition's layout. False when the file already holds it: the IOC sends its last shot to every new or reconnected
-	monitor."""
-	day = datetime.date(shot.shot_date // 10000, shot.shot_date // 100 % 100, shot.shot_date % 100)
-	path = Path(data_dir) / f"interferometer_data_{day.isoformat()}.hdf5"
+	"""Write `shot` (a GroupShot) to daily_path(data_dir, shot_date), in the previous acquisition's layout. False when
+	the file already holds it: the IOC sends its last shot to every new or reconnected monitor."""
+	path = daily_path(data_dir, shot.shot_date)
 	if not path.exists():
 		init_hdf5_file(path)
 	with h5py.File(path, "a", libver="latest") as f:  # opened per shot, so the file is complete between shots
@@ -111,6 +130,7 @@ class ShotWriter:
 		self._finished = threading.Event()
 		self._connected = False
 		self._gaps = LostShots()  # SHOT:LOST's rule, over the shots run() takes
+		self._resumed = None  # resume()'s baseline until the first shot is taken
 		self._monitor = Outage(log, f"PVA monitor of {group}")
 		self._reads = Outage(log, f"reading {group}")
 		self._full = Outage(log, "store queue")
@@ -147,6 +167,21 @@ class ShotWriter:
 		else:
 			self._full.ended()
 
+	def resume(self, date):
+		"""Call once before monitoring: baseline the gap count at the last shot stored in `date`'s file, so shots published
+		while this process was stopped log as not received. A failed read logs a warning and leaves no baseline."""
+		try:
+			last = last_stored(self.data_dir, date)
+		except Exception as e:
+			log.warning("cannot read the last stored shot of %s (%s: %s); a gap across this restart is not logged", date,
+			            type(e).__name__, e)
+			return
+		if last is None:
+			return
+		self._gaps.update(*last)
+		self._resumed = last
+		log.info("resuming after shot %s, the last stored", shot_id(*last))
+
 	def run(self):
 		"""Store queued shots until finish() has been called and the queue is empty."""
 		while True:
@@ -171,10 +206,16 @@ class ShotWriter:
 
 	def _store(self, shot):
 		sid = shot_id(shot.shot_date, shot.shot_number)
+		if self._resumed is not None:
+			last, self._resumed = self._resumed, None
+			if shot.shot_date == last[0] and shot.shot_number < last[1]:  # LostShots resets its baseline: no gap
+				log.warning("shot %s is below %s, the last stored before this start: the shot counter restarted, no gap "
+				            "counted", sid, shot_id(*last))
 		before = self._gaps.total
 		gap = self._gaps.update(shot.shot_date, shot.shot_number) - before
 		if gap:
-			# Never published by the IOC, published while this monitor was down, or dropped here (queue full).
+			# Never published by the IOC, published while this monitor was down or this process stopped (resume), or
+			# dropped here (queue full).
 			log.warning("%d shots not received, %s to %s", gap, shot_id(shot.shot_date, shot.shot_number - gap),
 			            shot_id(shot.shot_date, shot.shot_number - 1))
 		try:
@@ -213,6 +254,7 @@ def main(argv=None):
 		signal.signal(signum, lambda signum, frame: stopping.append(signum))
 	group = f"{args.prefix}:SHOT"
 	writer = ShotWriter(args.data_dir, group)
+	writer.resume(shot_date(time.time()))  # today's file, read once before the writer and the monitor start
 	thread = threading.Thread(target=writer.run, name="interf_store writer", daemon=True)  # daemon: a hung write cannot block exit
 	thread.start()
 	ctx = Context("pva")  # EPICS_PVA_* from the environment

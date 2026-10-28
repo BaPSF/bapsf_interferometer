@@ -17,7 +17,8 @@ from interf_ioc import MAX_POINTS, NE_WINDOW_MS, missing_text
 from interf_shot import SHOT_ZONE, ShotCounter, ShotIdentifier
 from interf_sim.synthetic import make_raw_shot
 from interf_sim.trc_replay import TRC_DIR, ReplayLeCroy, iter_shots, trc_shots
-from interf_store import ShotWriter, shot_from_group, store_shot
+from interf_file import create_sourcefile_dataset, init_hdf5_file
+from interf_store import ShotWriter, daily_path, last_stored, shot_from_group, store_shot
 from ioc_harness import REPO, ChildProcess, IocProcess, free_port, have, interferometer_config, publish, pva_available
 
 DAY_S = 86400.0
@@ -200,6 +201,59 @@ class ShotWriterTests(unittest.TestCase):
 		text = "\n".join(logs.output)
 		self.assertIn("1 shots not received, 20261009-2 to 20261009-2", text)
 		self.assertNotIn("failed", text)
+
+	def _feed(self, writer, numbers):
+		for number in numbers:
+			writer.on_update(_group(_result(_shot(number))))
+		writer.finish()
+		writer.run()
+
+	def _store_numbers(self, numbers):
+		for number in numbers:
+			store_shot(self.dir, shot_from_group(_group(_result(_shot(number)))))
+
+	def test_a_restart_logs_the_shots_published_while_stopped(self):
+		self._store_numbers((0, 1))  # what the previous process stored
+		writer = ShotWriter(self.dir, "X:SHOT")
+		with self.assertLogs("interf_store", "INFO") as logs:
+			writer.resume(20261009)
+			self._feed(writer, (1, 4))  # 1: the IOC's last shot, sent on connect; 2 and 3 were published while stopped
+		self.assertEqual((writer.stored, writer.duplicates, writer.not_received), (1, 1, 2))
+		text = "\n".join(logs.output)
+		self.assertIn("resuming after shot 20261009-1", text)
+		self.assertIn("2 shots not received, 20261009-2 to 20261009-3", text)
+
+	def test_a_restarted_shot_counter_is_logged_once_and_is_no_gap(self):
+		self._store_numbers((10,))
+		writer = ShotWriter(self.dir, "X:SHOT")
+		with self.assertLogs("interf_store", "INFO") as logs:
+			writer.resume(20261009)
+			self._feed(writer, (2, 3))  # numbering started again below the last stored shot
+		self.assertEqual((writer.stored, writer.not_received), (2, 0))
+		self.assertEqual(sum("shot counter restarted" in line for line in logs.output), 1, logs.output)
+		self.assertNotIn("not received", "\n".join(logs.output))
+
+	def test_last_stored_is_the_latest_trigger_with_a_shot_number(self):
+		self.assertIsNone(last_stored(self.dir, 20261009))  # no file
+		path = daily_path(self.dir, 20261009)
+		init_hdf5_file(path)
+		with h5py.File(path, "a") as f:  # a shot as the previous acquisition wrote it: no shot attributes
+			create_sourcefile_dataset(f, np.zeros(4), np.zeros(4), np.empty(0), np.arange(4.0), np.empty(0), T0 + 100.0)
+		self.assertIsNone(last_stored(self.dir, 20261009))
+		self._store_numbers((3, 1))  # stored out of order: the latest trigger time wins, not the last write
+		self.assertEqual(last_stored(self.dir, 20261009), (20261009, 3))
+
+	def test_an_unreadable_file_logs_a_warning_and_leaves_no_baseline(self):
+		daily_path(self.dir, 20261009).write_bytes(b"not an HDF5 file")
+		writer = ShotWriter(self.dir, "X:SHOT")
+		with self.assertLogs("interf_store", "WARNING") as logs:
+			writer.resume(20261009)
+		self.assertIn("a gap across this restart is not logged", logs.output[0])
+		writer.on_update(_group(_result(_shot(5))))
+		writer.finish()
+		with self.assertLogs("interf_store", "INFO"):
+			writer.run()  # the write fails on the same file; the first shot is only a baseline, so no gap
+		self.assertEqual(writer.not_received, 0)
 
 	def test_a_full_queue_drops_the_shot(self):
 		writer = ShotWriter(self.dir, "X:SHOT", queue_shots=1)
