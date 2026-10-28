@@ -13,7 +13,7 @@ from interf_analysis import (FT_len, OFFSET_WINDOWS, analyze_shot, get_calibrati
                              rigol_trace)
 from interf_sim.synthetic import gaussian_phase, make_raw_shot, make_wavedesc, synthetic_shots, write_trc_shots
 from interf_sim.trc_replay import ReplayLeCroy, iter_shots, trc_shots
-from interf_archive import ADIOS2_AVAILABLE, decode, iter_steps, read_step
+from interf_archive import ADIOS2_AVAILABLE, SCHEMAS, decode, iter_steps, read_step
 from streamer.adios_io import AdiosIO
 from streamer.payload import SCHEMA_VERSION, shot_variables
 
@@ -275,9 +275,32 @@ class ArchiveRoundTripTests(unittest.TestCase):
 
 	def test_unknown_schema_version_is_rejected(self):
 		variables = shot_variables(_shot(rigol=False), 0)
-		variables["schema_version"] = np.array(SCHEMA_VERSION + 1, dtype=np.uint16)
+		variables["schema_version"] = np.array(max(SCHEMAS) + 1, dtype=np.uint16)
 		with self.assertRaises(ValueError):
 			decode(variables)
+
+	def test_schema_two_carries_png(self):
+		shot = _shot(rigol=False)
+		self.assertIsNone(decode(shot_variables(shot, 0)).png)  # schema 1
+		png = {"run": 12, "run_time": HOST_TIME - 60.0, "shot": 345, "shot_time": HOST_TIME - 0.15}
+		decoded = decode(_schema_two(shot_variables(shot, 0), png))
+		self.assertEqual(decoded.schema_version, 2)
+		self.assertEqual(decoded.png, png)
+		self.assertEqual(decoded.host_time, shot.host_time)
+		_assert_channels_equal(self, decoded.lecroy, shot.lecroy)
+
+	def test_schema_two_reads_minus_one_and_nan_as_no_value(self):
+		png = {"run": -1, "run_time": math.nan, "shot": -1, "shot_time": math.nan}
+		decoded = decode(_schema_two(shot_variables(_shot(rigol=False), 0), png))
+		self.assertEqual(decoded.png, dict.fromkeys(png))
+
+
+def _schema_two(variables, png):
+	"""Schema 1 `variables` as the planned schema 2 writes `png` (handoff §4, PNG); scalars of shape (1,), as adios2 reads them."""
+	variables = dict(variables, schema_version=np.array([2], dtype=np.uint16))
+	for key, dtype in (("run", np.int64), ("run_time", np.float64), ("shot", np.int64), ("shot_time", np.float64)):
+		variables[f"png_{key}"] = np.array([png[key]], dtype=dtype)
+	return variables
 
 
 class SyntheticTrcTests(unittest.TestCase):

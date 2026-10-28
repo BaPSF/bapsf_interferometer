@@ -3,14 +3,15 @@
 
 The archive is written by streamer, which another group maintains and we never edit (D6), so its reader lives
 here. Typical use: `analyze_shot(decode(variables)) for variables in iter_steps(path)`. The format is
-streamer.payload's schema 1, with no shot identity (D14): decode() does not add one. To date an archived shot,
-apply interf_shot.trigger_time to its stored WAVEDESC.
+streamer.payload's schema 1, or 2, which adds PNG's run and shot numbers (D16); neither has our shot identity (D14):
+decode() does not add one. To date an archived shot, apply interf_shot.trigger_time to its stored WAVEDESC.
 """
+import math
 from dataclasses import dataclass
 
 import numpy as np
 
-from streamer.payload import SCHEMA_VERSION, decode_json
+from streamer.payload import decode_json
 
 try:
 	import adios2
@@ -94,6 +95,11 @@ class ArchiveShot:
 	missing: dict[str, str]
 	lecroy: dict[str, tuple[np.ndarray, bytes]]
 	rigol: dict[str, tuple[np.ndarray, dict]]
+	# As RawShot.png, from schema 2; None for schema 1. Cannot tell a shot without PNG from one before PNG's first value.
+	png: dict | None = None
+
+
+SCHEMAS = (1, 2)  # 2 adds PNG's numbers (D16)
 
 
 def _scalar(value):
@@ -102,11 +108,19 @@ def _scalar(value):
 	return np.asarray(value).item()
 
 
+def _png(variables):
+	"""RawShot.png from schema 2's four scalars; -1 (int64) and NaN (float64) mean no value."""
+	run, shot = (int(_scalar(variables[name])) for name in ("png_run", "png_shot"))
+	run_time, shot_time = (float(_scalar(variables[name])) for name in ("png_run_time", "png_shot_time"))
+	return {"run": None if run == -1 else run, "run_time": None if math.isnan(run_time) else run_time,
+	        "shot": None if shot == -1 else shot, "shot_time": None if math.isnan(shot_time) else shot_time}
+
+
 def decode(variables):
-	"""Inverse of streamer.payload.shot_variables; ValueError for a schema_version other than streamer's."""
+	"""Inverse of streamer.payload.shot_variables; ValueError for a schema_version not in SCHEMAS."""
 	version = int(_scalar(variables["schema_version"]))
-	if version != SCHEMA_VERSION:
-		raise ValueError(f"unsupported schema_version {version} (expected {SCHEMA_VERSION})")
+	if version not in SCHEMAS:
+		raise ValueError(f"unsupported schema_version {version} (expected one of {SCHEMAS})")
 	lecroy, rigol = {}, {}
 	for name, samples in variables.items():
 		scope, _, rest = name.partition("_")
@@ -125,4 +139,5 @@ def decode(variables):
 		missing=decode_json(variables["missing_json"]),
 		lecroy=lecroy,
 		rigol=rigol,
+		png=_png(variables) if version >= 2 else None,
 	)

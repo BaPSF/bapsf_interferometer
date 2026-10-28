@@ -3,7 +3,7 @@
 Repo `BaPSF/bapsf_interferometer`, branch `refactor/linux-epics-daq`. Done: C4r `4ee26b8`, the link socket lock
 `ebb0b9f`, C4s `465b76a`, C5 `b8ecf40` and C6 `442c405`; C4s and C5 are tested on Linux with real recordings. `git log`
 has the current head.
-Status: **all 15 decisions ACCEPTED by J on 2026-10-08.** Every agent follows this file, and
+Status: **D1–D15 ACCEPTED by J on 2026-10-08, D16 on 2026-10-28.** Every agent follows this file, and
 `HANDOFF_live_epics.md` implements it commit by commit. Anything neither covers goes to J before code is written.
 
 **Single source:** this file is `docs/ARCHITECTURE.md` on `refactor/linux-epics-daq`, next to
@@ -46,6 +46,7 @@ the record timestamps are `host_time`. C4r (`4ee26b8`) replaced both, per D6, D1
 | D13 | Agent roles | Local agent writes code; `test-on-Bobby` tests every commit on Linux with real `.trc` data |
 | D14 | Shot identity | `shot_date` (YYYYMMDD, LA local) + `shot_number` from 0 each day, persisted |
 | D15 | Shot time | LeCroy WAVEDESC trigger time (scope NTP-synced), float64 epoch seconds |
+| D16 | PNG run and shot | Optional CA monitor in `interf_main`, copied at capture detection, ADIOS only; readers match by `host_time` |
 
 ### D1. IOC technology: pythonSoftIOC
 - A real EPICS 7 IOC (standard records, alarms, devIocStats, CA + PVA) with the analysis in the same process,
@@ -312,6 +313,37 @@ shot after an IOC start resets its baseline: a restart shows only as a gap in `S
 - `host_time` (`time.time()` when the PC detects the capture, `interf_raw.py:217`) lags the trigger by the scope's
   processing plus polling. It is kept only as the fallback and the cross-check.
 - The main branch's own timezone bugs (`mktime` in the merge, `interf_read.py`'s fixed UTC-8) are fixed separately.
+
+### D16. PNG run and shot numbers (J, 2026-10-28)
+- PNG's DAQ publishes `PNG:RunNumber` and `PNG:ShotNumber` over CA, written once per shot from the same trigger as ours.
+  The PVs keep their last value until overwritten.
+- **Monitor:** `interf_main` subscribes to both with pyepics (`interf_png.PngMonitor`). The value callback only stores
+  the value and its CA timestamp, under a lock; it makes no CA call. At start, CA is flushed until both PVs have
+  delivered a first value (the subscription race of D13), for at most 5 s; after that "PNG not connected" is logged
+  once and acquisition starts anyway. `interf_main` flushes CA after each handled shot, so a subscription that missed
+  the start still goes out.
+- **Capture stamp:** when `interf_raw._consume` detects a LeCroy capture, it copies the stored values on the line right
+  after `host_time`, before the on/off check and the waveform transfer. It is a memory read with no network call, and
+  separate from the transfer, so a parallel transfer later does not move it.
+- **Always saved:** every shot keeps PNG's latest values and timestamps, even if unchanged since the previous shot. Only
+  shots before the first value after a start have none (-1/NaN in ADIOS).
+- **Matching is done by readers, not acquisition:** `abs(host_time − png_shot_time) < 0.3 s` means the same shot. The
+  lag is about 0–0.2 s normally, and about 3 s (the previous shot's value) when PNG's write came after our detection.
+  `host_time` is used, not the LeCroy trigger time (D15), because the scope clock steps by about 0.3 s and has been off
+  by up to 1.2 s. This assumes NTP on Bobby and on PNG's server.
+- **ADIOS only:** the four values travel in `RawShot.png` to the raw archive (schema 2: `png_run` int64, `png_run_time`
+  float64, `png_shot` int64, `png_shot_time` float64; -1/NaN = no value) and to the acquisition shot line
+  (`png <run>-<shot> lag <s>`). streamer writes them once its group adds them (handoff §4, PNG); `interf_archive.decode`
+  reads schemas 1 and 2. HDF5 is keyed by our `shot_date` + `shot_number` and has no PNG fields (D9); the live link
+  (`interf_payload`), the IOC and `interf_store` do not carry them. They do not replace our shot identity (D14).
+- **Live raw archive:** `INTERF_RAW_OUTPUT` (a destination) makes `interf_main` write every shot through streamer's
+  `RawOutput`, beside the `IocLink`, as `interf_sim --raw-output` does. Unset, there is no archive, as before. streamer
+  is imported only then; the live link still never imports it (D6).
+- **Optional and fail-safe:** off unless `INTERF_PNG_RUN_PV` and `INTERF_PNG_SHOT_PV` are both set; otherwise neither
+  `interf_png` nor pyepics is imported. If PNG's IOC is down, acquisition runs normally, shots keep the last value (or
+  none), and pyepics reconnects on its own. No `caget` per shot: it waits up to 5 s when the IOC is unreachable.
+- Amends the rule "`interf_main` never imports EPICS" (handoff §2): allowed for this one optional CA monitor. The main
+  thread's added work (the copy, the shot-line part, the flush) stays O(1), never blocks and never raises.
 
 ## 2. Open
 

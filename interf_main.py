@@ -1,5 +1,6 @@
 # coding: utf-8
 """Acquisition loop: acquire_shot() until stopped, one log line per shot. Linux only."""
+import contextlib
 import logging.handlers
 import os
 import signal
@@ -15,6 +16,10 @@ LOG_DIR = os.environ.get("INTERF_LOG_DIR", str(Path.home() / "data" / "log"))
 ACQUIRE_LOG = "interf_acquire.log"  # in LOG_DIR
 # State, not a log: kept out of LOG_DIR, whose old files get rotated and cleaned up.
 SHOT_STATE = os.environ.get("INTERF_SHOT_STATE", str(Path.home() / "data" / "state" / "shot_counter.json"))
+# PNG's CA PVs (D16)
+PNG_RUN_PV = os.environ.get("INTERF_PNG_RUN_PV", "")
+PNG_SHOT_PV = os.environ.get("INTERF_PNG_SHOT_PV", "")
+RAW_OUTPUT_TIMING_LOG = "raw_output.jsonl"  # in LOG_DIR, with INTERF_RAW_OUTPUT; streamer appends, never rotates
 
 log = logging.getLogger("interf_main")
 _stop = False
@@ -62,7 +67,17 @@ def _shot_line(shot, prev_trig):
 	parts.append(f"path {shot.critical_path_s:.2f} s")
 	if shot.missing:
 		parts.append("missing " + "; ".join(f"{k}: {v}" for k, v in shot.missing.items()))
+	parts.append(_png_text(shot.png, shot.host_time))
 	return " | ".join(parts)
+
+
+def _png_text(png, host_time):
+	"""The shot line's PNG part; lag is host_time minus the shot number's CA timestamp, and about 3 s means PNG's
+	previous shot, not this one (D16)."""
+	if png is None or png["shot"] is None:
+		return "png -"
+	run = "?" if png["run"] is None else png["run"]
+	return f"png {run}-{png['shot']} lag {host_time - png['shot_time']:.3f}"  # shot_time arrives with shot
 
 
 def _timing_line(shot, identify_s, outputs_s):
@@ -116,6 +131,20 @@ def _handle_shot(shot, prev_trig, identifier, outputs=()):
 	return shot.shot_time if shot.time_source == "trigger" else None
 
 
+def _start_png():
+	"""A PngMonitor of PNG_RUN_PV and PNG_SHOT_PV, or None."""
+	if bool(PNG_RUN_PV) != bool(PNG_SHOT_PV):
+		log.warning("PNG off: INTERF_PNG_RUN_PV and INTERF_PNG_SHOT_PV must both be set")
+	if not (PNG_RUN_PV and PNG_SHOT_PV):
+		return None
+	try:
+		from interf_png import PngMonitor
+		return PngMonitor(PNG_RUN_PV, PNG_SHOT_PV)  # waits at most interf_png.CONNECT_TIMEOUT_S
+	except Exception:
+		log.exception("PNG monitor not started; acquisition continues without PNG numbers")
+		return None
+
+
 def main(outputs=(), identifier=None):
 	"""Acquire until stopped; each shot goes to every `outputs` item's write(shot). The caller closes them.
 
@@ -125,6 +154,8 @@ def main(outputs=(), identifier=None):
 	if not hasattr(signal, "setitimer"):
 		sys.exit("interf_main: Linux only (the Rigol deadline needs signal.setitimer)")
 	_setup_logging()
+	png = _start_png()
+	read_png = png.latest if png is not None else None
 	_outages.clear()  # an output reused from an earlier run in this process starts healthy
 	signal.signal(signal.SIGINT, _request_stop)
 	signal.signal(signal.SIGTERM, _request_stop)  # systemd stop
@@ -139,9 +170,11 @@ def main(outputs=(), identifier=None):
 	try:
 		while not stop_requested():
 			try:
-				shot = acquire_shot(state, stop_requested)
+				shot = acquire_shot(state, stop_requested, read_png=read_png)
 				if shot is not None:
 					prev_trig = _handle_shot(shot, prev_trig, identifier, outputs)
+					if png is not None:
+						png.flush()
 			except Exception:
 				# Scope errors are handled inside acquire_shot, so this is a bug. Log it and keep the
 				# loop, so an exit still restores the scopes.
@@ -158,11 +191,26 @@ def main(outputs=(), identifier=None):
 
 
 if __name__ == "__main__":
+	raw_destination = os.environ.get("INTERF_RAW_OUTPUT")  # streamer's raw archive: an ADIOS path (D9, D16)
 	ioc_link = os.environ.get("INTERF_IOC_LINK")  # unix:/path or tcp:host:port of the diag_ioc listener
-	if ioc_link:
-		import interf_payload
-		from diag_ioc.link import IocLink  # no EPICS library: diag_ioc's __init__ keeps it that way
-		with IocLink(ioc_link, encode=interf_payload.encode) as link:
-			main(outputs=[link])
-	else:
-		main()
+	raw_output = None
+	with contextlib.ExitStack() as stack:  # outputs closed and reported as interf_sim/__main__.py does
+		outputs = []
+		# The link first: RawOutput.write copies the arrays on this thread (streamer.payload), so the shot reaches the IOC
+		# before that copy, not after it.
+		if ioc_link:
+			import interf_payload
+			# diag_ioc loads no EPICS library (diag_ioc/__init__.py); interf_main's only one is pyepics, for PNG (D16).
+			from diag_ioc.link import IocLink
+			outputs.append(stack.enter_context(IocLink(ioc_link, encode=interf_payload.encode)))
+		if raw_destination:
+			from streamer import RawOutput  # only here: the live link never imports streamer (D6)
+			from streamer.arguments import RawOutputSettings
+			# A socket destination also needs a private key, not passed here.
+			Path(LOG_DIR).mkdir(parents=True, exist_ok=True)  # main() creates it only later
+			raw_output = stack.enter_context(RawOutput(RawOutputSettings(
+				destination=raw_destination, timing_log=os.path.join(LOG_DIR, RAW_OUTPUT_TIMING_LOG))))
+			outputs.append(raw_output)
+		main(outputs=outputs)
+		if raw_output is not None and raw_output.dropped_shots:
+			log.warning("raw output dropped %d shots", raw_output.dropped_shots)

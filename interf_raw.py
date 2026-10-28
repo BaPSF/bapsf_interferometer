@@ -131,6 +131,7 @@ class RawShot:
 	time_source: str | None = None  # "trigger" | "host"
 	# Logged by interf_main only: interf_payload and streamer.payload encode named fields, so neither carries it.
 	timing: StepTimes = field(default_factory=StepTimes)
+	png: dict | None = None  # PngMonitor.latest() at capture detection; None without PNG. Raw archive only (D16)
 
 
 #===============================================================================================================================================
@@ -287,9 +288,13 @@ def _read_rigol(state, missing, times):
 	return {}
 
 
-def _consume(lecroy, state, stop_requested, times):
+def _consume(lecroy, state, stop_requested, times, read_png=None):
 	"""Read a detected capture from both scopes, then re-arm the LeCroy."""
 	host_time, t0 = time.time(), time.monotonic()
+	try:
+		png = read_png() if read_png else None  # beside host_time, before scope I/O: a slow transfer must not shift it (D16)
+	except Exception:
+		png = None  # PngMonitor.latest() never raises; another read_png must not cost the shot
 	_note_resumed(state)
 	# Consume before reading: an exception anywhere below must never lead to a re-read (rule 3).
 	state.lecroy_armed = False
@@ -340,7 +345,7 @@ def _consume(lecroy, state, stop_requested, times):
 		except Exception as e:
 			log.warning("LeCroy re-arm failed (%s); next iteration re-arms", e)
 		times.rearm_s = time.perf_counter() - t
-	return RawShot(host_time, lecroy_data, rigol_data, missing, time.monotonic() - t0)
+	return RawShot(host_time, lecroy_data, rigol_data, missing, time.monotonic() - t0, png=png)
 
 
 def _note_idle(state, kind, detail):
@@ -371,11 +376,12 @@ def _lecroy_failed(state, e, stop_requested):
 	_sleep_unless_stopped(LECROY_RETRY_INTERVAL, stop_requested)
 
 
-def acquire_shot(state, stop_requested):
+def acquire_shot(state, stop_requested, read_png=None):
 	"""One iteration: a RawShot if a LeCroy capture was consumed, else None (pause, LeCroy error, stop).
 
 	`stop_requested()` is polled between waits; once it is true the scopes are left un-re-armed
-	and the caller must call release_scopes() before exiting.
+	and the caller must call release_scopes() before exiting. `read_png()`, if given, is called once
+	per capture for RawShot.png and must not block (interf_png.PngMonitor.latest).
 	"""
 	times = StepTimes()
 	t = time.perf_counter()
@@ -396,7 +402,7 @@ def acquire_shot(state, stop_requested):
 		# Outside the except above: _consume handles scope errors itself, so anything it raises is
 		# a bug for the caller to log with a traceback, not a LeCroy error.
 		if captured:
-			shot = _consume(lecroy, state, stop_requested, times)
+			shot = _consume(lecroy, state, stop_requested, times, read_png)
 	finally:
 		t = time.perf_counter()
 		lecroy.rm_close()

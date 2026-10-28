@@ -1,7 +1,7 @@
 # Handoff: live analysis + EPICS IOC for `bapsf_interferometer`
 
 Repository `BaPSF/bapsf_interferometer`, branch `refactor/linux-epics-daq`. Updated 2026-10-18. This file is the
-implementation spec for the remaining commits. It implements the decisions in `docs/ARCHITECTURE.md` (D1–D15) and does
+implementation spec for the remaining commits. It implements the decisions in `docs/ARCHITECTURE.md` (D1–D16) and does
 not repeat their reasons. A question neither file answers goes to the user before code is written.
 
 **Single source:** this file is `docs/HANDOFF_live_epics.md` on `refactor/linux-epics-daq`, next to `docs/ARCHITECTURE.md`.
@@ -73,8 +73,9 @@ Facts from testing that still matter:
     `ShotIdentifier(counter, trig_lag_max_s).identify(shot)` (never raises) and `ShotCounter(state_path, log_paths=())`
     (C4s: `None` persists nothing; `close()` writes the last state).
   - `ShotResult` carries `shot_date`, `shot_number`, `shot_time` and `time_source` (None where the shot has none).
-  - `interf_archive.iter_steps`/`read_step`/`decode` read the ADIOS archive (streamer's schema 1, no shot identity).
-    It imports `streamer.payload` for that schema, which is fine offline; the live path must not.
+  - `interf_archive.iter_steps`/`read_step`/`decode` read the ADIOS archive (streamer's schema 1, or 2 with PNG's
+    numbers, D16; no shot identity). It imports `streamer.payload` for that schema, which is fine offline; the live path
+    must not.
 
 ## 2. Conventions
 
@@ -89,7 +90,7 @@ Facts from testing that still matter:
   Keep the README "Files" and "Configuration" tables current.
 - Setup: `pip install -e '.[ioc,clients]' -c constraints.txt` (`clients` includes `p4p` since C6).
 - `interf_main`'s main thread owns SIGALRM and the LeCroy re-arm. Anything added there is O(1), never blocks, never
-  raises into the loop, and never imports EPICS.
+  raises into the loop, and never imports EPICS, except the optional PNG CA monitor (`interf_png`, D16).
 
 ## 3. API facts (verified; rely on these)
 
@@ -328,6 +329,27 @@ the `clients` extra and the script `interf-store`. As built also `interf_ioc.py`
     per shot; the store logs one.
   - `tests/ioc_harness.py`: `ChildProcess` (which `IocProcess` now extends) runs the store, and
     `interferometer_config` and `publish` moved there from `tests/test_interf_ioc.py`.
+
+**PNG `feat: PNG run and shot numbers in the raw archive` (D16). Committed, not yet tested.** Files:
+`interf_png.py` (new), `interf_main.py`, `interf_raw.py`, `interf_archive.py`, `pyproject.toml`, `diag_ioc/__init__.py`,
+`docs/` (ACQUISITION, LIVE_IOC, README), `deploy/systemd/acquire.env.example`, `tests/test_interf_png.py` (new) and
+`tests/test_interf_analysis.py`. No change to `streamer/`, `interf_payload`, the IOC, `interf_store` or HDF5.
+- `interf_png.PngMonitor(run_pv, shot_pv)` as D16 describes (disconnects and reconnects through `Outage`). `latest()`
+  returns a new `{"run", "run_time", "shot", "shot_time"}` (None per value not yet received); `flush()`. Neither raises.
+- `interf_main.main()`: a `PngMonitor` when `INTERF_PNG_RUN_PV` and `INTERF_PNG_SHOT_PV` are both set (a failure is
+  logged and acquisition goes on without PNG); `acquire_shot(..., read_png=png.latest)`; `png.flush()` after each
+  handled shot. The shot line ends with `png <run>-<shot> lag <s>` (`lag` = `host_time` − PNG shot time), or `png -`.
+  `INTERF_RAW_OUTPUT` adds streamer's `RawOutput` beside the `IocLink`, as `interf_sim` does.
+- `interf_raw._consume(..., read_png=None)` calls it right after `host_time`; an exception gives None. `RawShot.png`.
+- `interf_archive.decode` reads schema 1 (`png` None) and 2 (`png` dict; -1/NaN read as None). Archive schema 2 is
+  streamer's numbering, unrelated to the live link's `interf_payload` schema 2.
+- **For the streaming team** (their code, not edited here): `streamer.payload.shot_variables` should add four scalars
+  from `RawShot.png`: `png_run` (int64), `png_run_time` (float64), `png_shot` (int64) and `png_shot_time` (float64), with
+  a missing `png` or None value written as -1 (ints) or NaN (floats), and raise `SCHEMA_VERSION` to 2. Until then the
+  archive stays schema 1 and PNG's numbers are only in the acquisition log's shot lines.
+- Tests (written, not run): `PngMonitor` against a fake `epics` module; the shot line's PNG part; `decode` of schema 2.
+- Scenario (`test-on-Bobby`): with PNG's IOC up, the shot lines' `lag` stays near 0–0.2 s (or about 3 s); stop PNG's IOC
+  mid-run, and acquisition goes on with the disconnect and the reconnect logged once each.
 
 **C7 `feat: Phoebus screens`.** Files: `phoebus/interf_overview.bob`, `phoebus/diag_ioc_health.bob`, `phoebus/settings.ini`,
 `tests/test_phoebus_screens.py`.

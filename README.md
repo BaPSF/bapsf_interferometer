@@ -15,7 +15,7 @@ flowchart LR
     ioc["<b>Analysis IOC</b><br/>diag_ioc + interf_ioc.py<br/>phase and density per port<br/>read-only PVs, CA and PVA"]
     store["<b>HDF5 store</b><br/>interf_store.py<br/>daily file, best effort"]
     screens["<b>Phoebus screens</b><br/>C7, planned"]
-    arch["<b>Raw archive</b><br/>ADIOS BP5, streamer/<br/>not yet in live acquisition"]
+    arch["<b>Raw archive</b><br/>ADIOS BP5, streamer/<br/>optional: INTERF_RAW_OUTPUT"]
   end
   outside["<b>Outside clients</b><br/>read-only"]
 
@@ -75,6 +75,7 @@ In production the IOC, acquisition and the store run as systemd units from [depl
 | [interf_shot.py](interf_shot.py) | Shot time (LeCroy trigger, Los Angeles zone, host-time fallback) and the per-day shot counter |
 | [interf_analysis.py](interf_analysis.py) | Phase extraction (`phase_from_raw`, cross-spectral density; `phase_from_hilbert`, slower), calibration, `analyze_shot` |
 | [interf_payload.py](interf_payload.py) | Live-link message of one shot (`encode`, `decode`) |
+| [interf_png.py](interf_png.py) | Optional CA monitor of PNG's run and shot numbers, copied into each raw shot (D16) |
 | [diag_ioc/](diag_ioc/) | Generic diagnostic IOC host (pythonSoftIOC) and the acquisition-to-IOC link |
 | [interf_ioc.py](interf_ioc.py) | The interferometer's IOC module: link message → `analyze_shot` → PVs and the `SHOT` group |
 | [interf_store.py](interf_store.py) | HDF5 store, a PVA client of the `SHOT` group |
