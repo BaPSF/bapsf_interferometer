@@ -3,7 +3,7 @@
 Repo `BaPSF/bapsf_interferometer`, branch `refactor/linux-epics-daq`. Done: C4r `4ee26b8`, the link socket lock
 `ebb0b9f`, C4s `465b76a`, C5 `b8ecf40` and C6 `442c405`; C4s and C5 are tested on Linux with real recordings. `git log`
 has the current head.
-Status: **D1–D15 ACCEPTED by J on 2026-10-08, D16 on 2026-10-28; D17 proposed, for J to accept.** Every agent follows this file, and
+Status: **D1–D15 ACCEPTED by J on 2026-10-08, D16 on 2026-10-28, D17 on 2026-10-30.** Every agent follows this file, and
 `HANDOFF_live_epics.md` implements it commit by commit. Anything neither covers goes to J before code is written.
 
 **Single source:** this file is `docs/ARCHITECTURE.md` on `refactor/linux-epics-daq`, next to
@@ -47,7 +47,7 @@ the record timestamps are `host_time`. C4r (`4ee26b8`) replaced both, per D6, D1
 | D14 | Shot identity | `shot_date` (YYYYMMDD, LA local) + `shot_number` from 0 each day, persisted |
 | D15 | Shot time | LeCroy WAVEDESC trigger time (scope NTP-synced), float64 epoch seconds |
 | D16 | PNG run and shot | Optional CA monitor in `interf_main`, copied at capture detection, ADIOS only; readers match by `host_time` |
-| D17 | Raw output never holds up acquisition | streamer's writer thread opens, retries and drains; `write()` only queues (proposed) |
+| D17 | Raw output never holds up acquisition | streamer's writer thread opens, retries and drains; `write()` only queues |
 
 ### D1. IOC technology: pythonSoftIOC
 - A real EPICS 7 IOC (standard records, alarms, devIocStats, CA + PVA) with the analysis in the same process,
@@ -347,7 +347,7 @@ shot after an IOC start resets its baseline: a restart shows only as a gap in `S
 - Amends the rule "`interf_main` never imports EPICS" (handoff §2): allowed for this one optional CA monitor. The main
   thread's added work (the copy, the shot-line part, the flush) stays O(1), never blocks and never raises.
 
-### D17. Raw output never holds up acquisition (proposed 2026-10-29, for J to accept)
+### D17. Raw output never holds up acquisition (J, accepted 2026-10-30)
 - **Rule:** acquisition must catch every shot. Streaming must never hold up the next shot, its analysis in the IOC or
   its HDF5 store, because raw output may go over a network, and networks fail. A shot that cannot be written in time
   is dropped from raw output and counted, never waited for.
