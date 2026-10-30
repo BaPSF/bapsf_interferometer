@@ -79,11 +79,15 @@ to interpret them:
 
 | Variable | Contents |
 |---|---|
-| `schema_version` | Scalar payload schema version, currently `1` |
+| `schema_version` | Scalar payload schema version, currently `2` |
 | `shot_index` | Scalar zero-based output sequence number |
 | `host_time` | Scalar Unix time when the LeCroy capture was detected |
 | `critical_path_s` | Scalar capture-to-rearm duration in seconds |
 | `missing_json` | UTF-8 JSON byte array describing unavailable scope data |
+| `png_run` | Scalar `int64` PNG run number; `-1` when missing |
+| `png_run_time` | Scalar `float64` CA timestamp (Unix seconds) of `png_run`; NaN when missing |
+| `png_shot` | Scalar `int64` PNG shot number; `-1` when missing |
+| `png_shot_time` | Scalar `float64` CA timestamp (Unix seconds) of `png_shot`; NaN when missing |
 | `lecroy_<channel>_samples` | Raw `int16` LeCroy samples |
 | `lecroy_<channel>_wavedesc` | Raw 346-byte LeCroy WAVEDESC |
 | `rigol_<channel>_samples` | Raw `uint16` Rigol sample codes |
@@ -93,6 +97,11 @@ Unavailable channels are omitted rather than replaced by fabricated arrays.
 They remain described by `missing_json`, and a variable can first appear in a
 later step when a scope recovers. `streamer.payload.decode_json()` decodes the
 JSON byte-array variables.
+
+The four `png_*` scalars are on every step, all missing when PNG sync is off.
+They are PNG's latest values when the capture was detected, so they can repeat
+an earlier shot's: readers match a step to a PNG shot only when
+`abs(host_time - png_shot_time) < 0.3` s.
 
 Every non-scalar ADIOS variable is a single-process global array. Its global
 shape and count equal the payload array shape, and its start is zero in every

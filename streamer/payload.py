@@ -6,7 +6,15 @@ import json
 import numpy as np
 
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2  # 2 adds the png_* scalars of _PNG_FIELDS
+
+# (key in RawShot.png, dtype, value when missing)
+_PNG_FIELDS = (
+	("run", np.int64, -1),
+	("run_time", np.float64, np.nan),
+	("shot", np.int64, -1),
+	("shot_time", np.float64, np.nan),
+)
 
 
 def _json_default(value):
@@ -35,6 +43,18 @@ def decode_json(value):
 	return json.loads(np.asarray(value, dtype=np.uint8).tobytes().decode("utf-8"))
 
 
+def _png_variables(png):
+	"""Never raises (on the writer thread an exception drops the shot): anything unusable is written as missing."""
+	data = {}
+	for key, dtype, missing in _PNG_FIELDS:
+		try:
+			# Raises for no png, no key, None into int64, or a size != 1; None into float64 is already NaN.
+			data[f"png_{key}"] = np.array(png[key], dtype=dtype).reshape(())
+		except Exception:
+			data[f"png_{key}"] = np.array(missing, dtype=dtype)
+	return data
+
+
 def shot_variables(shot, shot_index):
 	"""Return the complete named-array payload for one raw acquisition.
 
@@ -48,6 +68,7 @@ def shot_variables(shot, shot_index):
 		"host_time": np.array(shot.host_time, dtype=np.float64),
 		"critical_path_s": np.array(shot.critical_path_s, dtype=np.float64),
 		"missing_json": encode_json(shot.missing),
+		**_png_variables(getattr(shot, "png", None)),
 	}
 	for channel, (samples, wavedesc) in sorted(shot.lecroy.items()):
 		prefix = f"lecroy_{channel.lower()}"
