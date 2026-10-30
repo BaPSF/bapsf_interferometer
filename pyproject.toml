@@ -48,7 +48,7 @@ interf-store = "interf_store:main"
 [tool.setuptools]
 # Flat layout with several top-level modules: setuptools refuses to auto-discover them. The explicit
 # lists name every module and package; a new one must be added here.
-py-modules = ["interf_main", "interf_raw", "interf_analysis", "interf_file", "interf_payload", "interf_shot", "interf_archive",
+py-modules = ["interf_main", "interf_raw", "interf_analysis", "interf_file", "interf_payload", "interf_shot", "interf_raw_reader",
               "interf_ioc", "interf_store", "interf_png"]
 packages = ["diag_ioc", "interf_sim", "streamer"]
 

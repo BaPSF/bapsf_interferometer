@@ -36,7 +36,7 @@ python -m interf_store --prefix LAPD:DIAG:INTERF   # or interf-store; --data-dir
 
 [interf_store.py](../interf_store.py) monitors the PVA group `<prefix>:SHOT` (p4p, from the `clients` extra) and writes each shot to `interferometer_data_<YYYY-MM-DD>.hdf5` (the shot's Los Angeles date), in the layout of [HDF5_FORMAT.md](HDF5_FORMAT.md).
 - It is its own process, fed only by the group. Acquisition and the IOC never import it, call it or wait on it, and its monitor callback only queues the shot (at most 100).
-- It is best effort: a shot published while the store is stopped or disconnected, or dropped on a full queue or a failed write (a file error, a full disk), is not stored and is logged. Gaps in the shot number are logged. The raw archive is meant to be the complete record (D9); live acquisition writes it only with `INTERF_RAW_OUTPUT`.
+- It is best effort: a shot published while the store is stopped or disconnected, or dropped on a full queue or a failed write (a file error, a full disk), is not stored and is logged. Gaps in the shot number are logged. Raw output is meant to be the complete record (D9); live acquisition writes it only with `INTERF_RAW_OUTPUT`.
 - A shot's date, number and data all come from the same group update. The dataset name is the shot time: the LeCroy trigger time, or the host time for a shot without one.
 - The IOC sends its latest shot to every new connection, so after a restart or reconnect that shot is found already stored and skipped. Before the IOC's first shot after a start, the group holds no shot (date or timestamp 0), and the store skips it.
 - SIGTERM or Ctrl-C stores what is queued and logs a summary: shots stored, already stored, not received (gaps), dropped, failed writes and unreadable updates.

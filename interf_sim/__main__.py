@@ -39,7 +39,7 @@ def main():
 	if args.loop and args.repeat_traces:
 		parser.error("--loop replaces --repeat-traces; use one")
 	if args.loop and args.raw_output is not None:
-		parser.error("--loop never writes raw output (a stress run must not fill the archive); drop --raw-output")
+		parser.error("--loop never writes raw output (a stress run must not fill the raw output); drop --raw-output")
 	if args.loop_offset is not None and not args.loop:
 		parser.error("--loop-offset needs --loop")
 

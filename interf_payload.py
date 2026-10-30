@@ -2,7 +2,7 @@
 """Live-link message of one interf_raw.RawShot: encode() for IocLink, decode() for the IOC module.
 
 Copied from streamer/payload.py, not imported: streamer belongs to another group, and the live path must not
-depend on it (docs/ARCHITECTURE.md D6). The ADIOS archive keeps streamer's own schema 1.
+depend on it (docs/ARCHITECTURE.md D6). The ADIOS raw output keeps streamer's own schema 1.
 """
 import base64
 import json
@@ -10,7 +10,7 @@ from dataclasses import dataclass
 
 import numpy as np
 
-SCHEMA_VERSION = 2  # 1 is streamer's archive layout (shot_index, no shot identity)
+SCHEMA_VERSION = 2  # 1 is streamer's raw output layout (shot_index, no shot identity)
 
 
 def _json_default(value):

@@ -1,10 +1,10 @@
 # -*- coding: utf-8 -*-
-"""Read the raw ADIOS archive (`--raw-output`) back as shots, for offline reanalysis (docs/ARCHITECTURE.md D9).
+"""Read raw output files (ADIOS, `--raw-output`) back as shots, for offline reanalysis (docs/ARCHITECTURE.md D9).
 
-The archive is written by streamer, which another group maintains and we never edit (D6), so its reader lives
+Raw output is written by streamer, which belongs to the streaming team and only writes (D6), so its reader lives
 here. Typical use: `analyze_shot(decode(variables)) for variables in iter_steps(path)`. The format is
 streamer.payload's schema 1, or 2, which adds PNG's run and shot numbers (D16); neither has our shot identity (D14):
-decode() does not add one. To date an archived shot, apply interf_shot.trigger_time to its stored WAVEDESC.
+decode() does not add one. To date a raw output shot, apply interf_shot.trigger_time to its stored WAVEDESC.
 """
 import math
 from dataclasses import dataclass
@@ -86,7 +86,7 @@ def read_step(path, index):
 
 
 @dataclass
-class ArchiveShot:
+class RawOutputShot:
 	"""A shot rebuilt by decode(); `lecroy`, `rigol` and `missing` are laid out as in RawShot, channels upper case."""
 	schema_version: int
 	shot_index: int  # RawOutput's own per-process step counter, from 0 at each start: not a shot identity
@@ -131,7 +131,7 @@ def decode(variables):
 			lecroy[channel.upper()] = (samples, np.asarray(variables[f"lecroy_{channel}_wavedesc"], dtype=np.uint8).tobytes())
 		elif scope == "rigol":
 			rigol[channel.upper()] = (samples, decode_json(variables[f"rigol_{channel}_metadata_json"]))
-	return ArchiveShot(
+	return RawOutputShot(
 		schema_version=version,
 		shot_index=int(_scalar(variables["shot_index"])),
 		host_time=float(_scalar(variables["host_time"])),

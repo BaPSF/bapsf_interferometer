@@ -1,7 +1,7 @@
 """Shot transport from acquisition to a diag_ioc module: IocLink sends, LinkListener receives.
 
 Latest-wins on purpose: the live path never blocks acquisition and never replays a backlog;
-completeness is the ADIOS archive's job. The framing (diag_ioc.framing) has no authentication,
+completeness is the ADIOS raw output's job. The framing (diag_ioc.framing) has no authentication,
 so listen only on a unix socket or an allow-listed TCP address.
 """
 import argparse

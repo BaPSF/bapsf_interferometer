@@ -9,7 +9,7 @@ import numpy as np
 
 import interf_payload
 from interf_analysis import analyze_shot
-from interf_archive import ADIOS2_AVAILABLE, iter_steps
+from interf_raw_reader import ADIOS2_AVAILABLE, iter_steps
 from interf_sim.synthetic import make_raw_shot
 from streamer import RawOutput
 from streamer.arguments import RawOutputSettings
@@ -63,7 +63,7 @@ class RoundTripTests(unittest.TestCase):
 
 	def test_other_schema_versions_are_rejected(self):
 		variables = interf_payload.encode(_shot())
-		for version in (1, interf_payload.SCHEMA_VERSION + 1):  # 1: a streamer archive step
+		for version in (1, interf_payload.SCHEMA_VERSION + 1):  # 1: a streamer raw output step
 			variables["schema_version"] = np.array(version, dtype=np.uint16)
 			with self.subTest(version=version), self.assertRaisesRegex(ValueError, "schema_version"):
 				interf_payload.decode(variables)
@@ -80,19 +80,19 @@ class IndependenceTests(unittest.TestCase):
 		self.assertEqual(done.stdout.strip(), "[]")
 
 
-class ArchiveUnchangedTests(unittest.TestCase):
-	"""The shot identity is live-only: the ADIOS archive keeps streamer's schema 1, byte for byte."""
+class RawOutputUnchangedTests(unittest.TestCase):
+	"""The shot identity is live-only: the ADIOS raw output keeps streamer's schema 1, byte for byte."""
 
-	def test_identity_does_not_reach_the_archive_encoding(self):
+	def test_identity_does_not_reach_the_raw_output_encoding(self):
 		identified, bare = _shot(), _shot(shot_number=None)
-		archived, expected = shot_variables(identified, 5), shot_variables(bare, 5)
-		self.assertEqual(set(archived), set(expected))
+		written, expected = shot_variables(identified, 5), shot_variables(bare, 5)
+		self.assertEqual(set(written), set(expected))
 		for name, array in expected.items():
-			self.assertEqual(archived[name].dtype, array.dtype)
-			np.testing.assert_array_equal(archived[name], array)
+			self.assertEqual(written[name].dtype, array.dtype)
+			np.testing.assert_array_equal(written[name], array)
 
 	@unittest.skipUnless(ADIOS2_AVAILABLE, "adios2 is not installed")
-	def test_raw_output_archives_the_schema_one_steps(self):
+	def test_raw_output_writes_the_schema_one_steps(self):
 		shots = [_shot(shot_number=i, rigol=i % 2 == 0) for i in range(3)]
 		with tempfile.TemporaryDirectory() as tmp:
 			path = Path(tmp) / "raw.bp"

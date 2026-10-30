@@ -10,7 +10,7 @@ for cross-checking.
 `python interf_analysis.py` runs both on a hard-coded .trc shot and overlays them (smoke test).
 
 analyze_shot() is the live path, raw scope codes of one shot -> per-port phase and density; the same
-call reproduces published results offline from the ADIOS archive.
+call reproduces published results offline from the ADIOS raw output.
 
 History: Patrick (2018-09) original CSD method, manual 2π fix-ups later automated
 (now np.unwrap), last edit 2020-09-13. Jia (2021-07-15) mlab.csd -> scipy.fft.
@@ -269,7 +269,7 @@ _IDENTITY = ("shot_date", "shot_number", "shot_time", "time_source")
 @dataclass
 class ShotResult:
 	# Shot identity (docs/ARCHITECTURE.md D14, D15), copied from the shot; None where it has none (a RawShot
-	# before interf_main assigns it, or a streamer archive step).
+	# before interf_main assigns it, or a streamer raw output step).
 	shot_date: int | None
 	shot_number: int | None
 	shot_time: float | None
@@ -283,7 +283,7 @@ class ShotResult:
 
 
 def analyze_shot(shot, ports=PORTS, plasma_length=0.4, ft_len=FT_len, max_points=None, ne_window_ms=None):
-	'''ShotResult of an interf_raw.RawShot, interf_payload.DecodedShot or interf_archive.ArchiveShot.
+	'''ShotResult of an interf_raw.RawShot, interf_payload.DecodedShot or interf_raw_reader.RawOutputShot.
 
 	Never raises on bad data: a port whose channels are absent, flat or too short, or whose analysis
 	fails, is returned with `missing` set, and the other ports are unaffected. Above `max_points`

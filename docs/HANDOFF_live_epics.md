@@ -1,7 +1,7 @@
 # Handoff: live analysis + EPICS IOC for `bapsf_interferometer`
 
 Repository `BaPSF/bapsf_interferometer`, branch `refactor/linux-epics-daq`. Updated 2026-10-18. This file is the
-implementation spec for the remaining commits. It implements the decisions in `docs/ARCHITECTURE.md` (D1–D16) and does
+implementation spec for the remaining commits. It implements the decisions in `docs/ARCHITECTURE.md` (D1–D17) and does
 not repeat their reasons. A question neither file answers goes to the user before code is written.
 
 **Single source:** this file is `docs/HANDOFF_live_epics.md` on `refactor/linux-epics-daq`, next to `docs/ARCHITECTURE.md`.
@@ -73,13 +73,15 @@ Facts from testing that still matter:
     `ShotIdentifier(counter, trig_lag_max_s).identify(shot)` (never raises) and `ShotCounter(state_path, log_paths=())`
     (C4s: `None` persists nothing; `close()` writes the last state).
   - `ShotResult` carries `shot_date`, `shot_number`, `shot_time` and `time_source` (None where the shot has none).
-  - `interf_archive.iter_steps`/`read_step`/`decode` read the ADIOS archive (streamer's schema 1, or 2 with PNG's
+  - `interf_raw_reader.iter_steps`/`read_step`/`decode` (the module was `interf_archive` until the D17 change, as in the
+    commit rows above; `RawOutputShot` was `ArchiveShot`) read the ADIOS raw output (streamer's schema 1, or 2 with PNG's
     numbers, D16; no shot identity). It imports `streamer.payload` for that schema, which is fine offline; the live path
     must not.
 
 ## 2. Conventions
 
-- Tabs in `interf_*.py`, `interf_sim/`, `tests/`, `diag_ioc/` and new modules. Never edit `streamer/` (D6).
+- Tabs in `interf_*.py`, `interf_sim/`, `tests/`, `diag_ioc/` and new modules. `streamer/` keeps its own style (each
+  file's indent, its names) and changes only with the streaming team's permission (D6).
 - Short docstrings; comments explain why; `log = logging.getLogger(__name__)`. Acquisition settings come from
   environment variables through `interf_raw._env`-style helpers.
 - Tests: stdlib `unittest` only (no pytest), `python -m unittest discover -s tests -v`. Tests that need optional
@@ -341,15 +343,50 @@ the `clients` extra and the script `interf-store`. As built also `interf_ioc.py`
   handled shot. The shot line ends with `png <run>-<shot> lag <s>` (`lag` = `host_time` − PNG shot time), or `png -`.
   `INTERF_RAW_OUTPUT` adds streamer's `RawOutput` beside the `IocLink`, as `interf_sim` does.
 - `interf_raw._consume(..., read_png=None)` calls it right after `host_time`; an exception gives None. `RawShot.png`.
-- `interf_archive.decode` reads schema 1 (`png` None) and 2 (`png` dict; -1/NaN read as None). Archive schema 2 is
+- `interf_raw_reader.decode` reads schema 1 (`png` None) and 2 (`png` dict; -1/NaN read as None). Raw output schema 2 is
   streamer's numbering, unrelated to the live link's `interf_payload` schema 2.
 - **For the streaming team** (their code, not edited here): `streamer.payload.shot_variables` should add four scalars
   from `RawShot.png`: `png_run` (int64), `png_run_time` (float64), `png_shot` (int64) and `png_shot_time` (float64), with
-  a missing `png` or None value written as -1 (ints) or NaN (floats), and raise `SCHEMA_VERSION` to 2. Until then the
-  archive stays schema 1 and PNG's numbers are only in the acquisition log's shot lines.
+  a missing `png` or None value written as -1 (ints) or NaN (floats), and raise `SCHEMA_VERSION` to 2. Until then raw
+  output stays schema 1 and PNG's numbers are only in the acquisition log's shot lines.
 - Tests (written, not run): `PngMonitor` against a fake `epics` module; the shot line's PNG part; `decode` of schema 2.
 - Scenario (`test-on-Bobby`): with PNG's IOC up, the shot lines' `lag` stays near 0–0.2 s (or about 3 s); stop PNG's IOC
   mid-run, and acquisition goes on with the disconnect and the reconnect logged once each.
+
+**Raw output never holds up acquisition (D17). Committed, not yet tested.** Two commits, so the streamer one
+can be handed back to the streaming team on its own.
+- A (`streamer/`, with the streaming team's permission, J 2026-10-29): `raw_output.py` (`error`), `raw_output_io.py`
+  (the mode by destination, the `error` status), `arguments.py`, `remote_consumer_io.py` (`abort()`, which also stops
+  relaunching), `consumer.py` (`--keep-listening`, keepalive), `single_socket_io.py` (keepalive), `network_access.py`
+  (`enable_keepalive`), `consumer_output.py` (names through the shared `unused_path`), `timing_log.py`
+  (`try_record`), `README.md`, `tests/test_streamer.py`. D17 lists what each change does.
+- B (ours): `interf_main.py` (`_start_raw_output`, logging set up before the outputs, the `raw output` outage log
+  after each shot, the stop order and counts), `docs/` (ARCHITECTURE D6, D9, D16, D17; ACQUISITION; LIVE_IOC; this
+  entry), `deploy/systemd/acquire.env.example`. No change to `interf_sim` beyond the new CLI flags, `interf_payload`,
+  the IOC, `interf_store` or HDF5. The PNG fields in `streamer.payload` stay a separate change (PNG entry above).
+- The wording "raw output" (J, 2026-10-30), in B: `interf_archive.py` is renamed `interf_raw_reader.py` and
+  `ArchiveShot` is `RawOutputShot` (`iter_steps`, `read_step` and `decode` are unchanged); comments and docstrings in
+  `interf_analysis.py`, `interf_payload.py`, `interf_raw.py`, `diag_ioc/link.py`, `interf_sim/__main__.py`; test class
+  and method names in `tests/test_interf_analysis.py` and `tests/test_interf_payload.py`; `pyproject.toml`;
+  `README.md`. The commit rows in §1 and the PNG entry's commit label keep the old name, as history.
+- Not run: any test, and nothing live. Syntax checks only.
+- Tests (written, not run), in `tests/test_streamer.py`: `write()` returns at once while a fake output's opening hangs;
+  a write error is retried on a new output with no error to the caller; directory rotation with an injected clock
+  never reuses a name; an existing path gets `-1`; `close(timeout)` returns within the timeout with a hanging fake and
+  reports unsent shots; `settings_from_env`.
+- Scenario (`test-on-Bobby`):
+  - the unit tests;
+  - live, a local folder (`INTERF_RAW_OUTPUT=/var/lib/interferometer/raw/`, `INTERF_RAW_OUTPUT_FILE_S=300`): restart
+    acquisition twice and check that no file is overwritten, a new file starts every 5 min, and the stop takes under
+    30 s;
+  - live, network: a consumer started by hand with `--keep-listening`. Stop it mid-run, then start it again. The IOC
+    and HDF5 must keep getting a shot every 3 s, and raw output must resume within one retry (`io.open` after
+    `io.error` in the timing log). The acquisition log shows `raw output failed` once and `raw output recovered`
+    once;
+  - live, network: cut the network between Bobby and the consumer (or drop its packets) while acquisition idles
+    between shots; the consumer drops the connection within about a minute (keepalive) and accepts the producer's
+    reconnect;
+  - throughout, the timing line's `outputs` value stays under 1 ms.
 
 **C7 `feat: Phoebus screens`.** Files: `phoebus/interf_overview.bob`, `phoebus/diag_ioc_health.bob`, `phoebus/settings.ini`,
 `tests/test_phoebus_screens.py`.

@@ -3,7 +3,7 @@
 Repo `BaPSF/bapsf_interferometer`, branch `refactor/linux-epics-daq`. Done: C4r `4ee26b8`, the link socket lock
 `ebb0b9f`, C4s `465b76a`, C5 `b8ecf40` and C6 `442c405`; C4s and C5 are tested on Linux with real recordings. `git log`
 has the current head.
-Status: **D1–D15 ACCEPTED by J on 2026-10-08, D16 on 2026-10-28.** Every agent follows this file, and
+Status: **D1–D15 ACCEPTED by J on 2026-10-08, D16 on 2026-10-28; D17 proposed, for J to accept.** Every agent follows this file, and
 `HANDOFF_live_epics.md` implements it commit by commit. Anything neither covers goes to J before code is written.
 
 **Single source:** this file is `docs/ARCHITECTURE.md` on `refactor/linux-epics-daq`, next to
@@ -15,7 +15,7 @@ authoritative. Doc changes land only as commits by the local agent; other sessio
 
 ```
 interf_main (acquisition, Linux)
-  └─ RawShot ─┬─ RawOutput (streamer/, ADIOS BP5)        -> complete raw archive
+  └─ RawShot ─┬─ RawOutput (streamer/, ADIOS BP5)        -> complete raw output
               └─ IocLink (diag_ioc/link.py, latest-wins) -> unix socket / loopback TCP
                                                               │
 diag_ioc host (pythonSoftIOC, one process per config)  <──────┘
@@ -39,7 +39,7 @@ the record timestamps are `host_time`. C4r (`4ee26b8`) replaced both, per D6, D1
 | D6 | Live data contract | Independent of streamer; encoding beside `interf_main`, socket code in `diag_ioc` |
 | D7 | Per-shot consistency | One timestamp per shot, `SHOT:NUM` set last, PVA group `<P>:SHOT` |
 | D8 | Outside group | Read-only access to documented PVs; nothing built for them |
-| D9 | Source of record | ADIOS raw archive; IOC-fed HDF5 is best effort |
+| D9 | Source of record | ADIOS raw output; IOC-fed HDF5 is best effort |
 | D10 | Supervision | systemd system units (IOC, acquisition and HDF5 store) as the `diag-ioc` account |
 | D11 | Dependencies | Exact pins for `softioc`, `epicscorelibs`, `pvxslibs`, `p4p` |
 | D12 | Repo layout | `diag_ioc` stays here until a 2nd diagnostic exists |
@@ -47,6 +47,7 @@ the record timestamps are `host_time`. C4r (`4ee26b8`) replaced both, per D6, D1
 | D14 | Shot identity | `shot_date` (YYYYMMDD, LA local) + `shot_number` from 0 each day, persisted |
 | D15 | Shot time | LeCroy WAVEDESC trigger time (scope NTP-synced), float64 epoch seconds |
 | D16 | PNG run and shot | Optional CA monitor in `interf_main`, copied at capture detection, ADIOS only; readers match by `host_time` |
+| D17 | Raw output never holds up acquisition | streamer's writer thread opens, retries and drains; `write()` only queues (proposed) |
 
 ### D1. IOC technology: pythonSoftIOC
 - A real EPICS 7 IOC (standard records, alarms, devIocStats, CA + PVA) with the analysis in the same process,
@@ -123,7 +124,7 @@ shot after an IOC start resets its baseline: a restart shows only as a gap in `S
 ### D5. Analysis runs in the IOC process
 - Raw shots are not PVs, so analysis must sit on the raw-data path (the link from `interf_main`). Phoebus,
   `interf_store` and other clients only consume results. Offline, `analyze_shot()` re-runs the same analysis on
-  the ADIOS archive.
+  the ADIOS raw output.
 - Keeps acquisition's critical path to scope I/O only. Analysis can crash or restart without touching
   acquisition. The cost is about 12 MB per shot over a local socket. Acquisition and the IOC share a host (unix
   socket) or use an allow-listed loopback TCP link, since the link is unauthenticated.
@@ -131,7 +132,8 @@ shot after an IOC start resets its baseline: a restart shows only as a gap in `S
 - `analyze()` stays pure and picklable, so a process pool can be added later without touching modules.
 
 ### D6. Live link independent of streamer
-- `streamer/` is maintained by a separate group. We never modify it, and nothing on the live path imports it.
+- `streamer/` belongs to the streaming team; we change it only with their permission (J, 2026-10-29) and hand every
+  change back; the live link never imports it.
 - Interferometer side, beside `interf_main` (e.g. `interf_payload.py`): the encoder from `RawShot` to the link
   message (`lecroy_*`, `rigol_*` arrays) and its decoder for the IOC module. Copied from `streamer/payload.py`,
   not imported.
@@ -204,8 +206,8 @@ shot after an IOC start resets its baseline: a restart shows only as a gap in `S
   a start, not a shot, and is skipped; a duplicate after a reconnect is skipped and counted. On SIGTERM or SIGINT it
   drains the queue and logs a summary. `interf-store.service` runs it as `diag-ioc` (D10) with
   `INTERF_DATA_DIR=/var/lib/interferometer/hdf5`; without the variable the directory is `~/data/interferometer`.
-- The ADIOS raw archive is the record. Anything analyzed can be regenerated with `analyze_shot` over
-  `interf_archive.iter_steps` (our reader; streamer only writes the archive). ADIOS carries no D14 fields. An archived shot is identified by its shot time, recomputed
+- The ADIOS raw output is the record. Anything analyzed can be regenerated with `analyze_shot` over
+  `interf_raw_reader.iter_steps` (our reader; streamer only writes raw output). ADIOS carries no D14 fields. A raw output shot is identified by its shot time, recomputed
   from the stored WAVEDESC with the D15 conversion, which also gives `shot_date`.
 
 ### D10. Supervision: systemd
@@ -331,19 +333,65 @@ shot after an IOC start resets its baseline: a restart shows only as a gap in `S
   lag is about 0–0.2 s normally, and about 3 s (the previous shot's value) when PNG's write came after our detection.
   `host_time` is used, not the LeCroy trigger time (D15), because the scope clock steps by about 0.3 s and has been off
   by up to 1.2 s. This assumes NTP on Bobby and on PNG's server.
-- **ADIOS only:** the four values travel in `RawShot.png` to the raw archive (schema 2: `png_run` int64, `png_run_time`
+- **ADIOS only:** the four values travel in `RawShot.png` to raw output (schema 2: `png_run` int64, `png_run_time`
   float64, `png_shot` int64, `png_shot_time` float64; -1/NaN = no value) and to the acquisition shot line
-  (`png <run>-<shot> lag <s>`). streamer writes them once its group adds them (handoff §4, PNG); `interf_archive.decode`
+  (`png <run>-<shot> lag <s>`). streamer writes them once its group adds them (handoff §4, PNG); `interf_raw_reader.decode`
   reads schemas 1 and 2. HDF5 is keyed by our `shot_date` + `shot_number` and has no PNG fields (D9); the live link
   (`interf_payload`), the IOC and `interf_store` do not carry them. They do not replace our shot identity (D14).
-- **Live raw archive:** `INTERF_RAW_OUTPUT` (a destination) makes `interf_main` write every shot through streamer's
-  `RawOutput`, beside the `IocLink`, as `interf_sim --raw-output` does. Unset, there is no archive, as before. streamer
-  is imported only then; the live link still never imports it (D6).
+- **Live raw output:** `INTERF_RAW_OUTPUT` (a destination) makes `interf_main` write every shot through streamer's
+  `RawOutput`, beside the `IocLink`, as `interf_sim --raw-output` does; how it avoids holding up acquisition is D17.
+  Unset, there is no raw output, as before. streamer is imported only then; the live link still never imports it (D6).
 - **Optional and fail-safe:** off unless `INTERF_PNG_RUN_PV` and `INTERF_PNG_SHOT_PV` are both set; otherwise neither
   `interf_png` nor pyepics is imported. If PNG's IOC is down, acquisition runs normally, shots keep the last value (or
   none), and pyepics reconnects on its own. No `caget` per shot: it waits up to 5 s when the IOC is unreachable.
 - Amends the rule "`interf_main` never imports EPICS" (handoff §2): allowed for this one optional CA monitor. The main
   thread's added work (the copy, the shot-line part, the flush) stays O(1), never blocks and never raises.
+
+### D17. Raw output never holds up acquisition (proposed 2026-10-29, for J to accept)
+- **Rule:** acquisition must catch every shot. Streaming must never hold up the next shot, its analysis in the IOC or
+  its HDF5 store, because raw output may go over a network, and networks fail. A shot that cannot be written in time
+  is dropped from raw output and counted, never waited for.
+- **Wording (J, 2026-10-30):** code and docs say "raw output" (or "raw output file"); the reader is
+  `interf_raw_reader`.
+- **In streamer** (changed with the streaming team's permission, D6; handed back to them):
+  1. `RawOutput.write(shot)` assigns `shot_index`, records the `raw_output.write` timing event and queues the shot
+     object itself. `shot_variables` runs on the writer thread; `RawShot` arrays are fresh per acquisition and never
+     changed afterwards. `write()` raises only after `close()`.
+  2. `RawOutput(settings)` makes only fast local checks (settings values, the private key, the compression
+     configuration, ADIOS2 for direct output) and starts the writer thread. Opening, connecting and launching all run
+     on that thread while shots queue. The mode follows the destination, never the key (J, 2026-10-30): an existing
+     directory or a path ending in `/` is direct ADIOS to local files, even with a key; a `.conf` is the SSH-launched
+     consumer; any other existing file is a connection file from a consumer started by hand; a path that does not
+     exist is one direct ADIOS output. The `.conf` and connection-file modes need the private key, and a missing key
+     (or a file that holds no connection information) fails the start-up check. All modes stay available to
+     `interf_main` and `interf_sim`.
+  3. The writer never dies. On any error from opening or writing an output it records `io.error`, closes or aborts
+     that output, waits `retry_delay_seconds` (3 s), opens a new one the same way (re-reading the connection file,
+     relaunching for a `.conf`, a new file for direct output) and retries the same step. Queued steps keep their order;
+     a full queue drops a queued step, as before. `RestartingSingleSocketIO` keeps its own reconnect. `error` holds the
+     last error text while the writer fails and None once a step is written again; it is a plain reference read, with
+     no lock.
+  4. New settings: `socket_timeout_seconds` (30 s, for SingleSocketIO's connect and ack, as the `.conf` default),
+     `retry_delay_seconds` (3 s) and `file_interval_seconds` (3600 s); `buffer_seconds` stays.
+  5. Direct ADIOS never overwrites. A directory destination gets timestamped files, a new one every
+     `file_interval_seconds` (the consumer's rotating writer and names). A path that exists is written as
+     `<stem>-1<suffix>`, `-2`, ..., so `interf_sim --raw-output raw.bp` still works.
+  6. `close(timeout)` stops accepting, lets the writer drain for at most `timeout` s, then aborts a socket output,
+     records `io.close` and reports `unsent_shots`. The writer thread is a daemon, so a stuck destination never keeps
+     the process alive.
+  7. The consumer's `--keep-listening` keeps its listener and connection file after a producer disconnects and accepts
+     the next one, with a new output file per connection. Off by default.
+  8. TCP keepalive (idle 30 s, then 3 probes 10 s apart, where the platform has the options) on the producer's socket
+     and on the consumer's producer connection, so a cut network is noticed within about a minute. No receive
+     timeout: gaps of minutes between shots are normal.
+- **In `interf_main`:** the settings come from `INTERF_RAW_OUTPUT` and `INTERF_RAW_OUTPUT_*`
+  (`streamer.arguments.settings_from_env`), with a 60 s queue by default. A failing local check is logged and
+  acquisition runs without raw output. After each shot it reads `RawOutput.error` and logs it through
+  `Outage("raw output")`: once when raw output starts failing, every 5 min while it lasts, once on recovery. The
+  per-retry `io.error` lines stay in the timing log. At stop, the `IocLink` closes first, then
+  `RawOutput.close(timeout=15)`, and the written, dropped and unsent counts are logged.
+- **Out of scope, for J:** retention of local raw output files, or moving them off Bobby (about 9.6 GB/h, 230 GB/day
+  of continuous running).
 
 ## 2. Open
 

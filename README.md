@@ -15,7 +15,7 @@ flowchart LR
     ioc["<b>Analysis IOC</b><br/>diag_ioc + interf_ioc.py<br/>phase and density per port<br/>read-only PVs, CA and PVA"]
     store["<b>HDF5 store</b><br/>interf_store.py<br/>daily file, best effort"]
     screens["<b>Phoebus screens</b><br/>C7, planned"]
-    arch["<b>Raw archive</b><br/>ADIOS BP5, streamer/<br/>optional: INTERF_RAW_OUTPUT"]
+    arch["<b>Raw output</b><br/>ADIOS BP5, streamer/<br/>optional: INTERF_RAW_OUTPUT"]
   end
   outside["<b>Outside clients</b><br/>read-only"]
 
@@ -39,7 +39,7 @@ flowchart LR
 3. **The IOC** ([interf_ioc.py](interf_ioc.py), on the [diag_ioc/](diag_ioc/) host) runs `analyze_shot` ([interf_analysis.py](interf_analysis.py)) and publishes phase and density for each port under `LAPD:DIAG:INTERF`. Every PV of a shot carries the shot's timestamp, and the PVA group `LAPD:DIAG:INTERF:SHOT` delivers the whole shot as one update.
 4. **The HDF5 store** ([interf_store.py](interf_store.py)), a separate process, subscribes to that group and writes each shot to `interferometer_data_<YYYY-MM-DD>.hdf5`, in the same layout the previous acquisition wrote.
 
-A port without data (channel off or flat, Rigol down) is published as missing with its reason, never as zeros. The live path is best effort: the raw archive is meant to be the complete record (D9 in [ARCHITECTURE.md](docs/ARCHITECTURE.md)).
+A port without data (channel off or flat, Rigol down) is published as missing with its reason, never as zeros. The live path is best effort: raw output is meant to be the complete record (D9 in [ARCHITECTURE.md](docs/ARCHITECTURE.md)).
 
 ## Quick start
 
@@ -80,7 +80,7 @@ In production the IOC, acquisition and the store run as systemd units from [depl
 | [interf_ioc.py](interf_ioc.py) | The interferometer's IOC module: link message → `analyze_shot` → PVs and the `SHOT` group |
 | [interf_store.py](interf_store.py) | HDF5 store, a PVA client of the `SHOT` group |
 | [interf_file.py](interf_file.py) | HDF5 schema and writers |
-| [interf_archive.py](interf_archive.py) | Reads the ADIOS raw archive back for offline reanalysis with `analyze_shot` |
+| [interf_raw_reader.py](interf_raw_reader.py) | Reads raw output files (ADIOS) back for offline reanalysis with `analyze_shot` |
 | [interf_sim/](interf_sim/) | Offline simulation: `.trc` replay, synthetic shots, a development link listener |
 | [streamer/](streamer/) | ADIOS/socket raw output; maintained by another group, not edited here |
 | [deploy/](deploy/) | Production IOC config, read-only access file, systemd units |

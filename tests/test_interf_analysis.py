@@ -13,7 +13,7 @@ from interf_analysis import (FT_len, OFFSET_WINDOWS, analyze_shot, get_calibrati
                              rigol_trace)
 from interf_sim.synthetic import gaussian_phase, make_raw_shot, make_wavedesc, synthetic_shots, write_trc_shots
 from interf_sim.trc_replay import ReplayLeCroy, iter_shots, trc_shots
-from interf_archive import ADIOS2_AVAILABLE, SCHEMAS, decode, iter_steps, read_step
+from interf_raw_reader import ADIOS2_AVAILABLE, SCHEMAS, decode, iter_steps, read_step
 from streamer.adios_io import AdiosIO
 from streamer.payload import SCHEMA_VERSION, shot_variables
 
@@ -191,7 +191,7 @@ class AnalyzeShotTests(unittest.TestCase):
 		self.assertEqual(port.ne_mean, full.ne_mean)  # averaged before striding
 
 
-class ArchiveRoundTripTests(unittest.TestCase):
+class RawOutputRoundTripTests(unittest.TestCase):
 	def test_decode_inverts_shot_variables(self):
 		shot = _shot()
 		decoded = decode(shot_variables(shot, 7))
@@ -202,7 +202,7 @@ class ArchiveRoundTripTests(unittest.TestCase):
 		_assert_channels_equal(self, decoded.rigol, shot.rigol)
 
 		direct, via_payload = analyze_shot(shot), analyze_shot(decoded)
-		self.assertIsNone(via_payload.shot_number)  # the archive (streamer schema 1) carries no shot identity
+		self.assertIsNone(via_payload.shot_number)  # raw output (streamer schema 1) carries no shot identity
 		for name, port in direct.ports.items():
 			np.testing.assert_array_equal(via_payload.ports[name].ne, port.ne)
 
@@ -216,8 +216,8 @@ class ArchiveRoundTripTests(unittest.TestCase):
 		                 (7, shot.host_time, shot.critical_path_s))
 
 	@unittest.skipUnless(ADIOS2_AVAILABLE, "adios2 is not installed")
-	def test_archived_steps_with_changing_layout_decode(self):
-		# As in a real archive, the layout changes per step: record length and missing_json length
+	def test_raw_output_steps_with_changing_layout_decode(self):
+		# As in a real raw output file, the layout changes per step: record length and missing_json length
 		# vary, the Rigol is absent from odd steps, and C4 is absent from step 2.
 		layouts = [(8192, True), (4096, False), (8192, True), (6144, False)]
 		shots = [make_raw_shot(n, DT, noise_v=0.01, host_time=HOST_TIME + 3 * i, rigol=rigol, rng=np.random.default_rng(i))
@@ -244,9 +244,9 @@ class ArchiveRoundTripTests(unittest.TestCase):
 						                 (i, shot.host_time, shot.missing))
 						_assert_channels_equal(self, decoded.lecroy, shot.lecroy)
 						_assert_channels_equal(self, decoded.rigol, shot.rigol)
-						via_archive = analyze_shot(decoded)
+						via_raw_output = analyze_shot(decoded)
 						for name, port in analyze_shot(shot).ports.items():
-							np.testing.assert_array_equal(via_archive.ports[name].ne, port.ne)
+							np.testing.assert_array_equal(via_raw_output.ports[name].ne, port.ne)
 				self.assertEqual(set(last), set(steps[-1]))
 
 	@unittest.skipUnless(ADIOS2_AVAILABLE, "adios2 is not installed")
@@ -255,7 +255,7 @@ class ArchiveRoundTripTests(unittest.TestCase):
 		# never marked: reading must return the steps written so far, not wait for the next one. A
 		# wait holds the GIL, so the reader runs in a subprocess, where a regression times out.
 		reader = ("import sys\n"
-		          "from interf_archive import decode, iter_steps, read_step\n"
+		          "from interf_raw_reader import decode, iter_steps, read_step\n"
 		          "print([decode(variables).shot_index for variables in iter_steps(sys.argv[1])])\n"
 		          "try:\n"
 		          "    read_step(sys.argv[1], 2)\n"

@@ -124,14 +124,14 @@ class RawShot:
 	missing: dict[str, str]  # {"lecroy" | "rigol": reason}; "lecroy" can coexist with partial lecroy data
 	critical_path_s: float  # capture detected -> re-armed (or not re-armed, on a stop request)
 	# Shot identity, assigned by interf_main after the re-arm (interf_shot; docs/ARCHITECTURE.md D14, D15). Not
-	# archived: streamer.payload ignores these, so the ADIOS output is unchanged.
+	# in raw output: streamer.payload ignores these, so the ADIOS output is unchanged.
 	shot_date: int | None = None  # YYYYMMDD, America/Los_Angeles
 	shot_number: int | None = None  # from 0 each shot_date
 	shot_time: float | None = None  # epoch s: the LeCroy trigger time, or host_time when time_source is "host"
 	time_source: str | None = None  # "trigger" | "host"
 	# Logged by interf_main only: interf_payload and streamer.payload encode named fields, so neither carries it.
 	timing: StepTimes = field(default_factory=StepTimes)
-	png: dict | None = None  # PngMonitor.latest() at capture detection; None without PNG. Raw archive only (D16)
+	png: dict | None = None  # PngMonitor.latest() at capture detection; None without PNG. Raw output only (D16)
 
 
 #===============================================================================================================================================

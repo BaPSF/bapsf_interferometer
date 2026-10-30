@@ -1,6 +1,5 @@
 # coding: utf-8
 """Acquisition loop: acquire_shot() until stopped, one log line per shot. Linux only."""
-import contextlib
 import logging.handlers
 import os
 import signal
@@ -19,7 +18,15 @@ SHOT_STATE = os.environ.get("INTERF_SHOT_STATE", str(Path.home() / "data" / "sta
 # PNG's CA PVs (D16)
 PNG_RUN_PV = os.environ.get("INTERF_PNG_RUN_PV", "")
 PNG_SHOT_PV = os.environ.get("INTERF_PNG_SHOT_PV", "")
-RAW_OUTPUT_TIMING_LOG = "raw_output.jsonl"  # in LOG_DIR, with INTERF_RAW_OUTPUT; streamer appends, never rotates
+# Raw output (D9, D17): INTERF_RAW_OUTPUT is the destination, INTERF_RAW_OUTPUT_* its settings
+# (streamer.arguments.settings_from_env).
+RAW_OUTPUT_ENV = "INTERF_RAW_OUTPUT"
+RAW_OUTPUT_TIMING_LOG = "raw_output_%Y%m%dT%H%M%S.jsonl"  # strftime at start, in LOG_DIR: one file per start
+# Default queue: 20 shots at 3 s, about 240 MB at ~12 MB a shot (D5); streamer's 600 s default would hold ~2.4 GB.
+RAW_OUTPUT_BUFFER_S = 60.0
+# Raw output's drain at stop; with the shot in flight, the scope release and the link's close it stays under the
+# unit's TimeoutStopSec=30.
+RAW_OUTPUT_CLOSE_TIMEOUT_S = 15.0
 
 log = logging.getLogger("interf_main")
 _stop = False
@@ -38,6 +45,8 @@ def stop_requested():
 
 
 def _setup_logging():
+	if logging.getLogger().handlers:
+		return  # configured already: by __main__ before the outputs start, or by interf_sim's run_main
 	os.makedirs(LOG_DIR, exist_ok=True)
 	# Midnight rotation: ~29k shots/day, each a shot and a timing line (plus a link line with INTERF_IOC_LINK).
 	file_handler = logging.handlers.TimedRotatingFileHandler(
@@ -145,6 +154,34 @@ def _start_png():
 		return None
 
 
+def _start_raw_output():
+	"""streamer's RawOutput for RAW_OUTPUT_ENV, or None (unset, or its local checks failed: no raw output, D17)."""
+	if not os.environ.get(RAW_OUTPUT_ENV):
+		return None
+	try:
+		# Only here: the live link never imports streamer (D6).
+		from streamer import RawOutput
+		from streamer.arguments import settings_from_env
+		settings = settings_from_env(RAW_OUTPUT_ENV, Path(LOG_DIR) / time.strftime(RAW_OUTPUT_TIMING_LOG),
+		                             buffer_seconds=RAW_OUTPUT_BUFFER_S)
+		output = RawOutput(settings)  # only local checks; the destination is opened on its writer thread
+	except Exception:
+		log.exception("raw output not started; acquisition continues without it")
+		return None
+	log.info("raw output started: %s, timing log %s", settings.destination, settings.timing_log)
+	return output
+
+
+def _report_raw_output(raw_outputs, outage):
+	"""Log raw output failing and recovering from its `error` status: a reference read, no lock and no I/O (D17)."""
+	for output in raw_outputs:
+		error = output.error  # read once: the writer thread may clear it at any time
+		if error is not None:
+			outage.failed(error, "shots wait in its queue, and a full queue drops some")
+			return
+	outage.ended()
+
+
 def main(outputs=(), identifier=None):
 	"""Acquire until stopped; each shot goes to every `outputs` item's write(shot). The caller closes them.
 
@@ -157,6 +194,10 @@ def main(outputs=(), identifier=None):
 	png = _start_png()
 	read_png = png.latest if png is not None else None
 	_outages.clear()  # an output reused from an earlier run in this process starts healthy
+	# streamer.RawOutput fails on its own writer thread, never in write(), and reports it as `error` (D17). Checked on
+	# the class, so a mock output does not count.
+	raw_outputs = [o for o in outputs if hasattr(type(o), "error")]
+	raw_outage = Outage(log, "raw output")
 	signal.signal(signal.SIGINT, _request_stop)
 	signal.signal(signal.SIGTERM, _request_stop)  # systemd stop
 
@@ -173,6 +214,7 @@ def main(outputs=(), identifier=None):
 				shot = acquire_shot(state, stop_requested, read_png=read_png)
 				if shot is not None:
 					prev_trig = _handle_shot(shot, prev_trig, identifier, outputs)
+					_report_raw_output(raw_outputs, raw_outage)
 					if png is not None:
 						png.flush()
 			except Exception:
@@ -191,26 +233,23 @@ def main(outputs=(), identifier=None):
 
 
 if __name__ == "__main__":
-	raw_destination = os.environ.get("INTERF_RAW_OUTPUT")  # streamer's raw archive: an ADIOS path (D9, D16)
+	_setup_logging()  # before the outputs, so their start-up messages reach the acquisition log
 	ioc_link = os.environ.get("INTERF_IOC_LINK")  # unix:/path or tcp:host:port of the diag_ioc listener
-	raw_output = None
-	with contextlib.ExitStack() as stack:  # outputs closed and reported as interf_sim/__main__.py does
-		outputs = []
-		# The link first: RawOutput.write copies the arrays on this thread (streamer.payload), so the shot reaches the IOC
-		# before that copy, not after it.
-		if ioc_link:
-			import interf_payload
-			# diag_ioc loads no EPICS library (diag_ioc/__init__.py); interf_main's only one is pyepics, for PNG (D16).
-			from diag_ioc.link import IocLink
-			outputs.append(stack.enter_context(IocLink(ioc_link, encode=interf_payload.encode)))
-		if raw_destination:
-			from streamer import RawOutput  # only here: the live link never imports streamer (D6)
-			from streamer.arguments import RawOutputSettings
-			# A socket destination also needs a private key, not passed here.
-			Path(LOG_DIR).mkdir(parents=True, exist_ok=True)  # main() creates it only later
-			raw_output = stack.enter_context(RawOutput(RawOutputSettings(
-				destination=raw_destination, timing_log=os.path.join(LOG_DIR, RAW_OUTPUT_TIMING_LOG))))
-			outputs.append(raw_output)
-		main(outputs=outputs)
-		if raw_output is not None and raw_output.dropped_shots:
-			log.warning("raw output dropped %d shots", raw_output.dropped_shots)
+	link = None
+	if ioc_link:
+		import interf_payload
+		# diag_ioc loads no EPICS library (diag_ioc/__init__.py); interf_main's only one is pyepics, for PNG (D16).
+		from diag_ioc.link import IocLink
+		link = IocLink(ioc_link, encode=interf_payload.encode)
+	raw_output = _start_raw_output()
+	try:
+		main(outputs=[o for o in (link, raw_output) if o is not None])
+	finally:
+		# The link first: it is local and quick, while raw output may wait on a network destination.
+		if link is not None:
+			link.close()
+		if raw_output is not None:
+			raw_output.close(timeout=RAW_OUTPUT_CLOSE_TIMEOUT_S)
+			log.log(logging.WARNING if raw_output.dropped_shots or raw_output.unsent_shots else logging.INFO,
+			        "raw output closed: written %d, dropped %d, unsent %d", raw_output.written_shots,
+			        raw_output.dropped_shots, raw_output.unsent_shots)
