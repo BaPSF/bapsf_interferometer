@@ -335,7 +335,7 @@ shot after an IOC start resets its baseline: a restart shows only as a gap in `S
   by up to 1.2 s. This assumes NTP on Bobby and on PNG's server.
 - **ADIOS only:** the four values travel in `RawShot.png` to raw output (schema 2: `png_run` int64, `png_run_time`
   float64, `png_shot` int64, `png_shot_time` float64; -1/NaN = no value) and to the acquisition shot line
-  (`png <run>-<shot> lag <s>`). streamer writes them once its group adds them (handoff §4, PNG); `interf_raw_reader.decode`
+  (`png <run>-<shot> lag <s>`). streamer writes them on every step (handoff §4, PNG); `interf_raw_reader.decode`
   reads schemas 1 and 2. HDF5 is keyed by our `shot_date` + `shot_number` and has no PNG fields (D9); the live link
   (`interf_payload`), the IOC and `interf_store` do not carry them. They do not replace our shot identity (D14).
 - **Live raw output:** `INTERF_RAW_OUTPUT` (a destination) makes `interf_main` write every shot through streamer's

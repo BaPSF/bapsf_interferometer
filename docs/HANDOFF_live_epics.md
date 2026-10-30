@@ -345,10 +345,10 @@ the `clients` extra and the script `interf-store`. As built also `interf_ioc.py`
 - `interf_raw._consume(..., read_png=None)` calls it right after `host_time`; an exception gives None. `RawShot.png`.
 - `interf_raw_reader.decode` reads schema 1 (`png` None) and 2 (`png` dict; -1/NaN read as None). Raw output schema 2 is
   streamer's numbering, unrelated to the live link's `interf_payload` schema 2.
-- **For the streaming team** (their code, not edited here): `streamer.payload.shot_variables` should add four scalars
-  from `RawShot.png`: `png_run` (int64), `png_run_time` (float64), `png_shot` (int64) and `png_shot_time` (float64), with
-  a missing `png` or None value written as -1 (ints) or NaN (floats), and raise `SCHEMA_VERSION` to 2. Until then raw
-  output stays schema 1 and PNG's numbers are only in the acquisition log's shot lines.
+- After that commit, `streamer.payload.shot_variables` (with the streaming team's permission, J 2026-10-29, to hand
+  back), schema 2: the four `png_*` scalars from `RawShot.png` on every step, as in D16 and the streamer README
+  table; the conversion never raises (it runs on the writer thread). `tests/test_interf_analysis.py` now decodes the
+  real writer's output (all, some and no PNG values; shape (1,)) and a schema 1 step. Not yet committed or tested.
 - Tests (written, not run): `PngMonitor` against a fake `epics` module; the shot line's PNG part; `decode` of schema 2.
 - Scenario (`test-on-Bobby`): with PNG's IOC up, the shot lines' `lag` stays near 0–0.2 s (or about 3 s); stop PNG's IOC
   mid-run, and acquisition goes on with the disconnect and the reconnect logged once each.

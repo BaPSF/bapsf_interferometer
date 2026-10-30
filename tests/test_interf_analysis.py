@@ -1,3 +1,4 @@
+import dataclasses
 import math
 import subprocess
 import sys
@@ -21,6 +22,7 @@ N = FT_len * 200
 DT = 1e-8
 PHASE = gaussian_phase(N * DT / 2, N * DT / 8)
 HOST_TIME = 1_700_000_000.25
+PNG = {"run": 12, "run_time": HOST_TIME - 60.0, "shot": 345, "shot_time": HOST_TIME - 0.15}  # as PngMonitor.latest()
 REPO_ROOT = Path(__file__).resolve().parent.parent
 WINDOW_MS = (0.4, 0.6)  # around the bump centre of the 1.024 ms record
 
@@ -202,18 +204,18 @@ class RawOutputRoundTripTests(unittest.TestCase):
 		_assert_channels_equal(self, decoded.rigol, shot.rigol)
 
 		direct, via_payload = analyze_shot(shot), analyze_shot(decoded)
-		self.assertIsNone(via_payload.shot_number)  # raw output (streamer schema 1) carries no shot identity
+		self.assertIsNone(via_payload.shot_number)  # raw output carries no shot identity
 		for name, port in direct.ports.items():
 			np.testing.assert_array_equal(via_payload.ports[name].ne, port.ne)
 
 	def test_scalars_of_shape_one_decode(self):
-		shot = _shot()
+		shot = dataclasses.replace(_shot(), png=PNG)
 		variables = shot_variables(shot, 7)
-		for name in ("schema_version", "shot_index", "host_time", "critical_path_s"):
+		for name in ("schema_version", "shot_index", "host_time", "critical_path_s", *(f"png_{key}" for key in PNG)):
 			variables[name] = variables[name].reshape(1)  # as adios2 FileReader returns them
 		decoded = decode(variables)
-		self.assertEqual((decoded.shot_index, decoded.host_time, decoded.critical_path_s),
-		                 (7, shot.host_time, shot.critical_path_s))
+		self.assertEqual((decoded.shot_index, decoded.host_time, decoded.critical_path_s, decoded.png),
+		                 (7, shot.host_time, shot.critical_path_s, PNG))
 
 	@unittest.skipUnless(ADIOS2_AVAILABLE, "adios2 is not installed")
 	def test_raw_output_steps_with_changing_layout_decode(self):
@@ -280,26 +282,29 @@ class RawOutputRoundTripTests(unittest.TestCase):
 			decode(variables)
 
 	def test_schema_two_carries_png(self):
-		shot = _shot(rigol=False)
-		self.assertIsNone(decode(shot_variables(shot, 0)).png)  # schema 1
-		png = {"run": 12, "run_time": HOST_TIME - 60.0, "shot": 345, "shot_time": HOST_TIME - 0.15}
-		decoded = decode(_schema_two(shot_variables(shot, 0), png))
+		shot = dataclasses.replace(_shot(rigol=False), png=PNG)
+		decoded = decode(shot_variables(shot, 0))
 		self.assertEqual(decoded.schema_version, 2)
-		self.assertEqual(decoded.png, png)
+		self.assertEqual(decoded.png, PNG)
 		self.assertEqual(decoded.host_time, shot.host_time)
 		_assert_channels_equal(self, decoded.lecroy, shot.lecroy)
 
-	def test_schema_two_reads_minus_one_and_nan_as_no_value(self):
-		png = {"run": -1, "run_time": math.nan, "shot": -1, "shot_time": math.nan}
-		decoded = decode(_schema_two(shot_variables(_shot(rigol=False), 0), png))
-		self.assertEqual(decoded.png, dict.fromkeys(png))
+	def test_missing_png_values_decode_as_none(self):
+		# Written as -1/NaN; no PNG (png None) and PNG before its first shot number look the same.
+		partial = dict(PNG, shot=None, shot_time=None)
+		for png, expected in ((None, dict.fromkeys(PNG)), (partial, partial)):
+			with self.subTest(png=png):
+				shot = dataclasses.replace(_shot(rigol=False), png=png)
+				self.assertEqual(decode(shot_variables(shot, 0)).png, expected)
+
+	def test_schema_one_has_no_png(self):
+		self.assertIsNone(decode(_schema_one(shot_variables(_shot(rigol=False), 0))).png)
 
 
-def _schema_two(variables, png):
-	"""Schema 1 `variables` as the planned schema 2 writes `png` (handoff §4, PNG); scalars of shape (1,), as adios2 reads them."""
-	variables = dict(variables, schema_version=np.array([2], dtype=np.uint16))
-	for key, dtype in (("run", np.int64), ("run_time", np.float64), ("shot", np.int64), ("shot_time", np.float64)):
-		variables[f"png_{key}"] = np.array([png[key]], dtype=dtype)
+def _schema_one(variables):
+	"""`variables` as schema 1 wrote them, before the png_* scalars (D16)."""
+	variables = {name: value for name, value in variables.items() if not name.startswith("png_")}
+	variables["schema_version"] = np.array(1, dtype=np.uint16)
 	return variables
 
 

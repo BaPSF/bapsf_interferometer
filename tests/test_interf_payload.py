@@ -63,7 +63,7 @@ class RoundTripTests(unittest.TestCase):
 
 	def test_other_schema_versions_are_rejected(self):
 		variables = interf_payload.encode(_shot())
-		for version in (1, interf_payload.SCHEMA_VERSION + 1):  # 1: a streamer raw output step
+		for version in (1, interf_payload.SCHEMA_VERSION + 1):
 			variables["schema_version"] = np.array(version, dtype=np.uint16)
 			with self.subTest(version=version), self.assertRaisesRegex(ValueError, "schema_version"):
 				interf_payload.decode(variables)
@@ -81,7 +81,7 @@ class IndependenceTests(unittest.TestCase):
 
 
 class RawOutputUnchangedTests(unittest.TestCase):
-	"""The shot identity is live-only: the ADIOS raw output keeps streamer's schema 1, byte for byte."""
+	"""The shot identity is live-only: it never reaches the ADIOS raw output."""
 
 	def test_identity_does_not_reach_the_raw_output_encoding(self):
 		identified, bare = _shot(), _shot(shot_number=None)
@@ -92,7 +92,7 @@ class RawOutputUnchangedTests(unittest.TestCase):
 			np.testing.assert_array_equal(written[name], array)
 
 	@unittest.skipUnless(ADIOS2_AVAILABLE, "adios2 is not installed")
-	def test_raw_output_writes_the_schema_one_steps(self):
+	def test_raw_output_steps_carry_no_shot_identity(self):
 		shots = [_shot(shot_number=i, rigol=i % 2 == 0) for i in range(3)]
 		with tempfile.TemporaryDirectory() as tmp:
 			path = Path(tmp) / "raw.bp"
