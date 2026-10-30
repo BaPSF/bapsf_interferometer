@@ -5,7 +5,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from .adios_io import ADIOS2_AVAILABLE, AdiosIO
-from .raw_output_io import IO
+from .raw_output_io import IO, unused_path
 from .pickle_io import PickleIO
 
 
@@ -55,13 +55,7 @@ class RotatingConsumerOutput(IO):
         timestamp = self._timestamp_factory().astimezone().strftime(
             "%Y%m%dT%H%M%S.%f%z"
         )
-        suffix = self._suffix()
-        candidate = self._output_directory / f"{timestamp}{suffix}"
-        sequence = 1
-        while candidate.exists():
-            candidate = self._output_directory / f"{timestamp}-{sequence}{suffix}"
-            sequence += 1
-        return candidate
+        return unused_path(self._output_directory / f"{timestamp}{self._suffix()}")
 
     def _rotate(self, opened_at):
         if self._output is not None:

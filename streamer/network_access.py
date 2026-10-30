@@ -1,9 +1,29 @@
-"""Low-cost source-address filtering for consumer sockets."""
+"""Low-cost source-address filtering for consumer sockets, and TCP keepalive."""
 
 import argparse
 import errno
 import ipaddress
 import socket
+
+
+# A dead peer on an idle connection is noticed after about a minute (30 + 3 x 10 s).
+# Keepalive, not a receive timeout: gaps of minutes between shots are normal, and
+# a live peer's kernel answers the probes.
+KEEPALIVE_IDLE_SECONDS = 30
+KEEPALIVE_INTERVAL_SECONDS = 10
+KEEPALIVE_COUNT = 3
+
+
+def enable_keepalive(sock):
+    """Turn on TCP keepalive, with the timings above where the platform has the options."""
+    sock.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
+    for option, value in (
+        ("TCP_KEEPIDLE", KEEPALIVE_IDLE_SECONDS),
+        ("TCP_KEEPINTVL", KEEPALIVE_INTERVAL_SECONDS),
+        ("TCP_KEEPCNT", KEEPALIVE_COUNT),
+    ):
+        if hasattr(socket, option):
+            sock.setsockopt(socket.IPPROTO_TCP, getattr(socket, option), value)
 
 
 def ipv4_network(value):

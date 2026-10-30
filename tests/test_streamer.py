@@ -2,7 +2,10 @@ import dataclasses
 import json
 import socket
 import tempfile
+import threading
+import time
 import unittest
+from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
@@ -14,7 +17,11 @@ import interf_main
 from diag_ioc import outage
 from interf_raw import RawShot
 from interf_shot import ShotCounter, ShotIdentifier
+from streamer import RawOutput
 from streamer.adios_io import ADIOS2_AVAILABLE, AdiosIO
+from streamer.arguments import RawOutputSettings, settings_from_env
+from streamer.consumer_output import RotatingConsumerOutput
+from streamer.raw_output_io import IO, unused_path
 from streamer.connection_security import (
 	CONNECTION_FILE_FORMAT,
 	decrypt_connection_info,
@@ -197,6 +204,172 @@ class AdiosOutputTests(unittest.TestCase):
 			self.assertEqual(
 				available["recovered_channel"]["AvailableStepsCount"], "1"
 			)
+
+	def test_an_existing_directory_gets_timestamped_files_but_a_bp_output_does_not(self):
+		with tempfile.TemporaryDirectory() as directory:
+			opener = IO._output_opener(SimpleNamespace(destination=directory, engine="BP5"), None)
+			self.assertIsInstance(opener(), RotatingConsumerOutput)
+			existing = Path(directory) / "raw.bp"
+			existing.mkdir()  # a BP5 output is a directory too
+			output = IO._output_opener(SimpleNamespace(destination=str(existing), engine="BP5"), None)()
+			try:
+				self.assertTrue((Path(directory) / "raw-1.bp").exists())
+			finally:
+				output.close()
+
+
+def _shot():
+	return RawShot(1.0, {}, {}, {}, 0.1)
+
+
+class _ListOutput(IO):
+	"""Appends each written step to `written`; a write waits on `block` (at most 10 s), then fails while `fail`."""
+
+	def __init__(self, written, fail=False, block=None):
+		self.written, self.fail, self.block = written, fail, block
+		self.closed = False
+		self.writing = threading.Event()
+
+	def write_data(self, data):
+		self.writing.set()
+		if self.block is not None:
+			self.block.wait(10)
+		if self.fail:
+			raise OSError("consumer gone")
+		self.written.append(data)
+
+	def close(self):
+		self.closed = True
+
+
+class NeverBlockTests(unittest.TestCase):
+	"""RawOutput never holds up its caller; the destination is a fake opened by the writer thread."""
+
+	def setUp(self):
+		tmp = tempfile.TemporaryDirectory()
+		self.addCleanup(tmp.cleanup)
+		self.timing_log = Path(tmp.name) / "timing.jsonl"
+		self.settings = RawOutputSettings(destination=str(Path(tmp.name) / "unused"), timing_log=str(self.timing_log),
+		                                  retry_delay_seconds=0.0)
+
+	def _raw_output(self, open_output):
+		with mock.patch.object(IO, "_output_opener", return_value=open_output):
+			output = RawOutput(self.settings)
+		self.addCleanup(output.close, 0)  # before the temporary directory's cleanup (LIFO)
+		return output
+
+	def _events(self):
+		return [json.loads(line)["event"] for line in self.timing_log.read_text(encoding="utf-8").splitlines()]
+
+	def test_write_returns_at_once_while_opening_hangs(self):
+		release = threading.Event()
+		self.addCleanup(release.set)
+		written = []
+
+		def open_output():
+			release.wait(10)
+			return _ListOutput(written)
+
+		output = self._raw_output(open_output)
+		start = time.perf_counter()
+		for _ in range(3):
+			output.write(_shot())
+		self.assertLess(time.perf_counter() - start, 0.5)
+		release.set()
+		output.close(5)
+		self.assertEqual([int(step["shot_index"]) for step in written], [0, 1, 2])  # converted on the writer
+		self.assertEqual((output.written_shots, output.unsent_shots), (3, 0))
+
+	def test_a_write_error_is_retried_on_a_new_output_without_reaching_the_caller(self):
+		written, outputs = [], []
+
+		def open_output():
+			outputs.append(_ListOutput(written, fail=not outputs))  # only the first output fails
+			return outputs[-1]
+
+		output = self._raw_output(open_output)
+		output.write(_shot())
+		output.write(_shot())
+		output.close(5)
+		self.assertEqual([int(step["shot_index"]) for step in written], [0, 1])  # the failed step first, in order
+		self.assertEqual(len(outputs), 2)
+		self.assertTrue(outputs[0].closed)
+		self.assertEqual(output.dropped_shots, 0)
+		self.assertIn("io.error", self._events())
+
+	def test_close_gives_up_after_its_timeout_and_counts_unsent_shots(self):
+		release = threading.Event()
+		self.addCleanup(release.set)
+		fake = _ListOutput([], block=release)
+		output = self._raw_output(lambda: fake)
+		for _ in range(3):
+			output.write(_shot())
+		self.assertTrue(fake.writing.wait(5))  # the first shot is in flight
+		start = time.perf_counter()
+		output.close(0.2)
+		self.assertLess(time.perf_counter() - start, 2.0)
+		self.assertEqual(output.unsent_shots, 3)  # one in flight, two queued
+		self.assertIn("io.close", self._events())
+		with self.assertRaises(RuntimeError):
+			output.write(_shot())
+
+
+class DirectOutputNameTests(unittest.TestCase):
+	def test_an_existing_path_is_never_reused(self):
+		with tempfile.TemporaryDirectory() as directory:
+			path = Path(directory) / "raw.bp"
+			self.assertEqual(unused_path(path), path)
+			path.mkdir()
+			self.assertEqual(unused_path(path), Path(directory) / "raw-1.bp")
+			(Path(directory) / "raw-1.bp").write_bytes(b"")
+			self.assertEqual(unused_path(path), Path(directory) / "raw-2.bp")
+
+	def test_directory_output_rotates_and_never_reuses_a_name(self):
+		# Pickle files without adios2, BP5 directories with it; the names follow the same rule.
+		with tempfile.TemporaryDirectory() as directory:
+			now = [0.0]
+			stamp = datetime(2026, 10, 29, 12, 0, 0, tzinfo=timezone.utc)  # every name would collide
+
+			def rotating():
+				return RotatingConsumerOutput(directory, "BP5", interval_seconds=10, clock=lambda: now[0],
+				                              timestamp_factory=lambda: stamp)
+
+			step = {"a": np.arange(3, dtype=np.int16)}
+			output = rotating()
+			output.write_data(step)
+			now[0] = 5.0
+			output.write_data(step)
+			self.assertEqual(len(list(Path(directory).iterdir())), 1)
+			now[0] = 10.0
+			output.write_data(step)
+			output.close()
+			restarted = rotating()
+			restarted.write_data(step)
+			restarted.close()
+			self.assertEqual(len(list(Path(directory).iterdir())), 3)
+
+
+class SettingsFromEnvTests(unittest.TestCase):
+	def test_unset_or_empty_destination_gives_none(self):
+		self.assertIsNone(settings_from_env("RAW", "t.jsonl", environ={}))
+		self.assertIsNone(settings_from_env("RAW", "t.jsonl", environ={"RAW": "", "RAW_BUFFER_S": "60"}))
+
+	def test_variables_override_defaults(self):
+		environ = {"RAW": "/data/raw/", "RAW_PRIVATE_KEY": "k.key", "RAW_COMPRESSION": "c.conf", "RAW_BUFFER_S": "90",
+		           "RAW_FILE_S": "300", "RAW_RETRY_S": "0", "RAW_SOCKET_TIMEOUT_S": "10"}
+		self.assertEqual(
+			settings_from_env("RAW", Path("t.jsonl"), environ=environ, buffer_seconds=60.0, retry_delay_seconds=5.0),
+			RawOutputSettings(destination="/data/raw/", timing_log="t.jsonl", private_key="k.key",
+			                  compression_config="c.conf", buffer_seconds=90.0, file_interval_seconds=300.0,
+			                  retry_delay_seconds=0.0, socket_timeout_seconds=10.0))
+		defaults = settings_from_env("RAW", "t.jsonl", environ={"RAW": "raw.bp"}, buffer_seconds=60.0)
+		self.assertEqual((defaults.buffer_seconds, defaults.retry_delay_seconds), (60.0, 3.0))
+
+	def test_invalid_values_are_rejected(self):
+		with self.assertRaises(ValueError):
+			settings_from_env("RAW", "t.jsonl", environ={"RAW": "raw.bp", "RAW_BUFFER_S": "0"})
+		with self.assertRaises(ValueError):
+			settings_from_env("RAW", "t.jsonl", environ={"RAW": "raw.bp", "RAW_RETRY_S": "-1"})
 
 
 if __name__ == "__main__":

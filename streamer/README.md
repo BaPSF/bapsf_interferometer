@@ -5,22 +5,65 @@ BaPSF interferometer acquisition. It replaces the heat-transfer generator and
 its fixed `d1` through `d6` variables with complete `RawShot` payloads produced
 by `interf_main`.
 
-Raw output is opt-in. Without `--raw-output`, `python -m interf_sim` and the
-live `python interf_main.py` entry point retain their previous behavior. The
-live entry point currently passes `raw_output=None`; a future live-output CLI
-can construct the same `RawOutput` used by the simulator.
+Raw output is opt-in. `python -m interf_sim` writes it with `--raw-output`;
+the live `python interf_main.py` entry point writes it when `INTERF_RAW_OUTPUT`
+is set, reading the other settings from `INTERF_RAW_OUTPUT_*` variables
+through `streamer.arguments.settings_from_env`.
+
+## Never holding up acquisition
+
+Acquisition must catch every shot, and the destination may be on a network
+that fails. So `RawOutput` never makes its caller wait on the destination:
+
+- `RawOutput(settings)` makes only local checks: the settings values, the
+  private key, the compression configuration and, for direct output, that
+  ADIOS2 is installed. It then starts the writer thread. Opening, launching
+  and connecting the destination run on that thread while shots queue.
+- `write(shot)` assigns the shot index, records `raw_output.write` and queues
+  the shot object. The conversion to variables (`payload.shot_variables`)
+  runs on the writer thread. It raises only after `close()`.
+- The writer never stops on an error. It records `io.error` (stage, type and
+  message), closes or aborts that output, waits `retry_delay_seconds`, opens a
+  new output the same way (re-reading a connection file, relaunching for a
+  `.conf`, a new file for direct output) and retries the same step. Queued
+  steps keep their order, and a full queue drops steps as below. A step whose
+  conversion fails is dropped, not retried.
+- `error` is the last error text while the writer is failing, and `None`
+  once a shot has been written again. It is a plain attribute read with no
+  lock, so a caller can check it after every shot; `interf_main` logs it as a
+  `raw output` outage (once at the start, every 5 min, once on recovery),
+  while each failed retry stays an `io.error` line in the timing log.
+- `close(timeout=None)` stops accepting shots and lets the writer drain for at
+  most `timeout` seconds (`None` waits until done). It then aborts a socket
+  output, records `io.close`, and reports what was left in `unsent_shots`.
+  The writer thread is a daemon, so a stuck destination never keeps the
+  process alive.
 
 ## Output destinations
 
-`--raw-output DESTINATION` accepts three kinds of destination:
+`--raw-output DESTINATION` selects the mode from the destination itself,
+never from the private key, once when `RawOutput` starts:
 
-1. An ADIOS output path, written directly by the producer.
-2. An encrypted connection-information file created by a manually started
-   consumer.
-3. A `.conf` file with a `[server]` section, used to launch and recover a
-   consumer through SSH.
+1. An existing directory, or any path ending in `/` (created if missing):
+   direct ADIOS to local files, even when a private key is set. The producer
+   writes timestamped ADIOS files there, starting a new one every
+   `file_interval_seconds`, with the consumer's names
+   (`consumer_output.RotatingConsumerOutput`). An existing directory that is
+   itself an ADIOS output (`.bp`, or an `md.idx` inside) is written as in 4.
+2. A `.conf` file with a `[server]` section, used to launch and recover a
+   consumer through SSH. Needs `--raw-output-private-key`.
+3. Any other existing file: an encrypted connection-information file created
+   by a manually started consumer. Needs `--raw-output-private-key`. It must
+   exist and decrypt at start; afterwards it is re-read at every reconnect,
+   and may be missing for a while (a consumer removes it when it exits).
+4. A path that does not exist: one direct ADIOS output. If it exists by the
+   time a new output is opened (after an error), the producer writes
+   `<stem>-1<suffix>`, then `-2`, and so on.
 
-Write ten replayed shots directly to BP5:
+A missing key in modes 2 and 3, or a file in mode 3 that holds no connection
+information, fails `RawOutput(settings)` at once. Direct output never
+overwrites an existing file. Write ten replayed shots
+directly to BP5:
 
 ```bash
 python -m interf_sim --limit 10 --raw-output raw.bp
@@ -70,12 +113,29 @@ Capacity in steps is the configured duration divided by the simulator shot
 period (three seconds when `--period 0`). When the queue is full, one queued
 snapshot is discarded to admit the newest snapshot. The selection advances
 through the queue so the same position is not always discarded. Remaining
-snapshots are flushed during an orderly producer shutdown.
+snapshots are flushed during an orderly producer shutdown, for at most the
+`close()` timeout.
+
+Other producer settings:
+
+| Option | `settings_from_env` variable | Default | Meaning |
+|---|---|---|---|
+| `--raw-output` | `<prefix>` | unset | Destination; unset writes nothing |
+| `--raw-output-private-key` | `<prefix>_PRIVATE_KEY` | unset | Curve25519 key for socket output |
+| `--raw-output-compression-config` | `<prefix>_COMPRESSION` | unset | Array-operation configuration |
+| `--raw-output-buffer-seconds` | `<prefix>_BUFFER_S` | 600 | Queued output duration |
+| `--raw-output-file-interval-seconds` | `<prefix>_FILE_S` | 3600 | New file interval in a directory destination |
+| `--raw-output-retry-delay` | `<prefix>_RETRY_S` | 3 | Wait before a new output after an error |
+| `--raw-output-socket-timeout` | `<prefix>_SOCKET_TIMEOUT_S` | 30 | Socket connect and per-step acknowledgement, for a connection file (a `.conf` sets its own) |
+
+`settings_from_env(prefix, timing_log, **defaults)` returns `None` when
+`<prefix>` is unset or empty; a set variable overrides `defaults`.
 
 Producer timing records are line-delimited JSON. The default simulator log is
 `interf_sim/log/raw_output.jsonl`; choose another path with
 `--raw-output-timing-log FILE`. It records each `raw_output.write` enqueue and
-each `io.buffer_drop`, including the dropped and incoming shot indexes.
+each `io.buffer_drop`, including the dropped and incoming shot indexes, plus
+`io.open`, `io.error` and `io.close` (written, dropped and unsent steps).
 
 The consumer timing log records socket receives and output writes. Remote
 launches, reconnects, retries, SSH-certificate waits, and notification failures
@@ -155,6 +215,23 @@ The consumer stores received steps in timestamped outputs under `received/`.
 A new output is opened every 3600 seconds by default; set
 `--file-interval-seconds` to another positive interval. Rotation occurs before
 the first step received at or after the deadline.
+
+By default the consumer exits once its producer disconnects. With
+`--keep-listening` it keeps its listener and connection file and accepts the
+next producer, with a new output file per connection; a failed connection is
+printed and does not stop it. A producer that reconnects re-reads the same
+connection file.
+
+Both ends turn on TCP keepalive on the data connection
+(`network_access.enable_keepalive`: idle 30 s, then 3 probes 10 s apart, where
+the platform has these options). A peer behind a cut network is then noticed
+within about a minute: the consumer drops that connection and, with
+`--keep-listening`, accepts the producer's reconnect. There is deliberately no
+receive timeout: gaps of minutes between shots are normal, and a live peer's
+kernel answers the probes. With `socket_transport = ssh` neither socket
+crosses the network (the producer's is a local socket pair, the consumer's
+comes from its own `sshd`), so a cut there is detected only by SSH, for example
+with `ServerAliveInterval` in `ssh_command` or the SSH configuration.
 
 For a consumer reached from another host, specify both the listening interface
 and the address the producer can reach:
@@ -305,7 +382,11 @@ newer shots are sent; acquisitions are never recomputed.
 Each replacement consumer creates a new timestamped output and never appends
 to a potentially damaged file. The failed snapshot is retried into the new
 output while earlier outputs remain unchanged. `max_relaunch_attempts = 0`
-retries indefinitely; a positive value limits each launch series.
+retries indefinitely; a positive value limits each launch series. When a
+series ends in failure, the writer records `io.error`, waits
+`retry_delay_seconds` and starts a new one. All of this runs on the writer
+thread, so acquisition continues while the consumer is down. `close()` with a
+timeout aborts the socket and stops relaunching.
 
 Remote recovery records `consumer.connection_lost`, `consumer.launch`,
 `consumer.launch_retry`, `io.retry`, `ssh_key.wait`, and `ssh_key.updated`
@@ -382,8 +463,10 @@ python -m unittest discover -s tests -v
 ```
 
 They cover payload construction and metadata, write-before-log ordering,
-encrypted rendezvous information, arbitrary named socket variables, and
-dynamic global ADIOS variables. The end-to-end simulator path can be exercised
+encrypted rendezvous information, arbitrary named socket variables, dynamic
+global ADIOS variables, a write that never waits on the destination, retries
+on a new output, directory rotation, unused file names, the bounded close and
+`settings_from_env`. The end-to-end simulator path can be exercised
 with one recorded shot using:
 
 ```bash

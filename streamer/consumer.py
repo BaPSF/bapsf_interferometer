@@ -22,6 +22,7 @@ from .consumer_output import (
 from .network_access import (
     accept_from_allowed_network,
     create_tcp_listener,
+    enable_keepalive,
     ipv4_network,
     tcp_port_range,
 )
@@ -33,6 +34,10 @@ from .socket_protocol import (
     verify_producer_private_key,
 )
 from .timing_log import TimingLog, timestamp
+
+
+# Bounds the loop rate when accepting keeps failing at once (e.g. a broken listener).
+KEEP_LISTENING_RETRY_SECONDS = 1.0
 
 
 def parse_args(argv):
@@ -90,6 +95,14 @@ def parse_args(argv):
         default=DEFAULT_FILE_INTERVAL_SECONDS,
         help="seconds between new output files (default: 3600)",
     )
+    parser.add_argument(
+        "--keep-listening",
+        action="store_true",
+        help=(
+            "after a producer disconnects or fails, keep the listener and "
+            "connection file and accept the next producer (default: exit)"
+        ),
+    )
     return parser.parse_args(argv)
 
 
@@ -115,6 +128,9 @@ def remove_own_connection_file(path, expected_contents):
 def accept_connection(listener, session_id, public_key, allowed_networks):
     connection, address = accept_from_allowed_network(listener, allowed_networks)
     try:
+        # A producer behind a cut network would otherwise hold this consumer
+        # (and with --keep-listening, the next producer) indefinitely.
+        enable_keepalive(connection)
         verify_producer_private_key(connection, public_key)
         variables, requested_consumer_id = receive_hello(connection)
         if requested_consumer_id != session_id:
@@ -217,20 +233,35 @@ def main(argv=None):
             connection_path, advertise_host, listener, session_id, public_key
         )
         print(f"Connection info written to {connection_path}", flush=True)
-        connection = accept_connection(
-            listener, session_id, public_key, args.allow_ip_range
-        )
-        receive_steps(
-            connection,
-            args.output_directory,
-            args.engine,
-            timing_log,
-            file_interval_seconds=args.file_interval_seconds,
-        )
-        print("Producer closed the socket channel", flush=True)
+        while True:
+            try:
+                connection = accept_connection(
+                    listener, session_id, public_key, args.allow_ip_range
+                )
+                # Each connection opens a new output file.
+                receive_steps(
+                    connection,
+                    args.output_directory,
+                    args.engine,
+                    timing_log,
+                    file_interval_seconds=args.file_interval_seconds,
+                )
+                print("Producer closed the socket channel", flush=True)
+            except Exception as exc:
+                if not args.keep_listening:
+                    raise
+                print(
+                    f"Producer connection failed: {type(exc).__name__}: {exc}",
+                    flush=True,
+                )
+                time.sleep(KEEP_LISTENING_RETRY_SECONDS)
+            finally:
+                if connection is not None:
+                    connection.close()
+                    connection = None
+            if not args.keep_listening:
+                break
     finally:
-        if connection is not None:
-            connection.close()
         if listener is not None:
             listener.close()
         remove_own_connection_file(connection_path, connection_file_contents)

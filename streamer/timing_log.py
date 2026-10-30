@@ -24,6 +24,13 @@ class TimingLog:
             json.dump(record, self._stream, separators=(",", ":"))
             self._stream.write("\n")
 
+    def try_record(self, event, **fields):
+        """record(), ignoring a closed log or a write error: for threads that must not stop on logging."""
+        try:
+            self.record(event, **fields)
+        except Exception:
+            pass
+
     def close(self):
         with self._lock:
             if self._stream is not None:

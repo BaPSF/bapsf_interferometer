@@ -561,6 +561,7 @@ class RestartingSingleSocketIO(IO):
             )
         self._output = None
         self._closed = False
+        self._aborted = False
         try:
             self._key_monitor = SSHKeyMonitorProcess(self._config)
             self._connect_with_retries("launch")
@@ -600,6 +601,8 @@ class RestartingSingleSocketIO(IO):
         expired_key_attempts = 0
         restart_failure_notified = False
         while True:
+            if self._aborted:
+                raise RuntimeError("Remote consumer output was aborted")
             attempt += 1
             try:
                 self._output = self._new_output()
@@ -740,6 +743,17 @@ class RestartingSingleSocketIO(IO):
             else:
                 self._output.abort()
             self._output = None
+
+    def abort(self):
+        """Drop the socket without a protocol shutdown and stop relaunching.
+
+        Called from another thread by a closing BufferedIO; close() still
+        releases the SSH connection, key monitor and notifiers.
+        """
+        self._aborted = True
+        output = self._output
+        if output is not None:
+            output.abort()
 
     def close(self):
         if self._closed:

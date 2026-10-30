@@ -1,5 +1,6 @@
 import socket
 
+from .network_access import enable_keepalive
 from .raw_output_io import IO
 from .socket_protocol import (
     PROTOCOL_VERSION,
@@ -45,6 +46,7 @@ class SingleSocketIO(IO):
         try:
             if connection.family in (socket.AF_INET, socket.AF_INET6):
                 connection.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+                enable_keepalive(connection)
             prove_private_key(connection, private_key)
         except Exception:
             connection.close()
