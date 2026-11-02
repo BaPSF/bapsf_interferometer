@@ -14,6 +14,7 @@ from streamer.analyze_remote_experiment import (
     bp_shot_indexes,
     experiment_settings,
     normalize_consumer_writes,
+    records_at_cutoff,
     parse_producer_stdout,
     process_rss_mib,
     render_report,
@@ -118,6 +119,59 @@ class AnalyzeRemoteExperimentTests(unittest.TestCase):
         normalized, duplicates = normalize_consumer_writes(writes)
         self.assertEqual([row["step"] for row in normalized], [0, 1, 3])
         self.assertEqual(duplicates, 1)
+
+    def cutoff_fixture(self):
+        start = datetime(2026, 1, 1, tzinfo=timezone.utc)
+        producer = [dict(event="raw_output.write", shot=shot, status="ok",
+                         called_at=(start + timedelta(seconds=3 * shot)).isoformat(),
+                         duration_seconds=0.001) for shot in range(6)]
+        consumer = [dict(event="io.write", shot=shot, step=shot, status="ok",
+                         called_at=(start + timedelta(seconds=3 * shot + 0.1)).isoformat(),
+                         duration_seconds=0.01) for shot in range(6)]
+        return start, producer, consumer
+
+    def test_common_cutoff_excludes_later_consumer_and_producer_events(self):
+        start, producer, consumer = self.cutoff_fixture()
+        cutoff = start + timedelta(seconds=6.5)
+        result = summarize(records_at_cutoff(producer, cutoff),
+                           records_at_cutoff(consumer, cutoff),
+                           experiment_settings(producer, total_shots=6),
+                           snapshot_at=cutoff)
+        self.assertEqual(result["produced_steps"], 3)
+        self.assertEqual(result["consumed_steps"], 3)
+        self.assertEqual(result["snapshot_tail_difference"], 0)
+        self.assertEqual(result["outstanding_shots"], 0)
+
+    def test_completed_is_consumer_writes_and_preserves_inflight_shot(self):
+        start, producer, consumer = self.cutoff_fixture()
+        cutoff = start + timedelta(seconds=6.05)
+        settings = experiment_settings(producer, total_shots=6)
+        result = summarize(records_at_cutoff(producer, cutoff),
+                           records_at_cutoff(consumer, cutoff), settings,
+                           snapshot_at=cutoff)
+        self.assertEqual(result["produced_steps"], 3)
+        self.assertEqual(result["consumed_steps"], 2)
+        self.assertEqual(result["remaining_steps"], 4)
+        self.assertEqual(result["completion_fraction"], 2 / 6)
+        self.assertEqual(result["outstanding_shots"], 1)
+        self.assertEqual(result["snapshot_tail_difference"], 1)
+        report = render_report(SimpleNamespace(host="host", timing_log="log"),
+                               Path("conf"), Path("producer"), Path("stdout"),
+                               settings, result, {})
+        self.assertIn("| Completed | 2 / 6 (33.33%) |", report)
+        self.assertIn("| Produced | 3 |", report)
+        self.assertIn("| Produced but not completed | 1 |", report)
+
+    def test_common_cutoff_does_not_hide_stalled_consumer_backlog(self):
+        start, producer, consumer = self.cutoff_fixture()
+        cutoff = start + timedelta(seconds=16)
+        result = summarize(records_at_cutoff(producer, cutoff),
+                           records_at_cutoff(consumer[:2], cutoff),
+                           experiment_settings(producer))
+        self.assertEqual(result["produced_steps"], 6)
+        self.assertEqual(result["consumed_steps"], 2)
+        self.assertEqual(result["outstanding_shots"], 4)
+        self.assertEqual(result["snapshot_tail_difference"], 4)
 
     def test_reads_rss_from_remote_ps_line(self):
         process = "123 00:01 1.0 0.1 2048 S python consumer.py"

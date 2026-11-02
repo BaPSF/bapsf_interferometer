@@ -466,6 +466,24 @@ def latency_clusters(latency_by_step, threshold=3.0):
     return groups
 
 
+def records_at_cutoff(records, cutoff):
+    """Freeze both logs at the same wall-clock time, including real backlog."""
+    captured = []
+    for record in records:
+        if record.get("logged_at"):
+            recorded_at = parse_time(record["logged_at"])
+        elif record.get("called_at"):
+            recorded_at = completion_time(record)
+        elif record.get("completed_at"):
+            recorded_at = parse_time(record["completed_at"])
+        else:
+            captured.append(record)
+            continue
+        if recorded_at <= cutoff:
+            captured.append(record)
+    return captured
+
+
 def normalize_consumer_writes(consumer, consumer_shots=None):
     writes = [dict(record) for record in consumer
               if record.get("event") == "io.write" and record.get("status") == "ok"]
@@ -490,7 +508,8 @@ def normalize_consumer_writes(consumer, consumer_shots=None):
     return list(unique.values()), len(writes) - len(unique)
 
 
-def summarize(producer, consumer, settings, bytes_per_step=None, consumer_shots=None):
+def summarize(producer, consumer, settings, bytes_per_step=None, consumer_shots=None,
+              snapshot_at=None):
     producer_writes = []
     for record in producer:
         if (
@@ -573,6 +592,7 @@ def summarize(producer, consumer, settings, bytes_per_step=None, consumer_shots=
     target_last_step = total_steps - 1 if total_steps is not None else None
 
     return {
+        "snapshot_at": snapshot_at,
         "producer_writes": producer_writes,
         "consumer_writes": consumer_writes,
         "receives": receives,
@@ -624,6 +644,7 @@ def summarize(producer, consumer, settings, bytes_per_step=None, consumer_shots=
         "maximum_queued": max(0, maximum_outstanding - 1),
         "maximum_queue_at": maximum_at,
         "snapshot_tail_difference": latest_produced - latest_consumed,
+        "outstanding_shots": len(producer_by_step.keys() - consumer_by_step.keys()),
         "schedule_drift_seconds": drift[-1],
         "finish_time": (
             first_time + timedelta(
@@ -633,16 +654,16 @@ def summarize(producer, consumer, settings, bytes_per_step=None, consumer_shots=
             if target_last_step is not None else None
         ),
         "remaining_steps": (
-            max(0, target_last_step - latest_produced)
+            max(0, total_steps - len(consumer_writes))
             if target_last_step is not None else None
         ),
         "remaining_seconds": (
-            max(0, target_last_step - latest_produced)
+            max(0, total_steps - len(consumer_writes))
             * settings["interval_seconds"]
             if target_last_step is not None else None
         ),
         "completion_fraction": (
-            min(1.0, (latest_produced + 1) / total_steps)
+            min(1.0, len(consumer_writes) / total_steps)
             if total_steps is not None else None
         ),
         "clusters": latency_clusters(latency_by_step),
@@ -726,9 +747,9 @@ def render_report(
     )
     total_steps = settings.get("total_steps")
     completion = (
-        f"{summary['produced_steps']:,} / {total_steps:,} "
+        f"{summary['consumed_steps']:,} / {total_steps:,} "
         f"({summary['completion_fraction']:.2%})"
-        if total_steps is not None else f"{summary['produced_steps']:,} observed"
+        if total_steps is not None else f"{summary['consumed_steps']:,} observed"
     )
     remaining = (
         f"{summary['remaining_steps']:,} shots; "
@@ -753,10 +774,15 @@ def render_report(
     ):
         status = "needs attention"
 
+    snapshot_line = (
+        f"Timing-log snapshot cutoff: **{summary['snapshot_at'].isoformat(timespec='microseconds')}**  "
+        if summary.get("snapshot_at") else "Timing-log snapshot cutoff: not supplied  "
+    )
     lines = [
         "# Remote experiment analysis",
         "",
         f"Generated: **{now.isoformat(timespec='seconds')}**  ",
+        snapshot_line,
         f"Configuration: `{config_path}`  ",
         f"Remote endpoint: `{config.host}` (`{remote.get('hostname', 'unknown')}`)",
         "",
@@ -769,11 +795,12 @@ def render_report(
         "| Metric | Value |",
         "|---|---:|",
         f"| Completed | {completion} |",
-        f"| Delivered consumer shots (unique) | {summary['consumed_steps']:,} |",
+        f"| Produced | {summary['produced_steps']:,} |",
+        f"| Produced but not completed | {summary['outstanding_shots']:,} |",
         f"| Repeated consumer writes | {summary['duplicate_consumer_writes']} |",
         f"| Remaining | {remaining} |",
         f"| Scheduled finish | {finish} |",
-        f"| Producer/consumer tail difference (separate snapshots) | "
+        f"| Producer/consumer tail difference | "
         f"{summary['snapshot_tail_difference']:+d} shots |",
         f"| Failed producer/consumer writes | "
         f"{summary['producer_bad_writes']} / {summary['consumer_bad_writes']} |",
@@ -782,8 +809,8 @@ def render_report(
         f"{summary['connection_losses']} / {summary['launch_retries']} / "
         f"{summary['io_retries']} |",
         "",
-        "The consumer log and BP files are inspected after the producer log; "
-        "their counts may be slightly ahead in a running experiment.",
+        "Completed counts unique successful consumer writes. Producer and consumer "
+        "timing logs use the same snapshot cutoff; BP inspection happens later.",
         "",
         "## Timing and throughput",
         "",
@@ -951,8 +978,9 @@ def render_report(
             "- Consumer writes are matched by global shot ID. For older logs with "
             "session-local step counters, IDs come from the BP series in write order; "
             "empty segments contribute no shots.",
-            "- Producer and consumer logs are captured at different times; a negative "
-            "tail difference can reflect the later consumer snapshot.",
+            "- Producer and consumer events are filtered at one wall-clock cutoff "
+            "taken before reading either log, so later downloads cannot create "
+            "an artificial lead or backlog.",
             "- The analyzer uses one multiplexed SSH connection for all remote reads.",
             "",
         ]
@@ -1035,7 +1063,8 @@ def main(argv=None):
         producer_log, producer_stdout = derive_local_paths(
             config, args.producer_log, args.producer_stdout
         )
-        producer = read_json_lines(producer_log)
+        snapshot_at = datetime.now().astimezone()
+        producer = records_at_cutoff(read_json_lines(producer_log), snapshot_at)
         stdout_settings = {}
         if args.producer_stdout is not None or producer_stdout.is_file():
             stdout_settings = parse_producer_stdout(
@@ -1059,15 +1088,16 @@ def main(argv=None):
             skip_compression=args.skip_compression,
             control_path=args.ssh_control_path,
         )
-        consumer = read_json_lines_bytes(
+        consumer = records_at_cutoff(read_json_lines_bytes(
             consumer_bytes, f"{config.host}:{config.timing_log}"
-        )
+        ), snapshot_at)
         summary = summarize(
             producer,
             consumer,
             settings,
             bytes_per_step=sampled_bytes_per_step(remote),
             consumer_shots=bp_shot_indexes(remote),
+            snapshot_at=snapshot_at,
         )
         report = render_report(
             config,
