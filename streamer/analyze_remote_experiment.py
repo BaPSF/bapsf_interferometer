@@ -88,81 +88,92 @@ try:
 except Exception as exc:
     result["consumer_stdout_error"] = f"{type(exc).__name__}: {exc}"
 
-if entries:
-    try:
-        import adios2
-        from streamer.data_operations import data_operation_from_description
+# ADIOS readers can terminate the interpreter on incomplete BP metadata.
+# Keep each reader in a separate process so one segment cannot lose the report.
+sample_program = r"""
+import json
+import sys
+import adios2
+from streamer.data_operations import data_operation_from_description
 
-        operation = (
-            data_operation_from_description(operation_description)
-            if operation_description else None
+path, description = sys.argv[1:]
+operation = data_operation_from_description(json.loads(description)) if description else None
+reader = adios2.FileReader(path)
+try:
+    variables = reader.available_variables()
+    arrays = [name for name, info in variables.items()
+              if info.get("SingleValue", "false").lower() == "false"]
+    steps = min((int(variables[name]["AvailableStepsCount"]) for name in arrays), default=0)
+    sample = None
+    if steps > 0:
+        sample_step = steps // 2
+        raw_bytes = wire_bytes = 0
+        for name in variables:
+            value = reader.read(name, step_selection=[sample_step, 1])
+            raw_bytes += value.nbytes
+            if operation is not None:
+                wire_bytes += len(operation.encode(value).payload)
+        shot = None
+        if "shot_index" in variables:
+            shot = int(reader.read("shot_index", step_selection=[sample_step, 1]).reshape(-1)[0])
+        shot_indexes = None
+        if "shot_index" in variables:
+            shot_indexes = [int(value) for value in reader.read(
+                "shot_index", step_selection=[0, steps]).reshape(-1)]
+            if len(shot_indexes) != steps:
+                raise ValueError("BP shot-index count does not match its step count")
+        sample = dict(steps=steps, sample_shot=shot, shot_indexes=shot_indexes, raw_bytes=raw_bytes,
+                      wire_bytes=wire_bytes if operation else None,
+                      ratio=raw_bytes / wire_bytes if wire_bytes else None)
+finally:
+    reader.close()
+print(json.dumps(sample))
+"""
+
+samples = []
+errors = []
+for path in entries:
+    if path.suffix.lower() != ".bp":
+        continue
+    try:
+        has_content = (
+            any(child.is_file() and child.stat().st_size > 0 for child in path.iterdir())
+            if path.is_dir() else path.stat().st_size > 0
         )
-        samples = []
-        total_raw = 0
-        total_wire = 0
-        total_steps = 0
-        for path in entries:
-            if path.suffix.lower() != ".bp":
-                continue
-            reader = adios2.FileReader(str(path))
-            try:
-                variables = reader.available_variables()
-                arrays = [
-                    name for name, description in variables.items()
-                    if description.get("SingleValue", "false").lower() == "false"
-                ]
-                if not arrays:
-                    continue
-                steps = min(
-                    int(variables[name]["AvailableStepsCount"]) for name in arrays
-                )
-                if steps <= 0:
-                    continue
-                sample_step = steps // 2
-                raw_bytes = 0
-                wire_bytes = 0
-                for name in variables:
-                    value = reader.read(name, step_selection=[sample_step, 1])
-                    raw_bytes += value.nbytes
-                    if operation is not None:
-                        encoded = operation.encode(value)
-                        wire_bytes += len(encoded.payload)
-                shot = None
-                if "shot_index" in variables:
-                    value = reader.read(
-                        "shot_index", step_selection=[sample_step, 1]
-                    )
-                    shot = int(value.reshape(-1)[0])
-                samples.append(
-                    {
-                        "segment": path.name,
-                        "steps": steps,
-                        "sample_shot": shot,
-                        "raw_bytes": raw_bytes,
-                        "wire_bytes": wire_bytes if operation else None,
-                        "ratio": raw_bytes / wire_bytes if wire_bytes else None,
-                    }
-                )
-                total_raw += raw_bytes * steps
-                total_wire += wire_bytes * steps
-                total_steps += steps
-            finally:
-                reader.close()
-        result["payload"] = {
-            "samples": samples,
-            "sampled_steps": total_steps,
-            "estimated_raw_bytes": total_raw,
-        }
-        if operation is not None:
-            result["compression"] = {
-                "samples": samples,
-                "sampled_steps": total_steps,
-                "estimated_raw_bytes": total_raw,
-                "estimated_wire_bytes": total_wire,
-                "ratio": total_raw / total_wire if total_wire else None,
-            }
+        if not has_content:
+            raise ValueError("Empty BP segment (no nonempty files); skipped without opening ADIOS")
+        completed = subprocess.run(
+            [sys.executable, "-c", sample_program, str(path), sys.argv[4]],
+            stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE, text=True, timeout=30, check=False,
+        )
+        if completed.returncode:
+            detail = completed.stderr.strip()[-1000:]
+            failure = (f"signal {-completed.returncode}" if completed.returncode < 0
+                       else f"exit status {completed.returncode}")
+            raise RuntimeError(f"ADIOS sampling failed ({failure})" + (f": {detail}" if detail else ""))
+        sample = json.loads(completed.stdout)
+        if sample is None:
+            raise ValueError("BP segment contains no readable array steps")
+        samples.append(dict(segment=path.name, **sample))
     except Exception as exc:
-        result["payload_error"] = f"{type(exc).__name__}: {exc}"
+        errors.append(dict(segment=path.name, error=f"{type(exc).__name__}: {exc}"))
+
+if errors:
+    result["payload_sampling_errors"] = errors
+if samples:
+    total_steps = sum(sample["steps"] for sample in samples)
+    total_raw = sum(sample["raw_bytes"] * sample["steps"] for sample in samples)
+    result["payload"] = dict(samples=samples, sampled_steps=total_steps,
+                             estimated_raw_bytes=total_raw)
+    if operation_description is not None:
+        total_wire = sum(sample["wire_bytes"] * sample["steps"] for sample in samples)
+        result["compression"] = dict(samples=samples, sampled_steps=total_steps,
+                                     estimated_raw_bytes=total_raw,
+                                     estimated_wire_bytes=total_wire,
+                                     ratio=total_raw / total_wire if total_wire else None)
+elif errors:
+    result["payload_error"] = "No BP segments could be sampled; see segment errors below."
 
 print(json.dumps(result, separators=(",", ":")))
 '''
@@ -455,7 +466,31 @@ def latency_clusters(latency_by_step, threshold=3.0):
     return groups
 
 
-def summarize(producer, consumer, settings, bytes_per_step=None):
+def normalize_consumer_writes(consumer, consumer_shots=None):
+    writes = [dict(record) for record in consumer
+              if record.get("event") == "io.write" and record.get("status") == "ok"]
+    legacy = any("shot" not in record for record in writes)
+    reset = any(current["step"] <= previous["step"]
+                for previous, current in zip(writes, writes[1:]))
+    use_bp = legacy and consumer_shots is not None
+    if use_bp and len(consumer_shots) < len(writes):
+        raise ValueError("BP shot indexes do not cover the captured consumer writes; "
+                         "cannot safely match legacy logs across restarts")
+    if legacy and reset and not use_bp:
+        raise ValueError("Consumer step counter reset without global shot IDs; "
+                         "BP shot indexes are required to match writes across restarts")
+    unique = {}
+    for index, record in enumerate(writes):
+        shot = consumer_shots[index] if use_bp else record.get("shot", record["step"])
+        if use_bp and "shot" in record and record["shot"] != shot:
+            raise ValueError("BP shot indexes disagree with consumer timing log")
+        record["step"] = shot
+        # A replay after a lost ACK must not count as a second delivered shot.
+        unique.setdefault(shot, record)
+    return list(unique.values()), len(writes) - len(unique)
+
+
+def summarize(producer, consumer, settings, bytes_per_step=None, consumer_shots=None):
     producer_writes = []
     for record in producer:
         if (
@@ -466,13 +501,7 @@ def summarize(producer, consumer, settings, bytes_per_step=None):
             if "step" not in normalized and "shot" in normalized:
                 normalized["step"] = normalized["shot"]
             producer_writes.append(normalized)
-    consumer_writes = []
-    for record in consumer:
-        if record.get("event") == "io.write" and record.get("status") == "ok":
-            normalized = dict(record)
-            if "shot" in normalized:
-                normalized["step"] = normalized["shot"]
-            consumer_writes.append(normalized)
+    consumer_writes, duplicate_writes = normalize_consumer_writes(consumer, consumer_shots)
     receives = [
         record for record in consumer
         if record.get("event") == "socket.receive_all"
@@ -560,6 +589,7 @@ def summarize(producer, consumer, settings, bytes_per_step=None):
         "latest_consumed": latest_consumed,
         "produced_steps": len(producer_writes),
         "consumed_steps": len(consumer_writes),
+        "duplicate_consumer_writes": duplicate_writes,
         "producer_contiguous": is_contiguous(producer_writes),
         "consumer_contiguous": is_contiguous(consumer_writes),
         "producer_bad_writes": sum(
@@ -640,6 +670,17 @@ def process_rss_mib(process_line):
         return int(fields[4]) / 1024
     except ValueError:
         return None
+
+
+def bp_shot_indexes(remote):
+    # Missing nonempty segments would shift ordinal matches to the legacy log.
+    if any("Empty BP segment" not in failure["error"]
+           for failure in remote.get("payload_sampling_errors", [])):
+        return None
+    samples = (remote.get("payload") or {}).get("samples", [])
+    if not samples or any(sample.get("shot_indexes") is None for sample in samples):
+        return None
+    return [shot for sample in samples for shot in sample["shot_indexes"]]
 
 
 def sampled_bytes_per_step(remote):
@@ -728,9 +769,11 @@ def render_report(
         "| Metric | Value |",
         "|---|---:|",
         f"| Completed | {completion} |",
+        f"| Delivered consumer shots (unique) | {summary['consumed_steps']:,} |",
+        f"| Repeated consumer writes | {summary['duplicate_consumer_writes']} |",
         f"| Remaining | {remaining} |",
         f"| Scheduled finish | {finish} |",
-        f"| Producer/consumer tail difference | "
+        f"| Producer/consumer tail difference (separate snapshots) | "
         f"{summary['snapshot_tail_difference']:+d} shots |",
         f"| Failed producer/consumer writes | "
         f"{summary['producer_bad_writes']} / {summary['consumer_bad_writes']} |",
@@ -738,6 +781,9 @@ def render_report(
         f"| Connection losses / launch retries / I/O retries | "
         f"{summary['connection_losses']} / {summary['launch_retries']} / "
         f"{summary['io_retries']} |",
+        "",
+        "The consumer log and BP files are inspected after the producer log; "
+        "their counts may be slightly ahead in a running experiment.",
         "",
         "## Timing and throughput",
         "",
@@ -785,6 +831,17 @@ def render_report(
             else "- Expected final raw payload: **not available**."
         ),
     ]
+
+    stored_shots = bp_shot_indexes(remote)
+    if stored_shots:
+        unique_shots = set(stored_shots)
+        contiguous = max(unique_shots) - min(unique_shots) + 1 == len(unique_shots)
+        lines.extend([
+            f"- BP shots verified from stored shot IDs: **{len(unique_shots):,} unique** "
+            f"(shots {min(unique_shots):,}–{max(unique_shots):,}; "
+            f"contiguous: {'yes' if contiguous else 'no'}).",
+            "- BP files are inspected after the timing logs; their shot count can be newer.",
+        ])
 
     compression = remote.get("compression")
     if compression and compression.get("ratio"):
@@ -835,6 +892,12 @@ def render_report(
             ]
         )
 
+    sampling_errors = remote.get("payload_sampling_errors", [])
+    if sampling_errors:
+        lines.extend(["", "Payload/compression estimates exclude these segments:", ""])
+        for failure in sampling_errors:
+            lines.append(f"- `{failure['segment']}`: {failure['error']}")
+
     clusters = summary["clusters"]
     lines.extend(["", "## Latency incidents", ""])
     if not clusters:
@@ -865,6 +928,7 @@ def render_report(
     rss = process_rss_mib(remote.get("consumer_process"))
     lines.extend(["", "## Remote process", ""])
     if remote.get("consumer_process"):
+        lines.append(f"- Consumer hostname: `{remote.get('hostname', 'unknown')}`")
         lines.append(f"- Consumer process: `{remote['consumer_process']}`")
         if rss is not None:
             lines.append(f"- Consumer resident memory: **{rss:.1f} MiB**.")
@@ -884,6 +948,11 @@ def render_report(
             f"- Consumer timing log: `{config.timing_log}` on `{config.host}`",
             "- End-to-end latency is measured from producer enqueue time through "
             "completion of the matching consumer write.",
+            "- Consumer writes are matched by global shot ID. For older logs with "
+            "session-local step counters, IDs come from the BP series in write order; "
+            "empty segments contribute no shots.",
+            "- Producer and consumer logs are captured at different times; a negative "
+            "tail difference can reflect the later consumer snapshot.",
             "- The analyzer uses one multiplexed SSH connection for all remote reads.",
             "",
         ]
@@ -998,6 +1067,7 @@ def main(argv=None):
             consumer,
             settings,
             bytes_per_step=sampled_bytes_per_step(remote),
+            consumer_shots=bp_shot_indexes(remote),
         )
         report = render_report(
             config,

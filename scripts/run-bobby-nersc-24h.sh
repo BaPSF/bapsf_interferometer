@@ -3,7 +3,7 @@ set -euo pipefail
 
 mkdir -p data/logs
 
-run_name=bobby-nersc-24h-20261001
+run_name=bobby-nersc-24h-20261102
 pid_file="data/logs/${run_name}.producer.pid"
 stdout_log="data/logs/${run_name}.producer.stdout.log"
 timing_log="data/logs/${run_name}.producer.jsonl"
@@ -26,9 +26,9 @@ fi
 nohup python3 -m interf_sim \
     --trc-dir /home/norbert/Software/LAPD/data \
     --period 3 \
-    --limit 28800 \
+    --limit 57600 \
     --repeat-traces \
-    --raw-output streamer/conf/bobby_to_nersc_24h_20261001.conf \
+    --raw-output streamer/conf/${run_name}.conf \
     --raw-output-private-key keys/testkey \
     --raw-output-timing-log ${timing_log} \
     --raw-output-buffer-seconds 600 \
