@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import argparse
+import socket
 import sys
 import time
 import uuid
@@ -225,6 +226,7 @@ def receive_steps(
 
 def main(argv=None):
     args = parse_args(sys.argv[1:] if argv is None else argv)
+    print(f"Consumer running on host: {socket.gethostname()}", flush=True)
     connection_path = Path(args.connection_file)
     advertise_host = args.advertise_host or args.bind_host
     session_id = str(uuid.uuid4())
