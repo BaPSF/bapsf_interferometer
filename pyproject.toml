@@ -39,11 +39,14 @@ ioc = ["softioc>=4.7.2"]
 # EPICS clients: pyepics (CA; the tests read the IOC back over it, and acquisition's optional PNG monitor) and p4p (PVA;
 # interf_store and the PVA tests).
 clients = ["pyepics>=3.5.10", "p4p>=4.3.0"]
+# interf_web (also needs clients). websockets: uvicorn alone has no WebSocket implementation.
+web = ["fastapi>=0.162.0", "uvicorn>=0.54.0", "websockets>=17.4"]
 
 [project.scripts]
 interf-stream-consumer = "streamer.consumer:main"
 diag-ioc = "diag_ioc.__main__:main"
 interf-store = "interf_store:main"
+interf-web = "interf_web.__main__:main"
 interf-stream-analyze = "streamer.analyze_remote_experiment:main"
 
 [tool.setuptools]
@@ -51,7 +54,8 @@ interf-stream-analyze = "streamer.analyze_remote_experiment:main"
 # lists name every module and package; a new one must be added here.
 py-modules = ["interf_main", "interf_raw", "interf_analysis", "interf_file", "interf_payload", "interf_shot", "interf_raw_reader",
               "interf_ioc", "interf_store", "interf_png"]
-packages = ["diag_ioc", "interf_sim", "streamer"]
+packages = ["diag_ioc", "interf_sim", "interf_web", "streamer"]
 
 [tool.setuptools.package-data]
 streamer = ["conf/*.conf"]
+interf_web = ["static/*"]

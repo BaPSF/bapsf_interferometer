@@ -55,6 +55,19 @@ python -m interf_sim --limit 20                                     # no scopes:
 
 In production the IOC, acquisition and the store run as systemd units from [deploy/systemd/](deploy/systemd/) under the `diag-ioc` account: `diag-ioc@.service` (one IOC per `/etc/diag-ioc/<name>.toml`), `interf-acquire.service` (with `acquire.env.example`) and `interf-store.service`. Install steps are in each unit's header.
 
+## Browser page
+
+[interf_web/](interf_web/) shows each shot's density vs time for every port, this shot's NE_MEAN and its recent history, in any browser on the lab network at <http://10.97.106.103:8080/>, with nothing to install. It is read-only and has no login. It is a separate process that only reads the IOC's PVs (the `SHOT` group, and `CFG:NE_WINDOW_MS` for the shaded window), so nothing else waits on it; a slow browser skips to the newest shot. History covers only what `interf_web` has seen itself: today and yesterday, from memory and its own files, not from HDF5.
+
+To install the unit, follow the steps in the header of [interf-web.service](deploy/systemd/interf-web.service). To run it by hand, on `127.0.0.1:8080` unless `INTERF_WEB_HOST` and `INTERF_WEB_PORT` say otherwise:
+
+```bash
+pip install -e '.[clients,web]' -c constraints.txt
+python -m interf_web --prefix LAPD:DIAG:INTERF
+```
+
+The design is D18 in [ARCHITECTURE.md](docs/ARCHITECTURE.md).
+
 ## Where to look
 
 | To learn about | Read |
@@ -79,12 +92,13 @@ In production the IOC, acquisition and the store run as systemd units from [depl
 | [diag_ioc/](diag_ioc/) | Generic diagnostic IOC host (pythonSoftIOC) and the acquisition-to-IOC link |
 | [interf_ioc.py](interf_ioc.py) | The interferometer's IOC module: link message → `analyze_shot` → PVs and the `SHOT` group |
 | [interf_store.py](interf_store.py) | HDF5 store, a PVA client of the `SHOT` group |
+| [interf_web/](interf_web/) | Browser page, a PVA client of the IOC; uPlot 1.6.30 is vendored beside `static/index.html` |
 | [interf_file.py](interf_file.py) | HDF5 schema and writers |
 | [interf_raw_reader.py](interf_raw_reader.py) | Reads raw output files (ADIOS) back for offline reanalysis with `analyze_shot` |
 | [interf_sim/](interf_sim/) | Offline simulation: `.trc` replay, synthetic shots, a development link listener |
 | [streamer/](streamer/) | ADIOS/socket raw output; maintained by another group, not edited here |
 | [deploy/](deploy/) | Production IOC config, read-only access file, systemd units |
-| [constraints.txt](constraints.txt) | Exact versions of the EPICS stack (`softioc`, `epicscorelibs`, `pvxslibs`, `p4p`, `pyepics`), for `pip install -c` |
+| [constraints.txt](constraints.txt) | Exact versions of the EPICS stack (`softioc`, `epicscorelibs`, `pvxslibs`, `p4p`, `pyepics`) and of `interf_web`'s web stack, for `pip install -c` |
 | [tests/](tests/) | `python -m unittest discover -s tests -v` |
 
 The live GUI will be re-implemented under EPICS (Phoebus, C7). The HDF5 readers and the datarun merge scripts may return later on this branch.

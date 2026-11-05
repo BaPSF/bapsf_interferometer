@@ -1,0 +1,384 @@
+<!doctype html>
+<!-- Read-only page of the interf_web package (docs/ARCHITECTURE.md D18). -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Interferometer density</title>
+<link rel="stylesheet" href="static/uPlot.min.css">
+<style>
+  :root { --ink: #1c1c1c; --muted: #666; --line: #d5d5d5; --bar: #e4e4e4; --note: #fff3cd; --live: #1a7f37; --off: #b42318; }
+  body { margin: 0 auto; padding: 12px 16px 32px; max-width: 1400px; background: #fff; color: var(--ink); font: 16px/1.4 system-ui, sans-serif; }
+  header, .row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; }
+  h1 { margin: 0; font-size: 20px; }
+  h2 { margin: 24px 0 8px; font-size: 18px; }
+  small { color: var(--muted); font-weight: normal; }
+  #status { padding: 1px 10px; border-radius: 10px; color: #fff; background: var(--muted); font-size: 14px; }
+  #status.live { background: var(--live); }
+  #status.off { background: var(--off); }
+  .bar { margin-top: 8px; padding: 6px 12px; background: var(--bar); }
+  .bar.note { background: var(--note); }
+  #shot-id { font-size: 20px; font-weight: 600; }
+  .row { margin: 8px 0; }
+  button { padding: 4px 12px; font: inherit; cursor: pointer; }
+  button.on { background: var(--ink); color: #fff; }
+  .plot { width: 100%; overflow: hidden; }
+  table.means { margin-top: 12px; border-collapse: collapse; }
+  table.means th, table.means td { padding: 3px 14px 3px 0; border-bottom: 1px solid var(--line); text-align: left; font-weight: normal; }
+  table.means td.value { font-variant-numeric: tabular-nums; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Interferometer density</h1>
+  <span id="status">Connecting</span>
+</header>
+<div id="waiting" class="bar" hidden></div>
+<div id="paused-bar" class="bar note" hidden></div>
+
+<div class="row">
+  <span id="shot-id">No shot yet</span>
+  <span id="shot-time"></span>
+  <small>Bobby clock, Los Angeles time</small>
+</div>
+<div class="row">
+  <button id="pause">Pause</button>
+  <button id="keep">Keep trace</button>
+  <button id="clear-kept">Clear kept</button>
+  <small>Drag to zoom, double-click to reset, click a legend entry to hide a port. Shaded: the NE_MEAN window.</small>
+</div>
+<div id="density-plot" class="plot"></div>
+<table class="means" id="means-table">
+  <thead><tr><th>Port</th><th>NE_MEAN (10^18 m^-3)</th><th>Why missing</th></tr></thead>
+  <tbody id="means"></tbody>
+</table>
+
+<h2>NE_MEAN history <small>what this server has seen, today and yesterday; Bobby clock, Los Angeles time</small></h2>
+<div class="row" id="ranges">
+  <button id="history-pause">Pause</button>
+</div>
+<div id="history-plot" class="plot"></div>
+<small>Dots are the mean of each time bucket; the bars are its min to max. Drag to zoom, double-click to reset.</small>
+
+<script src="static/uPlot.iife.min.js"></script>
+<script>
+"use strict";
+
+// The ports of interf_store.PORTS, in that order; colours as main's interf_plot.py.
+const COLORS = {P20: "#ff0000", P29: "#0000ff", P40: "#008000"};
+const FADE = "73";  // hex alpha, about .45
+const PORTS = Object.keys(COLORS);
+const NE_UNIT = 1e18;  // the frames and /api/trend are in m^-3, the page in 10^18 m^-3
+const ZONE = "America/Los_Angeles";  // never the browser's zone
+const TREND_POINTS = 1000;
+const RANGES = [
+  {label: "10 min", seconds: 600}, {label: "1 h", seconds: 3600}, {label: "8 h", seconds: 28800},
+  {label: "Today", startKey: "today_start"}, {label: "Yesterday + today", startKey: "yesterday_start"},
+];
+const FRAME_TIMEOUT_MS = 10000;  // status frames come every second; this long without one is a dead link
+const RECONNECT_MS = 2000;
+
+const byId = id => document.getElementById(id);
+const toUnit = v => (v == null || Number.isNaN(v)) ? null : v / NE_UNIT;
+const threeDigits = (u, v) => v == null ? "--" : v.toFixed(3);
+// A drag is the only thing that moves the x scale off the range last set. Loose !=: an empty plot has null against undefined.
+const isZoomed = (plot, home) => home && (plot.scales.x.min != home[0] || plot.scales.x.max != home[1]);
+
+function inPlotArea(u, draw) {
+  const {ctx, bbox} = u;
+  ctx.save();
+  ctx.beginPath();
+  ctx.rect(bbox.left, bbox.top, bbox.width, bbox.height);
+  ctx.clip();
+  draw(ctx, bbox);
+  ctx.restore();
+}
+
+function setPauseButton(button, on) {
+  button.textContent = on ? "Resume" : "Pause";
+  button.classList.toggle("on", on);
+}
+
+let newest = null, shown = null, paused = false, pending = 0, neWindow = null;
+let densityHome = null;  // the x range of the last render
+const kept = [];
+
+function shadeWindow(u) {
+  if (!neWindow) return;
+  inPlotArea(u, (ctx, bbox) => {
+    const left = u.valToPos(neWindow[0], "x", true), right = u.valToPos(neWindow[1], "x", true);
+    ctx.fillStyle = "rgba(128,128,128,.18)";
+    ctx.fillRect(left, bbox.top, right - left, bbox.height);
+  });
+}
+
+const densityPlot = new uPlot({
+  title: "Density assuming 40cm plasma Dia",
+  width: byId("density-plot").clientWidth,
+  height: 460,
+  scales: {x: {time: false}},
+  axes: [{label: "Time (ms)"}, {label: "ne (10^18 m^-3)", size: 70}],
+  series: [{label: "Time (ms)", value: threeDigits},
+           ...PORTS.map(port => ({label: port, stroke: COLORS[port], width: 1.5, value: threeDigits}))],
+  hooks: {drawClear: [shadeWindow]},
+}, [[], ...PORTS.map(() => [])], byId("density-plot"));
+
+function renderDensity() {
+  // P40 has the Rigol's own time axis and uPlot one x array per plot: join merges the axes. Where a trace has no sample
+  // join leaves undefined, which uPlot's line draws across; a null (NaN density) stays a gap.
+  const traces = shown ? shown.ports.map(p => [p.t, p.ne]) : PORTS.map(() => [[], []]);
+  const data = uPlot.join([...traces, ...kept.map(k => [k.t, k.ne])]);
+  const {min, max} = densityPlot.scales.x;
+  const zoomed = isZoomed(densityPlot, densityHome);
+  densityPlot.setData(data, !zoomed);
+  if (zoomed) densityPlot.setScale("x", {min, max});
+  densityHome = [data[0][0], data[0][data[0].length - 1]];
+}
+
+function renderMeans() {
+  byId("shot-id").textContent = shown.id;
+  byId("shot-time").textContent = shown.time;
+  byId("means-table").title = shown.missing;
+  byId("means").replaceChildren(...shown.ports.map(p => {
+    const row = document.createElement("tr");
+    const name = row.insertCell(), value = row.insertCell(), why = row.insertCell();
+    name.textContent = p.name;
+    name.style.color = COLORS[p.name];
+    value.className = "value";
+    value.textContent = threeDigits(null, toUnit(p.ne_mean));
+    why.textContent = p.missing;
+    return row;
+  }));
+}
+
+function show(shot) {
+  shown = shot;
+  renderDensity();
+  renderMeans();
+}
+
+function renderPausedBar() {
+  byId("paused-bar").hidden = !paused;
+  byId("paused-bar").textContent = `Paused: ${pending} new shot${pending === 1 ? "" : "s"} since`;
+}
+
+byId("pause").onclick = () => {
+  paused = !paused;
+  pending = 0;
+  setPauseButton(byId("pause"), paused);
+  renderPausedBar();
+  if (!paused && newest !== shown) show(newest);
+};
+
+byId("keep").onclick = () => {
+  if (!shown || kept.some(k => k.id === shown.id)) return;
+  for (const p of shown.ports.filter(p => p.n)) {
+    kept.push({id: shown.id, t: p.t, ne: p.ne});
+    densityPlot.addSeries({label: `${p.name} ${shown.id}`, stroke: COLORS[p.name] + FADE, width: 1, dash: [6, 4], value: threeDigits});
+  }
+  renderDensity();
+};
+
+byId("clear-kept").onclick = () => {
+  kept.length = 0;
+  while (densityPlot.series.length > 1 + PORTS.length) densityPlot.delSeries(densityPlot.series.length - 1);
+  renderDensity();
+};
+
+let historyPaused = false, historyBusy = false, historyStale = true;
+let range = RANGES[1], lastStatus = null;
+let historyView = null;  // the [start, end] last drawn
+let historyBars = {};  // port: {low, high}, aligned with the plot's x, in the page's unit
+
+function drawBars(u) {
+  inPlotArea(u, ctx => {
+    ctx.lineWidth = uPlot.pxRatio;
+    ctx.globalAlpha = .35;
+    PORTS.forEach((port, p) => {
+      if (!u.series[p + 1].show || !historyBars[port]) return;
+      const {low, high} = historyBars[port];
+      ctx.strokeStyle = COLORS[port];
+      ctx.beginPath();
+      u.data[0].forEach((t, i) => {
+        if (low[i] == null) return;
+        const x = u.valToPos(t, "x", true);
+        ctx.moveTo(x, u.valToPos(low[i], "y", true));
+        ctx.lineTo(x, u.valToPos(high[i], "y", true));
+      });
+      ctx.stroke();
+    });
+  });
+}
+
+// Widens uPlot's range of the means to the bars in view. series[0].idxs is already set for this update; scales.x is not.
+function historyYRange(u, meanLow, meanHigh) {
+  let low = meanLow ?? Infinity, high = meanHigh ?? -Infinity;
+  const [first, last] = u.series[0].idxs;
+  PORTS.forEach((port, p) => {
+    if (!u.series[p + 1].show || !historyBars[port]) return;
+    for (let i = first; i <= last; i++) {
+      if (historyBars[port].low[i] == null) continue;
+      low = Math.min(low, historyBars[port].low[i]);
+      high = Math.max(high, historyBars[port].high[i]);
+    }
+  });
+  return low > high ? [null, null] : uPlot.rangeNum(low, high, 0.1, true);
+}
+
+const historyPlot = new uPlot({
+  width: byId("history-plot").clientWidth,
+  height: 280,
+  tzDate: seconds => uPlot.tzDate(new Date(seconds * 1e3), ZONE),
+  scales: {y: {range: historyYRange}},
+  axes: [{label: "Time (Los Angeles, Bobby clock)"}, {label: "NE_MEAN (10^18 m^-3)", size: 70}],
+  series: [
+    {label: "Time"},
+    // No line: it would run straight across a 34-minute pause in the shots.
+    ...PORTS.map(port => ({label: port, stroke: COLORS[port], paths: () => null, value: threeDigits,
+                           points: {show: true, size: 5, stroke: COLORS[port], fill: COLORS[port]}})),
+  ],
+  hooks: {draw: [drawBars]},
+}, [[], ...PORTS.map(() => [])], byId("history-plot"));
+
+// uPlot's own double-click goes to the data's range; the range asked for is what "reset" means here.
+historyPlot.over.addEventListener("dblclick", () => {
+  if (historyView) historyPlot.setScale("x", {min: historyView[0], max: historyView[1]});
+});
+
+function drawHistory(trend, start, end) {
+  historyBars = Object.fromEntries(PORTS.map(port => [port, {low: trend[port].min.map(toUnit), high: trend[port].max.map(toUnit)}]));
+  const {min, max} = historyPlot.scales.x;
+  const zoomed = isZoomed(historyPlot, historyView);
+  historyPlot.setData([trend.t, ...PORTS.map(port => trend[port].mean.map(toUnit))], false);
+  historyPlot.setScale("x", zoomed ? {min, max} : {min: start, max: end});
+  historyView = [start, end];
+}
+
+async function refreshHistory() {
+  if (historyBusy || !lastStatus) return;  // historyStale stays set: the next status frame comes back here
+  historyBusy = true;
+  historyStale = false;
+  const end = lastStatus.now;
+  const start = range.seconds ? end - range.seconds : lastStatus[range.startKey];
+  try {
+    const response = await fetch(`api/trend?start=${start}&end=${end}&points=${TREND_POINTS}`);
+    if (!response.ok) throw new Error(`/api/trend: ${response.status}`);
+    drawHistory(await response.json(), start, end);
+  } catch (error) {
+    console.warn(error);  // the next shot asks again
+  } finally {
+    historyBusy = false;
+  }
+}
+
+// Not for a hidden tab (historyStale waits for its return), and not sooner than one bucket: that redraws the same pixels.
+function historyDue(now) {
+  if (!historyStale || historyPaused || document.hidden) return false;
+  return !historyView || now - historyView[1] >= (historyView[1] - historyView[0]) / TREND_POINTS;
+}
+
+const rangeButtons = RANGES.map(r => {
+  const button = document.createElement("button");
+  button.textContent = r.label;
+  button.classList.toggle("on", r === range);
+  button.onclick = () => {
+    range = r;
+    historyView = null;  // a new range drops the zoom
+    for (const b of rangeButtons) b.classList.toggle("on", b === button);
+    historyStale = true;
+    refreshHistory();
+  };
+  return button;
+});
+byId("ranges").append(...rangeButtons);
+
+byId("history-pause").onclick = () => {
+  historyPaused = !historyPaused;
+  setPauseButton(byId("history-pause"), historyPaused);
+};
+
+function decodeShot(buffer) {
+  const headerLength = new DataView(buffer).getUint32(0, true);
+  const shot = JSON.parse(new TextDecoder().decode(new Uint8Array(buffer, 4, headerLength)));
+  let offset = 4 + headerLength;
+  const take = n => {
+    const values = new Float32Array(buffer, offset, n);
+    offset += 4 * n;
+    return values;
+  };
+  for (const p of shot.ports) {
+    p.t = Array.from(take(p.n));
+    p.ne = Array.from(take(p.n), toUnit);
+  }
+  return shot;
+}
+
+function onShot(shot) {
+  if (newest && shot.id === newest.id) return;  // a reconnected socket starts with the shot already here
+  newest = shot;
+  historyStale = true;
+  if (paused) {
+    pending++;
+    renderPausedBar();
+  } else {
+    show(shot);
+  }
+}
+
+function setStatus(text, className) {
+  byId("status").textContent = text;
+  byId("status").className = className;
+}
+
+function formatAge(seconds) {
+  const s = Math.round(seconds);
+  if (s < 60) return `${s} s`;
+  if (s < 3600) return `${Math.floor(s / 60)} min ${s % 60} s`;
+  return `${Math.floor(s / 3600)} h ${Math.floor(s / 60) % 60} min`;
+}
+
+function onStatus(frame) {
+  lastStatus = frame;
+  setStatus(frame.waiting ? "Waiting" : "Live", frame.waiting ? "" : "live");
+  byId("waiting").hidden = !frame.waiting;
+  byId("waiting").textContent = frame.age_s == null ? "Waiting for shots"
+    : `Waiting for shots: the last one was ${formatAge(frame.age_s)} ago`;
+  if (JSON.stringify(frame.ne_window_ms) !== JSON.stringify(neWindow)) {
+    neWindow = frame.ne_window_ms;
+    densityPlot.redraw(false);
+  }
+  if (historyDue(frame.now)) refreshHistory();
+}
+
+function connect() {
+  const url = new URL("ws", location.href);
+  url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
+  const socket = new WebSocket(url);
+  socket.binaryType = "arraybuffer";
+  let lastFrame = performance.now();
+  const watchdog = setInterval(() => {
+    if (performance.now() - lastFrame < FRAME_TIMEOUT_MS) return;
+    setStatus("Disconnected", "off");
+    socket.close();
+  }, 1000);
+  socket.onmessage = event => {
+    lastFrame = performance.now();
+    if (typeof event.data === "string") onStatus(JSON.parse(event.data));
+    else onShot(decodeShot(event.data));
+  };
+  socket.onclose = () => {
+    clearInterval(watchdog);
+    setStatus("Disconnected", "off");
+    setTimeout(connect, RECONNECT_MS);
+  };
+}
+
+new ResizeObserver(() => {
+  densityPlot.setSize({width: byId("density-plot").clientWidth, height: densityPlot.height});
+  historyPlot.setSize({width: byId("history-plot").clientWidth, height: historyPlot.height});
+}).observe(document.body);
+
+connect();
+</script>
+</body>
+</html>

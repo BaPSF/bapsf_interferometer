@@ -5,3 +5,9 @@ epicscorelibs==7.0.10.99.0.2
 pvxslibs==1.5.3
 p4p==4.3.0
 pyepics==3.5.10
+# interf_web (D18), the web extra: not yet run on the lab machine. starlette and websockets too, because /ws relies on
+# how they and uvicorn report a browser that left.
+fastapi==0.162.0
+starlette==1.10.0
+uvicorn==0.54.0
+websockets==17.4

@@ -1,0 +1,40 @@
+# The browser page (interf_web) as a system unit, beside diag-ioc@interferometer: monitors the IOC's PVA group
+# <prefix>:SHOT and serves http://10.97.106.103:8080/. Its own process: acquisition, the IOC and the store never wait
+# on it (D18).
+# Install as root, after diag-ioc@.service's steps (the diag-ioc account, /opt/bapsf_interferometer and its venv):
+#   cd /opt/bapsf_interferometer
+#   .venv/bin/pip install -e '.[ioc,clients,web]' -c constraints.txt
+#   cp deploy/systemd/interf-web.service /etc/systemd/system/
+#   # open TCP 8080 from 10.97.106.0/24 in the host firewall, permanently
+#   # optional: /etc/interferometer/web.env for overrides (e.g. INTERF_WEB_PORT)
+#   systemctl daemon-reload && systemctl enable --now interf-web
+# Log: journalctl -u interf-web. History files: /var/lib/interf-web.
+[Unit]
+Description=Interferometer browser page (interf_web, PVA client of diag-ioc@interferometer)
+# After= only: the page waits for the group itself (p4p reconnects). No Wants=, Requires=, BindsTo= or PartOf= on the
+# IOC, so it never starts or stops the IOC. If the address is not up yet at boot, the bind fails and Restart= retries.
+After=diag-ioc@interferometer.service
+
+[Service]
+Type=simple
+# The account of the IOC, acquisition and the store (D10).
+User=diag-ioc
+Group=diag-ioc
+WorkingDirectory=/opt/bapsf_interferometer
+StateDirectory=interf-web
+Environment=INTERF_WEB_STATE_DIR=/var/lib/interf-web
+# The lab network's address only, never 0.0.0.0: enp2s0 is the scope network.
+Environment=INTERF_WEB_HOST=10.97.106.103
+Environment=EPICS_PVA_ADDR_LIST=127.0.0.1
+Environment=EPICS_PVA_AUTO_ADDR_LIST=NO
+Environment=PYTHONUNBUFFERED=1
+EnvironmentFile=-/etc/interferometer/web.env
+ExecStart=/opt/bapsf_interferometer/.venv/bin/python -m interf_web --prefix LAPD:DIAG:INTERF
+# SIGTERM: uvicorn closes the sockets (up to STOP_TIMEOUT_S in interf_web/__main__.py), then the monitor and the history file.
+KillSignal=SIGTERM
+TimeoutStopSec=30
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
