@@ -623,7 +623,7 @@ class RestartingSingleSocketIO(IO):
                         tags=("white_check_mark",),
                     )
                 return
-            except (OSError, EOFError, RuntimeError) as exc:
+            except (OSError, EOFError, RuntimeError, ValueError) as exc:
                 self._record(
                     "consumer.launch_retry",
                     reason=reason,

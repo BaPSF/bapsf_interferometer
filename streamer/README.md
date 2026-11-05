@@ -438,6 +438,10 @@ first failed initial start or remote restart in each launch series also goes
 to the alert topic, including the error. Further failures in that series are
 logged without repeating the alert; a successful start or restart goes to
 the info topic.
+Decryption and connection-information validation failures also log and alert.
+The success notification requires the producer to decrypt the connection
+information and connect and authenticate to the consumer; starting the remote
+process alone does not send it. A new producer process resets alert suppression.
 
 When an expired configured certificate prevents recovery, the producer pauses
 launch attempts after the first failure and watches for a different, currently
