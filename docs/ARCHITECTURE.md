@@ -3,7 +3,7 @@
 Repo `BaPSF/bapsf_interferometer`, branch `refactor/linux-epics-daq`. Done: C4r `4ee26b8`, the link socket lock
 `ebb0b9f`, C4s `465b76a`, C5 `b8ecf40` and C6 `442c405`; C4s and C5 are tested on Linux with real recordings. `git log`
 has the current head.
-Status: **D1–D15 ACCEPTED by J on 2026-10-08, D16 on 2026-10-28, D17 on 2026-10-30.** Every agent follows this file, and
+Status: **D1–D15 ACCEPTED by J on 2026-10-08, D16 on 2026-10-28, D17 on 2026-10-30. D18 PROPOSED (design chosen by J on 2026-11-05; open items in section 2).** Every agent follows this file, and
 `HANDOFF_live_epics.md` implements it commit by commit. Anything neither covers goes to J before code is written.
 
 **Single source:** this file is `docs/ARCHITECTURE.md` on `refactor/linux-epics-daq`, next to
@@ -40,7 +40,7 @@ the record timestamps are `host_time`. C4r (`4ee26b8`) replaced both, per D6, D1
 | D7 | Per-shot consistency | One timestamp per shot, `SHOT:NUM` set last, PVA group `<P>:SHOT` |
 | D8 | Outside group | Read-only access to documented PVs; nothing built for them |
 | D9 | Source of record | ADIOS raw output; IOC-fed HDF5 is best effort |
-| D10 | Supervision | systemd system units (IOC, acquisition and HDF5 store) as the `diag-ioc` account |
+| D10 | Supervision | systemd system units (IOC, acquisition, HDF5 store and browser page) as the `diag-ioc` account |
 | D11 | Dependencies | Exact pins for `softioc`, `epicscorelibs`, `pvxslibs`, `p4p` |
 | D12 | Repo layout | `diag_ioc` stays here until a 2nd diagnostic exists |
 | D13 | Agent roles | Local agent writes code; `test-on-Bobby` tests every commit on Linux with real `.trc` data |
@@ -48,6 +48,7 @@ the record timestamps are `host_time`. C4r (`4ee26b8`) replaced both, per D6, D1
 | D15 | Shot time | LeCroy WAVEDESC trigger time (scope NTP-synced), float64 epoch seconds |
 | D16 | PNG run and shot | Optional CA monitor in `interf_main`, copied at capture detection, ADIOS only; readers match by `host_time` |
 | D17 | Raw output never holds up acquisition | streamer's writer thread opens, retries and drains; `write()` only queues |
+| D18 | Browser UI | `interf_web`: p4p subscriber on `<P>:SHOT` + FastAPI WebSocket, read-only, per-shot density vs time first |
 
 ### D1. IOC technology: pythonSoftIOC
 - A real EPICS 7 IOC (standard records, alarms, devIocStats, CA + PVA) with the analysis in the same process,
@@ -214,7 +215,8 @@ shot after an IOC start resets its baseline: a restart shows only as a gap in `S
 - System units (J, 2026-10-12): `deploy/systemd/diag-ioc@.service`, one IOC per `/etc/diag-ioc/<name>.toml`, and
   `deploy/systemd/interf-acquire.service`, acquisition. Install steps are in each unit's header.
 - The third unit (J, 2026-10-18): `deploy/systemd/interf-store.service`, the HDF5 store (C6, D9), under the same account.
-- All three run as the non-root system account `diag-ioc` (no login), never as root and never as `softioc`, the account
+- The fourth unit: `deploy/systemd/interf-web.service`, the browser page (D18), under the same account.
+- All four run as the non-root system account `diag-ioc` (no login), never as root and never as `softioc`, the account
   of the old procServ IOC. Sharing one account, the IOC and acquisition need no group for the 0660 link socket. As root, EPICS locks all memory
   in RAM (about 316 MiB vs 62 MiB idle in the bench). Production does not depend on a person's account.
 - Paths: code in `/opt/bapsf_interferometer` (root-owned, with its venv), config in `/etc/diag-ioc/<name>.toml`
@@ -222,17 +224,19 @@ shot after an IOC start resets its baseline: a restart shows only as a gap in `S
   socket `/run/diag-ioc/<name>/link.sock`, acquisition log `/var/log/interferometer`, shot counter
   `/var/lib/interferometer/shot_counter.json` (copied once from `~jia/data/state`, so numbering continues), HDF5 files
   `/var/lib/interferometer/hdf5` (`INTERF_DATA_DIR`; systemd makes the state directory 0755 and the files come out 0644,
-  so every local user reads them and only `diag-ioc` writes), store overrides `/etc/interferometer/store.env`. Logs also
+  so every local user reads them and only `diag-ioc` writes), store overrides `/etc/interferometer/store.env`, `interf_web`
+  history files `/var/lib/interf-web` (`INTERF_WEB_STATE_DIR`), its overrides `/etc/interferometer/web.env`. Logs also
   go to the journal.
 - Ordering: `interf-acquire` has `Wants=` and `After=` on `diag-ioc@interferometer` (and `network-online.target`), never
   `Requires=`/`BindsTo=`/`PartOf=`, so an IOC stop or crash never stops acquisition (D5). `After=` orders process starts,
   not readiness: the IOC listens about 1.3 s after it starts, and the link's retry covers the gap. `interf-store` has
   only `After=` on the IOC (no `Wants=`, never `Requires=`/`BindsTo=`/`PartOf=`), so it never starts or stops the IOC;
-  p4p reconnects to the group by itself.
-- Restart: the IOC and the store `always`, acquisition `on-failure`, all 5 s apart; acquisition gets 30 s to stop, so
-  SIGTERM can finish the shot in flight and restore the trigger modes, and the store 30 s to drain its queue (its writer
-  gets 20 s, so the summary is logged before SIGKILL).
-- The prefix `LAPD:DIAG:INTERF` appears in the store unit's `ExecStart` (`--prefix`) only, never in code or tests (D4).
+  p4p reconnects to the group by itself. `interf-web` has the same single `After=` and no `network-online.target`: if its
+  address is not up at boot, the bind fails and `Restart=` retries.
+- Restart: the IOC, the store and the page `always`, acquisition `on-failure`, all 5 s apart; acquisition gets 30 s to
+  stop, so SIGTERM can finish the shot in flight and restore the trigger modes, the store 30 s to drain its queue (its
+  writer gets 20 s, so the summary is logged before SIGKILL), and the page 30 s (open sockets get 5 s).
+- The prefix `LAPD:DIAG:INTERF` appears in the store and web units' `ExecStart` (`--prefix`) only, never in code or tests (D4).
 - EPICS ports: the default CA 5064 and PVA 5075. The old procServ IOC (prefix `Interferometer:Port31:`) that used them
   was removed from the lab machine by its admin on 2026-10-11. If a second IOC runs on that host again, clients there,
   Phoebus included, must search the broadcast address, not unicast `127.0.0.1`, or only one IOC answers.
@@ -241,12 +245,13 @@ shot after an IOC start resets its baseline: a restart shows only as a gap in `S
   units, all checks passed on 2026-10-12: both run as `diag-ioc`, the socket and `/var` directories have the right
   owner and modes, `diag-ioc` can read the `.trc` data, a full replay (sent 55, dropped 0, failed 0; `SHOT:LOST`,
   `STAT:DROPPED`, `STAT:ACK_TIMEOUTS` 0), and an IOC SIGKILL mid-replay with restart and link recovery. The replay
-  does not exercise acquisition's `/var/log` and `/var/lib` paths; the first live run does. The store unit is not yet
-  tried on the lab machine.
+  does not exercise acquisition's `/var/log` and `/var/lib` paths; the first live run does. The store and web units are
+  not yet tried on the lab machine.
 
 ### D11. Pin the EPICS stack
 - Exact versions of `softioc`, `epicscorelibs`, `pvxslibs` and (for C6) `p4p` in a constraints file (pyproject's `softioc>=4.7.2` is only a
-  floor). Upgrades are deliberate and tested.
+  floor). Upgrades are deliberate and tested. `interf_web`'s web stack is pinned in the same file (D18), not yet run on
+  the lab machine.
 
 ### D12. Repo layout
 - `diag_ioc/` stays in this repo until a second diagnostic exists, then becomes its own package with modules
@@ -393,9 +398,77 @@ shot after an IOC start resets its baseline: a restart shows only as a gap in `S
 - **Out of scope, for J:** retention of local raw output files, or moving them off Bobby (about 9.6 GB/h, 230 GB/day
   of continuous running).
 
+### D18. Browser UI: `interf_web` (J, design chosen 2026-11-05)
+- **Goal:** anyone on the lab network opens `http://10.97.106.103:8080/` in a browser, with nothing installed, and
+  sees each shot's density vs time for every port in real time. NE_MEAN now and its history are a bonus on top. The
+  page is read-only.
+- **Why not Phoebus Web Runtime (DBWR) or pvws:** both need Java and Tomcat on Bobby, update each PV on its own (a
+  plot can mix two shots), throttle arrays to one per 10 s by default, and a trend would need an EPICS archiver. A
+  small Python app reuses the stack `interf_store` already proves (D9).
+- **Process:** the `interf_web` package at the repo root (`python -m interf_web`), its own process like `interf_store` (D9): nothing in `interf_main`,
+  `interf_raw`, the IOC or `interf_store` imports it, calls it or waits on it. It runs as `interf-web.service`, the
+  `diag-ioc` account (D10). New dependencies in the `web` extra: `fastapi`, `uvicorn` and `websockets` (uvicorn alone has
+  no WebSocket support). All three and `starlette` are pinned (D11), because `/ws` relies on how they report a browser
+  that left. The page is `interf_web/static/index.html` with `uPlot.iife.min.js` and `uPlot.min.css` (uPlot 1.6.30, MIT)
+  vendored next to it and packaged with it, because the lab network may have no internet. No JavaScript framework and
+  no build step.
+- **Data in:** a p4p monitor on `<P>:SHOT` (`p4p.client.thread.Context("pva")`, `notify_disconnect=True`), with
+  `EPICS_PVA_ADDR_LIST=127.0.0.1` and `EPICS_PVA_AUTO_ADDR_LIST=NO`. pvRequest
+  `field(timeStamp,num,date,host_time,missing,<port>.time_array,<port>.ne,<port>.ne_mean,<port>.missing)` for the
+  configured ports (lower-case, as in `interf_ioc._add_group`); phase is not needed. Check on Bobby that QSRV2 honours
+  the field selection; if not, take the whole group. A second monitor on `<P>:CFG:NE_WINDOW_MS` feeds the shaded window,
+  because that record is not in the group. The IOC sees one client however many browsers are open.
+- **Callback rule (as D9):** the p4p callback never blocks. It converts the update into one message (date, num,
+  `host_time`, per port `time_array` and `ne` as float32 and `ne_mean`, missing reasons; ~50 kB) and hands it to the
+  event loop with `loop.call_soon_threadsafe`. Skip an update with `date` or `timeStamp` 0 (the IOC's state before its
+  first shot) and a duplicate `(date, num)` after a reconnect, as `interf_store` does.
+- **Data out:** `GET /` serves the page. `WS /ws` sends the newest shot, latest-wins per browser: a slow browser skips to
+  the newest shot and never holds up the callback or the IOC. A new or reconnected browser gets the latest shot at once.
+  A status text frame follows each shot and goes out at least once a second: Bobby's time, the newest shot's age, whether
+  the page is waiting, the LA midnights of today and yesterday, and the NE_MEAN window. Sending it is also how a server
+  that never reads notices a browser that left.
+  The server never reads from the socket, has no route that writes and no p4p `put`; with D8's read-only ACF that makes
+  the page read-only at every layer. No login.
+- **Network:** uvicorn binds to `10.97.106.103` only, never `0.0.0.0` (`enp2s0` is the scope network), set by
+  `INTERF_WEB_HOST` in the unit; the code's default is `127.0.0.1`. Port 8080 (`INTERF_WEB_PORT`) for
+  now (J's plain-HTTP test from another lab PC passed on 2026-11-05). A permanent firewall rule for that port from
+  `10.97.106.0/24` is a sudo deploy step. A WebSocket through the firewall is still to be checked once the app runs.
+- **Page, main view (most important; mirrors main's `interf_GUI.py` / `interf_plot.py`):** one plot of density vs
+  time for P20, P29 and P40 (x `Time (ms)`, y `ne (10^18 m^-3)`, title "Density assuming 40cm plasma Dia"), colours as
+  main (P20 red, P29 blue, P40 green), shot ID (`shot_date-shot_number`) and time above it. Controls: Pause (freezes the
+  plot; new shots keep arriving, a bar shows how many), Keep trace (the current traces stay as faded dashed lines, like
+  main's "Save current trace on plot"), Clear kept, drag to zoom (x only; y follows what is in view), double-click to reset, click a legend entry to hide a
+  port. The `CFG:NE_WINDOW_MS` window is shaded. A missing port draws nothing and shows its reason. P20 and P29 are
+  drawn as measured, with no correction or warning.
+- **Page, bonus:** this shot's NE_MEAN per port, and an NE_MEAN history over today and yesterday that follows new
+  shots, with range buttons (10 min, 1 h, 8 h, today, yesterday + today), drag to zoom and pause. It draws each time
+  bucket's mean as a dot with a min-to-max bar, and no line, which would run straight across a pause. Shot health, link and
+  IOC statistics and PNG run/shot are not shown (PNG stays off until the fake PNG run passes).
+- **Waiting state:** after 3 missed shots (no new `(date, num)` for 10 s by Bobby's clock), a grey "Waiting for shots"
+  bar says how long since the last shot, and the plot keeps the last shot. The status turns back to Live on the next
+  shot. The server works this out from the newest shot's `host_time`, so the IOC's last shot received at a restart does
+  not read as new. (The lab paused the scope for 34 min on 2026-11-04.)
+- **Times:** shot time and the history's time axis use `host_time` (Bobby's NTP clock), labelled "Bobby clock", shown in
+  LA local time. Never the scope's trigger time on the page: on 2026-11-04 the scope clock wandered from 0.95 s ahead to
+  0.15 s behind.
+- **History store:** keyed by `(shot_date, shot_number)`, since the shot number restarts at 0 each midnight (D14).
+  The two newest shot dates are kept, in memory plus one small append-only text file per date in the service's state
+  directory, so a restart keeps both (about 1.6 MB/day at a shot per 3 s; a line torn by a crash costs that shot, not the
+  file). A new date drops the oldest day and deletes its file. Not built, pending section 2: yesterday after a restart
+  from `interf_store`'s HDF5 file for that date (read-only, retried later if locked), then cached. If it is built, never
+  open today's HDF5 file: `interf_store` opens it once per shot without SWMR, and a failed open drops that shot.
+  `GET /api/trend?start=&end=&points=` (points 1 to 5000) returns min, max and mean per time bucket, only for buckets
+  holding a shot. The page asks for it at most once per bucket width, and not while its tab is hidden.
+
 ## 2. Open
 
-- Nothing open. Closed 2026-10-18: empty P40 arrays (D9). The main-branch writer has stored empty P40 arrays with
+- D18, for J: yesterday's NE_MEAN from HDF5 needs a value to read. HDF5 holds phase cut to 2048 points, and the IOC
+  computes NE_MEAN at full resolution before the cut, so rebuilding it would read the whole ~1.5 GB day and differ
+  slightly. Proposed: `interf_store` saves each port's `ne_mean` (already in the group) as an attribute on that shot's
+  phase dataset. Until J decides, the history covers only what `interf_web` saw itself.
+- D18, for J: does the browser UI replace the C7 Phoebus screens, or sit beside them?
+- D18: the final port (8080 worked in the test).
+- Closed 2026-10-18: empty P40 arrays (D9). The main-branch writer has stored empty P40 arrays with
   `rigol_missing=True` since `33ca795` (2026-05-12), so the store's empty arrays match the legacy files; only files
   from before then hold zero-filled placeholders.
 
