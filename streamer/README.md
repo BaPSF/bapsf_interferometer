@@ -402,6 +402,8 @@ timeout aborts the socket and stops relaunching.
 Remote recovery records `consumer.connection_lost`, `consumer.launch`,
 `consumer.launch_retry`, `io.retry`, `ssh_key.wait`, and `ssh_key.updated`
 events in the producer timing log.
+Each `consumer.launch_retry` includes `error_type` and `error`, including
+captured SSH stderr when the remote launch command fails.
 
 ## ntfy notifications and SSH-certificate monitoring
 
@@ -432,8 +434,10 @@ monitor reads the OpenSSH certificate with `ssh-keygen -L`. It warns 6, 3, 2,
 and 1 hour before expiration and reports expired, missing, invalid, or not-yet-
 valid certificates. It re-reads the file on every check, so replacing a
 certificate resets the warning schedule without restarting acquisition. The
-first failed remote restart in a reconnect episode also goes to the alert
-topic.
+first failed initial start or remote restart in each launch series also goes
+to the alert topic, including the error. Further failures in that series are
+logged without repeating the alert; a successful start or restart goes to
+the info topic.
 
 When an expired configured certificate prevents recovery, the producer pauses
 launch attempts after the first failure and watches for a different, currently

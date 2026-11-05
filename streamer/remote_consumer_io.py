@@ -599,7 +599,7 @@ class RestartingSingleSocketIO(IO):
     def _connect_with_retries(self, reason):
         attempt = 0
         expired_key_attempts = 0
-        restart_failure_notified = False
+        failure_notified = False
         while True:
             if self._aborted:
                 raise RuntimeError("Remote consumer output was aborted")
@@ -629,20 +629,22 @@ class RestartingSingleSocketIO(IO):
                     reason=reason,
                     attempt=attempt,
                     host=self._config.host,
+                    error_type=type(exc).__name__,
+                    error=str(exc),
                 )
                 if (
-                    reason == "connection_lost"
-                    and not restart_failure_notified
+                    not failure_notified
                     and self._alert_notifier is not None
                 ):
+                    action = "restart" if reason == "connection_lost" else "start"
                     self._alert_notifier.notify(
-                        "Raw data server restart failed",
-                        f"Restart attempt {attempt} for the remote consumer on "
+                        f"Raw data server {action} failed",
+                        f"{action.capitalize()} attempt {attempt} for the remote consumer on "
                         f"{self._config.host} failed: {type(exc).__name__}: {exc}",
                         priority=5,
                         tags=("rotating_light",),
                     )
-                    restart_failure_notified = True
+                    failure_notified = True
                 maximum = self._config.max_relaunch_attempts
                 if maximum and attempt >= maximum:
                     raise
