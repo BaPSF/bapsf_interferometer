@@ -3,8 +3,10 @@ set -euo pipefail
 
 mkdir -p data/logs
 
-run_name=bobby-nersc-24h-20261102
-pid_file="data/logs/${run_name}.producer.pid"
+config_name=bobby-nersc-24h-20261102
+start_time=$(python3 -c 'from datetime import datetime, timezone; print(datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S.%fZ"))')
+run_name="${config_name}-${start_time}"
+pid_file="data/logs/${config_name}.producer.pid"
 stdout_log="data/logs/${run_name}.producer.stdout.log"
 timing_log="data/logs/${run_name}.producer.jsonl"
 
@@ -28,7 +30,7 @@ nohup python3 -m interf_sim \
     --period 3 \
     --limit 57600 \
     --repeat-traces \
-    --raw-output streamer/conf/${run_name}.conf \
+    --raw-output streamer/conf/${config_name}.conf \
     --raw-output-private-key keys/testkey \
     --raw-output-timing-log ${timing_log} \
     --raw-output-buffer-seconds 600 \

@@ -46,7 +46,7 @@ never from the private key, once when `RawOutput` starts:
 
 1. An existing directory, or any path ending in `/` (created if missing):
    direct ADIOS to local files, even when a private key is set. The producer
-   writes timestamped ADIOS files there, starting a new one every
+   writes ADIOS files in `YYYYMMDD/` subdirectories there, starting a new one every
    `file_interval_seconds`, with the consumer's names
    (`consumer_output.RotatingConsumerOutput`). An existing directory that is
    itself an ADIOS output (`.bp`, or an `md.idx` inside) is written as in 4.
@@ -222,7 +222,7 @@ and optional operation metadata. The initial hello lists the first step's
 variables; later data messages are self-describing so channels may disappear
 or recover. Producer and consumer must use compatible protocol versions.
 
-The consumer stores received steps in timestamped outputs under `received/`.
+The consumer stores received steps in daily subdirectories under `received/`.
 A new output is opened every 3600 seconds by default; set
 `--file-interval-seconds` to another positive interval. Rotation occurs before
 the first step received at or after the deadline.
@@ -309,12 +309,8 @@ python = /path/to/venv/bin/python3
 script = streamer/consumer.py
 compression_config = streamer/conf/blosc2-zstd.conf
 
-connection_file = data/logs/interf.conn.json
 output_directory = data/raw-output
 file_interval_seconds = 3600
-stdout_log = data/logs/raw-output-consumer.stdout.log
-pid_file = data/logs/raw-output-consumer.pid
-timing_log = data/logs/raw-output-consumer.jsonl
 
 public_key = keys/interf.pub
 allow_ip_range = 192.168.1.0/24
@@ -376,9 +372,35 @@ advertised socket directly.
 
 ### Remote lifecycle and recovery
 
-The remote command removes stale rendezvous information, stops the process
-recorded by `pid_file`, and starts the consumer with `nohup`. Standard input is
-`/dev/null`; stdout and stderr append to `stdout_log`. Once encrypted connection
+`output_directory` is the remote base directory. Each producer session selects
+one UTC start time (`YYYYMMDDTHHMMSS.ffffffZ`) and creates:
+
+```text
+<output_directory>/
+  logs/
+    consumer-<starttime>.conn.json
+    consumer-<starttime>.stdout.log
+    consumer-<starttime>.pid
+    consumer-<starttime>.jsonl
+  data/
+    YYYYMMDD/
+      HHMMSS.ffffff±HHMM.bp
+```
+
+The data date and time use the consumer's local timezone. The consumer creates
+each day's directory on the first write that day and rotates at midnight even
+if `file_interval_seconds` has not elapsed. Existing data names get a numeric
+suffix instead of being overwritten. HDF5 and pickle outputs use the same
+layout with `.h5` and `.pkl` extensions.
+
+Automatic consumer replacements within a producer session append to that
+session's logs; restarting the producer selects a fresh log set. The connection
+file is removed when its consumer exits. The remote command creates the log
+directories, stops verified consumer processes recorded in that base's PID
+files, and starts the consumer with `nohup`. Standard input is `/dev/null`;
+stdout and stderr append to the session's stdout log. Legacy configurations
+with explicit log or PID paths retain their old path settings; remove all four
+path settings to use this layout. Once encrypted connection
 information is returned, the launch channel exits. The consumer remains
 independent of that channel while the shared SSH control connection stays
 available to the producer.
@@ -464,9 +486,14 @@ python -m streamer.analyze_remote_experiment \
 ```
 
 An installed package also provides the equivalent `interf-stream-analyze`
-command. The analyzer derives local producer timing and stdout log names from
-the configured consumer logs; use `--producer-log` or `--producer-stdout` to
-override either path. `--total-shots` is optional for an ongoing acquisition,
+command. For the new layout, the analyzer selects the newest remote consumer
+session; pass `--consumer-start-time` to select an earlier session. It samples
+only the data files listed in that session's stdout log. Local producer log
+names default to the config stem under `data/logs/`, selecting the newest
+timestamped producer log when available; use `--producer-log` and
+`--producer-stdout` to select a particular producer run. Legacy configurations
+derive producer names from the configured consumer logs. `--total-shots` is
+optional for an ongoing acquisition,
 and the shot interval is inferred from the producer timing log when it is not
 specified.
 
@@ -490,7 +517,7 @@ names described above:
 import pickle
 
 steps = []
-with open("received/20260925T120000.000000-0400.pkl", "rb") as stream:
+with open("received/20260925/120000.000000-0400.pkl", "rb") as stream:
     while True:
         try:
             steps.append(pickle.load(stream))

@@ -37,6 +37,7 @@ class RotatingConsumerOutput(IO):
         self._timestamp_factory = timestamp_factory
         self._output = None
         self._next_rotation = None
+        self._output_day = None
 
         self._output_directory.mkdir(parents=True, exist_ok=True)
         if not self._output_directory.is_dir():
@@ -51,18 +52,18 @@ class RotatingConsumerOutput(IO):
             return ".h5"
         return ".bp"
 
-    def _new_path(self):
-        timestamp = self._timestamp_factory().astimezone().strftime(
-            "%Y%m%dT%H%M%S.%f%z"
-        )
-        return unused_path(self._output_directory / f"{timestamp}{self._suffix()}")
+    def _new_path(self, wall_time):
+        day_directory = self._output_directory / wall_time.strftime("%Y%m%d")
+        day_directory.mkdir(parents=True, exist_ok=True)
+        timestamp = wall_time.strftime("%H%M%S.%f%z")
+        return unused_path(day_directory / f"{timestamp}{self._suffix()}")
 
-    def _rotate(self, opened_at):
+    def _rotate(self, opened_at, wall_time):
         if self._output is not None:
             self._output.close()
             self._output = None
 
-        destination = self._new_path()
+        destination = self._new_path(wall_time)
         settings = SimpleNamespace(
             destination=str(destination),
             engine=self._engine,
@@ -78,12 +79,15 @@ class RotatingConsumerOutput(IO):
                 flush=True,
             )
         self._next_rotation = opened_at + self._interval_seconds
+        self._output_day = wall_time.date()
         print(f"Opened consumer output {destination}", flush=True)
 
     def write_data(self, data):
         now = self._clock()
-        if self._output is None or now >= self._next_rotation:
-            self._rotate(now)
+        wall_time = self._timestamp_factory().astimezone()
+        if (self._output is None or now >= self._next_rotation
+                or wall_time.date() != self._output_day):
+            self._rotate(now, wall_time)
         self._output.write_data(data)
 
     def close(self):

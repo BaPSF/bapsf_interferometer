@@ -337,6 +337,25 @@ class NeverBlockTests(unittest.TestCase):
 
 
 class DirectOutputNameTests(unittest.TestCase):
+	def test_midnight_rotates_before_the_interval_expires(self):
+		with tempfile.TemporaryDirectory() as directory:
+			stamp = [datetime(2026, 11, 5, 23, 59, 59).astimezone()]
+			output = RotatingConsumerOutput(directory, "BP5", interval_seconds=3600,
+			                               clock=lambda: 0, timestamp_factory=lambda: stamp[0])
+			with mock.patch("streamer.consumer_output.ADIOS2_AVAILABLE", True), \
+					mock.patch("streamer.consumer_output.AdiosIO") as writer:
+				output.write_data({"a": np.arange(3)})
+				first = writer.return_value
+				self.assertTrue((Path(directory) / "20261105").is_dir())
+				stamp[0] = datetime(2026, 11, 6, 0, 0, 1).astimezone()
+				output.write_data({"a": np.arange(3)})
+				first.close.assert_called_once()
+				self.assertTrue((Path(directory) / "20261106").is_dir())
+				paths = [Path(call.args[0].destination) for call in writer.call_args_list]
+				self.assertEqual([path.parent.name for path in paths], ["20261105", "20261106"])
+				self.assertEqual(paths[1].name, stamp[0].strftime("%H%M%S.%f%z") + ".bp")
+				output.close()
+
 	def test_an_existing_path_is_never_reused(self):
 		with tempfile.TemporaryDirectory() as directory:
 			path = Path(directory) / "raw.bp"
@@ -361,14 +380,14 @@ class DirectOutputNameTests(unittest.TestCase):
 			output.write_data(step)
 			now[0] = 5.0
 			output.write_data(step)
-			self.assertEqual(len(list(Path(directory).iterdir())), 1)
+			self.assertEqual(len(list((Path(directory) / stamp.astimezone().strftime("%Y%m%d")).iterdir())), 1)
 			now[0] = 10.0
 			output.write_data(step)
 			output.close()
 			restarted = rotating()
 			restarted.write_data(step)
 			restarted.close()
-			self.assertEqual(len(list(Path(directory).iterdir())), 3)
+			self.assertEqual(len(list((Path(directory) / stamp.astimezone().strftime("%Y%m%d")).iterdir())), 3)
 
 
 class SettingsFromEnvTests(unittest.TestCase):

@@ -47,7 +47,7 @@ def parse_args(argv):
     parser.add_argument("connection_file", help="rendezvous file to create")
     parser.add_argument(
         "output_directory",
-        help="directory for timestamped ADIOS outputs, or pickle fallbacks",
+        help="data directory for daily subdirectories of ADIOS outputs, or pickle fallbacks",
     )
     parser.add_argument(
         "--public-key",
