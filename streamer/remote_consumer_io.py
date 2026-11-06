@@ -10,7 +10,7 @@ import subprocess
 import sys
 import tempfile
 import time
-from datetime import datetime, timezone
+from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -65,7 +65,8 @@ class ServerConfig:
         )
         self.data_directory = str(Path(self.output_directory) / "data")
         self.log_directory = str(Path(self.output_directory) / "logs")
-        self.set_run_paths(datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S.%fZ"))
+        self._server_run_paths_selected = False
+        self.set_run_paths(datetime.now().astimezone().strftime("%Y%m%dT%H%M%S.%f%z"))
         if not self.automatic_paths:
             self.data_directory = self.output_directory
             self.connection_file = values.get("connection_file", "conn.json").strip()
@@ -222,7 +223,27 @@ class SSHConsumerLauncher:
         self.ssh_command = ssh_command or config.ssh_command
 
     def launch(self):
-        command = self._remote_command()
+        cfg = self.config
+        if cfg.automatic_paths and not cfg._server_run_paths_selected:
+            # Select the log set on the server once, then reuse it on relaunch.
+            program = "from datetime import datetime; print(datetime.now().astimezone().strftime('%Y%m%dT%H%M%S.%f%z'))"
+            command = (f"cd {shlex.quote(cfg.working_directory)} && "
+                       f"{shlex.quote(cfg.python)} -c {shlex.quote(program)}")
+            start_time = self._run_remote(command).strip()
+            datetime.strptime(start_time, "%Y%m%dT%H%M%S.%f%z")
+            cfg.set_run_paths(start_time)
+            cfg._server_run_paths_selected = True
+        output = self._run_remote(self._remote_command())
+        try:
+            envelope = json.loads(output)
+        except json.JSONDecodeError as exc:
+            raise OSError(
+                f"Consumer launch on {self.config.host} returned invalid "
+                "connection information"
+            ) from exc
+        return envelope
+
+    def _run_remote(self, command):
         try:
             completed = subprocess.run(
                 [*self.ssh_command, self.config.host, command],
@@ -243,14 +264,7 @@ class SSHConsumerLauncher:
                 f"Consumer launch on {self.config.host} failed"
                 + (f": {detail}" if detail else "")
             )
-        try:
-            envelope = json.loads(completed.stdout)
-        except json.JSONDecodeError as exc:
-            raise OSError(
-                f"Consumer launch on {self.config.host} returned invalid "
-                "connection information"
-            ) from exc
-        return envelope
+        return completed.stdout
 
     def _consumer_arguments(self):
         cfg = self.config

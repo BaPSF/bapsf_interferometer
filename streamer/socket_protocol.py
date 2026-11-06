@@ -11,12 +11,13 @@ import nacl.public
 import numpy as np
 
 from .data_operations import data_operation_from_description
+from .local_timezone import timezone_description, timezone_from_description
 
 
 _HEADER_LENGTH = struct.Struct("!Q")
 _MAX_HEADER_BYTES = 1024 * 1024
 _AUTH_CHALLENGE_BYTES = 32
-PROTOCOL_VERSION = 5
+PROTOCOL_VERSION = 6
 
 
 def _send_header(sock, header):
@@ -203,8 +204,10 @@ def receive_message(sock):
 
 
 def send_ready(sock, consumer_id, received_at):
+    zone = timezone_description()
     _send_header(sock, {"type": "ready", "protocol_version": PROTOCOL_VERSION,
                         "consumer_id": consumer_id, "server_receive": received_at,
+                        "server_timezone": zone,
                         "server_send": time.time()})
 
 
@@ -218,4 +221,5 @@ def receive_ready(sock, consumer_id, sent_at, sent_monotonic):
     t2, t3 = float(header["server_receive"]), float(header["server_send"])
     offset = ((t2 - sent_at) + (t3 - received_at)) / 2
     delay = (received_at - sent_at) - (t3 - t2)
-    return offset, delay, received_at + offset, received_monotonic
+    zone = timezone_from_description(header["server_timezone"])
+    return offset, delay, received_at + offset, received_monotonic, zone

@@ -2,7 +2,7 @@
 import shutil
 import threading
 import time
-from datetime import datetime, timezone
+from datetime import datetime
 
 from .consumer_output import RotatingConsumerOutput
 from .ntfy_notifications import NtfyNotifier
@@ -82,7 +82,7 @@ class FallbackIO(BufferedIO):
                                             < math_ceil_90(self._capacity))
                     self._condition.notify_all()
                 self._record("fallback.clock", offset_seconds=estimate[0],
-                             round_trip_seconds=estimate[1])
+                             round_trip_seconds=estimate[1], timezone=str(estimate[4]))
                 while True:
                     with self._condition:
                         self._condition.wait_for(lambda: self._closed or self._task is not None)
@@ -143,11 +143,11 @@ class FallbackIO(BufferedIO):
         if estimate is None:
             if not self._unknown_clock_logged:
                 self._unknown_clock_logged = True
-                self._record("fallback.clock_unknown", message="Using local UTC; server skew unknown")
+                self._record("fallback.clock_unknown", message="Using producer local time and timezone; server clock and timezone unknown")
                 if self._transition_notifier is not None:
-                    self._transition_notifier.notify("Server clock skew unknown", "Using local UTC for local saving")
-            return datetime.now(timezone.utc)
-        return datetime.fromtimestamp(estimate[2] + time.monotonic() - estimate[3], timezone.utc)
+                    self._transition_notifier.notify("Server clock skew unknown", "Using producer local time and timezone for local saving")
+            return datetime.now().astimezone()
+        return datetime.fromtimestamp(estimate[2] + time.monotonic() - estimate[3], estimate[4])
 
     def _close_local(self):
         local, self._local = self._local, None

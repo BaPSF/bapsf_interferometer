@@ -216,7 +216,7 @@ only after its output write completes, allowing the producer to distinguish a
 completed step from a stalled consumer or a connection that failed during
 transfer.
 
-The connection information advertises protocol version 5. Its array framing
+The connection information advertises protocol version 6. Its array framing
 supports arbitrary named NumPy arrays, encoded-payload lengths, shapes, dtypes,
 and optional operation metadata. An authenticated hello and readiness exchange
 completes before the first frame. Data messages are self-describing so channels
@@ -372,8 +372,9 @@ advertised socket directly.
 
 ### Remote lifecycle and recovery
 
-`output_directory` is the remote base directory. Each producer session selects
-one UTC start time (`YYYYMMDDTHHMMSS.ffffffZ`) and creates:
+`output_directory` is the remote base directory. On its first successful SSH
+connection, each producer session selects one server-local start time
+(`YYYYMMDDTHHMMSS.ffffff±HHMM`) for its log set and creates:
 
 ```text
 <output_directory>/
@@ -580,7 +581,7 @@ only a full buffer invokes the existing rotating overflow drop policy. Local
 output retries at `retry_delay_seconds` (a zero interval uses a short worker
 backoff). A ready remote connection takes precedence over a local retry.
 
-Both producer and consumer must be deployed together: socket protocol **5**
+Both producer and consumer must be deployed together: socket protocol **6**
 requires an authenticated readiness handshake before any frame is sent and
 rejects earlier protocol versions. Readiness checks consumer identity and output
 directory access. Each connection estimates server-minus-producer clock offset
@@ -589,12 +590,16 @@ delay are logged. Network path asymmetry can bias the estimate by up to roughly
 half the network round trip delay, particularly under high latency; this is not
 a substitute for clock synchronization.
 
-Fallback filenames use estimated server UTC, anchored to the producer's monotonic
-clock, in `YYYYMMDD/HHMMSS.ffffff+0000.bp`. Server output also uses UTC. Before the
-first successful handshake, fallback uses local UTC and reports that server skew
-is unknown. Clock estimates refresh on reconnect, without renaming earlier
-files. Rotation follows the configured interval and UTC midnight; existing local
-paths receive numeric suffixes. There is no cross-machine filename coordination.
+Fallback filenames use estimated server time in the server's local timezone,
+anchored to the producer's monotonic clock, in `YYYYMMDD/HHMMSS.ffffff±HHMM.bp`.
+The readiness handshake supplies the server's timezone rules, so local saving
+continues to follow server time through daylight-saving changes during an outage.
+Before the first successful handshake, fallback uses the producer's local time
+and timezone and reports that the server clock and timezone are unknown.
+Clock and timezone estimates refresh on reconnect, without renaming earlier
+files. Rotation follows the configured interval and midnight in the naming
+timezone; existing local paths receive numeric suffixes. There is no
+cross-machine filename coordination.
 
 Asynchronous ntfy messages report local saving, remote resumption, local pauses,
 and local resumption once per transition, without directory names. The producer
