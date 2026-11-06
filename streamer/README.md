@@ -216,7 +216,7 @@ only after its output write completes, allowing the producer to distinguish a
 completed step from a stalled consumer or a connection that failed during
 transfer.
 
-The connection information advertises protocol version 5. Its array framing
+The connection information advertises protocol version 6. Its array framing
 supports arbitrary named NumPy arrays, encoded-payload lengths, shapes, dtypes,
 and optional operation metadata. An authenticated hello and readiness exchange
 completes before the first frame. Data messages are self-describing so channels
@@ -372,8 +372,9 @@ advertised socket directly.
 
 ### Remote lifecycle and recovery
 
-`output_directory` is the remote base directory. Each producer session selects
-one UTC start time (`YYYYMMDDTHHMMSS.ffffffZ`) and creates:
+`output_directory` is the remote base directory. On its first successful SSH
+connection, each producer session selects one server-local start time
+(`YYYYMMDDTHHMMSS.ffffff±HHMM`) for its log set and creates:
 
 ```text
 <output_directory>/
@@ -392,6 +393,11 @@ each day's directory on the first write that day and rotates at midnight even
 if `file_interval_seconds` has not elapsed. Existing data names get a numeric
 suffix instead of being overwritten. HDF5 and pickle outputs use the same
 layout with `.h5` and `.pkl` extensions.
+
+New streaming output directories and files use `0775` (`rwxrwxr-x`), including
+BP5 contents, timing and stdout logs, PID files, and encrypted connection files.
+This also applies to producer-local fallback data and overrides a restrictive
+umask. Existing ancestor directories and key files are left unchanged.
 
 Automatic consumer replacements within a producer session append to that
 session's logs; restarting the producer selects a fresh log set. The connection
@@ -450,6 +456,10 @@ buffer-pressure notifications. Buffer thresholds at 20%, 40%, and 60% notify
 once per producer run. At 80% or more, notification is immediate and then
 limited to once per hour; later messages include snapshots discarded since
 the previous high-buffer notification.
+
+Notification bodies are limited to 512 UTF-8 bytes. Failure alerts contain a
+short error summary; complete exceptions and consumer log excerpts remain in
+the producer timing log.
 
 When `ssh_key_certificate` and `ntfy_topic_alert` are set, a separate local
 monitor reads the OpenSSH certificate with `ssh-keygen -L`. It warns 6, 3, 2,
@@ -580,7 +590,7 @@ only a full buffer invokes the existing rotating overflow drop policy. Local
 output retries at `retry_delay_seconds` (a zero interval uses a short worker
 backoff). A ready remote connection takes precedence over a local retry.
 
-Both producer and consumer must be deployed together: socket protocol **5**
+Both producer and consumer must be deployed together: socket protocol **6**
 requires an authenticated readiness handshake before any frame is sent and
 rejects earlier protocol versions. Readiness checks consumer identity and output
 directory access. Each connection estimates server-minus-producer clock offset
@@ -589,15 +599,22 @@ delay are logged. Network path asymmetry can bias the estimate by up to roughly
 half the network round trip delay, particularly under high latency; this is not
 a substitute for clock synchronization.
 
-Fallback filenames use estimated server UTC, anchored to the producer's monotonic
-clock, in `YYYYMMDD/HHMMSS.ffffff+0000.bp`. Server output also uses UTC. Before the
-first successful handshake, fallback uses local UTC and reports that server skew
-is unknown. Clock estimates refresh on reconnect, without renaming earlier
-files. Rotation follows the configured interval and UTC midnight; existing local
-paths receive numeric suffixes. There is no cross-machine filename coordination.
+Fallback filenames use estimated server time in the server's local timezone,
+anchored to the producer's monotonic clock, in `YYYYMMDD/HHMMSS.ffffff±HHMM.bp`.
+The readiness handshake supplies the server's timezone rules, so local saving
+continues to follow server time through daylight-saving changes during an outage.
+Before the first successful handshake, fallback uses the producer's local time
+and timezone and reports that the server clock and timezone are unknown.
+Clock and timezone estimates refresh on reconnect, without renaming earlier
+files. Rotation follows the configured interval and midnight in the naming
+timezone; existing local paths receive numeric suffixes. There is no
+cross-machine filename coordination.
 
 Asynchronous ntfy messages report local saving, remote resumption, local pauses,
-and local resumption once per transition, without directory names. The producer
+and local resumption once per transition, without directory names. Fallback mode
+also reports the initial authenticated server start, disconnects, and successful
+restarts. The first failed start or restart in each launch series goes to the
+alert topic; further failures are suppressed until a connection succeeds. The producer
 timing log includes reasons, directory and file paths, disk checks, clock
 estimates, local writes, and losses. `written_steps` includes both destinations;
 `fallback.write` identifies local successes. Files from failed writes may contain
@@ -622,8 +639,11 @@ channel, interrupts only its own consumer twice, holds reconnection unavailable
 until local saving is observed, and then restores streaming. The test disables
 ntfy, retains BP5 files and logs in unique local and Ubuntu directories, and
 compares every stored variable's SHA-256 digest with the generated frame.
-With `--notifications`, the report also checks that ntfy accepted each routing
-transition message exactly once and that no notification failed. Acceptance by
+With `--notifications`, the report also checks that ntfy accepted the initial
+startup, disconnect, restart, first restart-failure, and routing-transition
+messages with the expected counts and that no notification failed. The report
+checks permissions on local and remote files, including the live connection
+file and BP5 contents. Acceptance by
 ntfy does not confirm delivery to an individual subscriber device.
 A `report.json` records frame counts, missing or corrupt frames, duplicate
 copies, overflow losses, unsent frames, and routing transitions. The output

@@ -36,6 +36,7 @@ from .socket_protocol import (
     verify_producer_private_key,
 )
 from .timing_log import TimingLog, timestamp
+from .output_permissions import output_directory as make_output_directory
 
 
 # Bounds the loop rate when accepting keeps failing at once (e.g. a broken listener).
@@ -140,7 +141,7 @@ def accept_connection(listener, session_id, public_key, allowed_networks, output
             raise RuntimeError("Producer used stale socket connection information")
         if output_directory is not None:
             import tempfile
-            Path(output_directory).mkdir(parents=True, exist_ok=True)
+            make_output_directory(output_directory)
             with tempfile.TemporaryFile(dir=output_directory):
                 pass
         send_ready(connection, session_id, received_at)

@@ -7,6 +7,23 @@ import urllib.parse
 import urllib.request
 
 
+MAX_NOTIFICATION_BYTES = 512
+
+
+def _shorten(text, limit, suffix):
+    encoded = text.encode("utf-8")
+    if len(encoded) <= limit:
+        return text
+    return encoded[:limit - len(suffix.encode("utf-8"))].decode("utf-8", errors="ignore") + suffix
+
+
+def error_summary(error):
+    """Keep exception details in the timing log, with one short line for ntfy."""
+    first_line = next((line.strip() for line in str(error).splitlines() if line.strip()), "")
+    summary = _shorten(f"{type(error).__name__}: {first_line}", 200, "...")
+    return summary + " See producer log for details."
+
+
 class NtfyNotifier:
     """Publish notifications without blocking acquisition or output threads."""
 
@@ -61,6 +78,10 @@ class NtfyNotifier:
     def notify(self, title, message, priority=3, tags=("warning",)):
         if self._closed:
             return
+        original_bytes = len(message.encode("utf-8"))
+        message = _shorten(message, MAX_NOTIFICATION_BYTES, "... See producer log for details.")
+        if original_bytes > MAX_NOTIFICATION_BYTES:
+            self._record("notification.truncated", title=title, original_bytes=original_bytes)
         self._queue.put((title, message, priority, tuple(tags)))
 
     def _publish_pending(self):
