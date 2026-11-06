@@ -26,6 +26,15 @@ class IO(ABC):
         ``prepare(data, step)``, when given, runs there too and converts each
         queued object to the variables written.
         """
+        from .remote_consumer_io import ServerConfig
+        destination = Path(settings.destination)
+        if destination.suffix.lower() == ".conf" or ServerConfig.is_server_config(destination):
+            config = ServerConfig(destination)
+            if config.local_fallback_directory is not None:
+                cls._require_adios(settings)
+                from .fallback_io import FallbackIO
+                return FallbackIO(settings, config, cls._load_required_private_key(settings),
+                                  timing_log=timing_log, prepare=prepare)
         return BufferedIO(
             cls._output_opener(settings, timing_log),
             buffer_seconds=getattr(settings, "buffer_seconds", 600.0),
@@ -314,7 +323,15 @@ class BufferedIO(IO):
         high_notification = None
         with self._condition:
             self._raise_if_unavailable()
-            if len(self._buffer) >= self._capacity:
+            occupancy = len(self._buffer) + (
+                int(self._pending is not None) if getattr(self, "_count_pending", False) else 0
+            )
+            if occupancy >= self._capacity:
+                if not self._buffer:
+                    self._dropped_steps += 1
+                    self._record("io.buffer_drop", dropped_step=pending[1], incoming_step=pending[1],
+                                 buffer_capacity_steps=self._capacity)
+                    return
                 dropped = self._drop_one_pending_step()
                 self._dropped_since_high_notification += 1
             self._buffer.append(pending)

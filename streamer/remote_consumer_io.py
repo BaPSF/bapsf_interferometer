@@ -47,6 +47,12 @@ class ServerConfig:
             )
         values = parser[section_name]
 
+        fallback = values.get("local_fallback_directory", "").strip()
+        fallback = Path(fallback).expanduser() if fallback else None
+        self.local_fallback_directory = (
+            (self.path.parent / fallback).resolve() if fallback is not None and not fallback.is_absolute()
+            else fallback
+        )
         self.host = self._required(values, "host")
         self.working_directory = self._required(values, "working_directory")
         self.python = values.get("python", "python3").strip()
@@ -565,21 +571,26 @@ class RestartingSingleSocketIO(IO):
         timing_log=None,
         notifier=None,
         alert_notifier=None,
+        single_attempt=False,
+        socket_callback=None,
+        notifications=True,
     ):
+        self._single_attempt = single_attempt
+        self._socket_callback = socket_callback
         self._timing_log = timing_log
         self._private_key = private_key
         self._config = config or ServerConfig(settings.destination)
         self._operation = load_data_operation(
             getattr(self._config, "compression_config", None)
         )
-        self._notifier = notifier or NtfyNotifier.from_config(
+        self._notifier = (notifier or NtfyNotifier.from_config(
             self._config, timing_log=timing_log
-        )
-        self._alert_notifier = alert_notifier or NtfyNotifier.from_config(
+        )) if notifications else None
+        self._alert_notifier = (alert_notifier or NtfyNotifier.from_config(
             self._config,
             timing_log=timing_log,
             topic_attribute="ntfy_topic_alert",
-        )
+        )) if notifications else None
         self._key_monitor = None
         self._ssh_control = None
         ssh_command = getattr(self._config, "ssh_command", None)
@@ -619,7 +630,8 @@ class RestartingSingleSocketIO(IO):
         if connection_info.get("id") != "singlesocket":
             raise ValueError("Remote consumer must use the singlesocket protocol")
         socket_settings = SimpleNamespace(
-            socket_timeout_seconds=self._config.socket_timeout_seconds
+            socket_timeout_seconds=self._config.socket_timeout_seconds,
+            socket_callback=self._socket_callback,
         )
         return SingleSocketIO(
             socket_settings,
@@ -678,6 +690,8 @@ class RestartingSingleSocketIO(IO):
                         tags=("rotating_light",),
                     )
                     failure_notified = True
+                if self._single_attempt:
+                    raise
                 maximum = self._config.max_relaunch_attempts
                 if maximum and attempt >= maximum:
                     raise
@@ -742,6 +756,8 @@ class RestartingSingleSocketIO(IO):
         try:
             self._output.write_data(data)
         except (OSError, EOFError, RuntimeError) as exc:
+            if self._single_attempt:
+                raise
             self._relaunch_and_retry(data, exc)
 
     def _relaunch_and_retry(self, data, failure):

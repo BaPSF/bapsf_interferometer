@@ -4,6 +4,7 @@ import json
 import math
 import secrets
 import struct
+import time
 
 import nacl.exceptions
 import nacl.public
@@ -15,7 +16,7 @@ from .data_operations import data_operation_from_description
 _HEADER_LENGTH = struct.Struct("!Q")
 _MAX_HEADER_BYTES = 1024 * 1024
 _AUTH_CHALLENGE_BYTES = 32
-PROTOCOL_VERSION = 4
+PROTOCOL_VERSION = 5
 
 
 def _send_header(sock, header):
@@ -24,11 +25,13 @@ def _send_header(sock, header):
     sock.sendall(encoded)
 
 
-def send_hello(sock, variables, consumer_id):
+def send_hello(sock, variables, consumer_id, sent_at=None):
     _send_header(
         sock,
         {
             "type": "hello",
+            "protocol_version": PROTOCOL_VERSION,
+            "producer_send": time.time() if sent_at is None else sent_at,
             "variables": list(variables),
             "consumer_id": consumer_id,
         },
@@ -150,6 +153,8 @@ def receive_hello(sock):
     header = _receive_header(sock)
     if header.get("type") != "hello":
         raise ValueError(f"Expected socket hello, got: {header.get('type')}")
+    if header.get("protocol_version") != PROTOCOL_VERSION:
+        raise ValueError("Unsupported socket protocol version")
     return tuple(header.get("variables", [])), header.get("consumer_id")
 
 
@@ -195,3 +200,22 @@ def receive_message(sock):
         variables[description["name"]] = array
 
     return variables
+
+
+def send_ready(sock, consumer_id, received_at):
+    _send_header(sock, {"type": "ready", "protocol_version": PROTOCOL_VERSION,
+                        "consumer_id": consumer_id, "server_receive": received_at,
+                        "server_send": time.time()})
+
+
+def receive_ready(sock, consumer_id, sent_at, sent_monotonic):
+    header = _receive_header(sock)
+    received_monotonic = time.monotonic()
+    received_at = sent_at + received_monotonic - sent_monotonic
+    if (header.get("type") != "ready" or header.get("protocol_version") != PROTOCOL_VERSION
+            or header.get("consumer_id") != consumer_id):
+        raise RuntimeError("Invalid consumer readiness or protocol version")
+    t2, t3 = float(header["server_receive"]), float(header["server_send"])
+    offset = ((t2 - sent_at) + (t3 - received_at)) / 2
+    delay = (received_at - sent_at) - (t3 - t2)
+    return offset, delay, received_at + offset, received_monotonic

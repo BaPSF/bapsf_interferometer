@@ -216,11 +216,11 @@ only after its output write completes, allowing the producer to distinguish a
 completed step from a stalled consumer or a connection that failed during
 transfer.
 
-The connection information advertises protocol version 4. Its array framing
+The connection information advertises protocol version 5. Its array framing
 supports arbitrary named NumPy arrays, encoded-payload lengths, shapes, dtypes,
-and optional operation metadata. The initial hello lists the first step's
-variables; later data messages are self-describing so channels may disappear
-or recover. Producer and consumer must use compatible protocol versions.
+and optional operation metadata. An authenticated hello and readiness exchange
+completes before the first frame. Data messages are self-describing so channels
+may disappear or recover. Producer and consumer must use compatible protocol versions.
 
 The consumer stores received steps in daily subdirectories under `received/`.
 A new output is opened every 3600 seconds by default; set
@@ -546,3 +546,102 @@ with one recorded shot using:
 ```bash
 python -m interf_sim --period 0 --limit 1 --raw-output /tmp/interf-raw.bp
 ```
+
+### Local fallback during remote outages
+
+For a producer using a server configuration, opt in with a local directory:
+
+```ini
+[server]
+# Other required server settings remain necessary.
+local_fallback_directory = ../raw-fallback
+```
+
+Relative paths resolve against the configuration file's directory; `~` expands
+on the producer. Leaving the setting empty disables fallback. The producer must
+have ADIOS2 installed at startup. Fallback writes BP5 using the raw variable
+schema and the server's `file_interval_seconds`.
+
+At `ceil(0.9 * buffer capacity)` queued and unacknowledged frames, the producer
+interrupts an outstanding remote write, waits for it to release its frame, and
+saves frames locally in FIFO order. Acquisition continues using the bounded
+memory queue. Remote launch, authentication, and readiness run independently.
+Once a new connection is ready, the current local write finishes, its file
+closes, and remaining frames stream remotely. Local files stay on disk for
+manual recovery; there is no automatic upload, deletion, or deduplication. A lost
+acknowledgement can leave the same frame on the server and locally: use the raw
+frame identity (`shot_index` and associated acquisition metadata) when reconciling
+files, and retain original files until recovery is confirmed.
+
+Local output pauses if the filesystem has less than **10,000,000,000 bytes**
+free, if checking space fails, or if ADIOS writing fails. Space is checked before
+each write, including writes opening a new file. Pending frames remain in memory;
+only a full buffer invokes the existing rotating overflow drop policy. Local
+output retries at `retry_delay_seconds` (a zero interval uses a short worker
+backoff). A ready remote connection takes precedence over a local retry.
+
+Both producer and consumer must be deployed together: socket protocol **5**
+requires an authenticated readiness handshake before any frame is sent and
+rejects earlier protocol versions. Readiness checks consumer identity and output
+directory access. Each connection estimates server-minus-producer clock offset
+from four timestamps, excluding server processing time. The offset and round trip
+delay are logged. Network path asymmetry can bias the estimate by up to roughly
+half the network round trip delay, particularly under high latency; this is not
+a substitute for clock synchronization.
+
+Fallback filenames use estimated server UTC, anchored to the producer's monotonic
+clock, in `YYYYMMDD/HHMMSS.ffffff+0000.bp`. Server output also uses UTC. Before the
+first successful handshake, fallback uses local UTC and reports that server skew
+is unknown. Clock estimates refresh on reconnect, without renaming earlier
+files. Rotation follows the configured interval and UTC midnight; existing local
+paths receive numeric suffixes. There is no cross-machine filename coordination.
+
+Asynchronous ntfy messages report local saving, remote resumption, local pauses,
+and local resumption once per transition, without directory names. The producer
+timing log includes reasons, directory and file paths, disk checks, clock
+estimates, local writes, and losses. `written_steps` includes both destinations;
+`fallback.write` identifies local successes. Files from failed writes may contain
+an incomplete final step and should be inspected during manual recovery.
+
+### Ubuntu fallback integration test
+
+From the repository root, using the project's Python environment:
+
+```bash
+python scripts/test-ubuntupc-fallback.py
+# Also publish to the configured ntfy topics and verify delivery logs:
+python scripts/test-ubuntupc-fallback.py --notifications
+# Also force disk pauses and verify intentional overflow drops:
+python scripts/test-ubuntupc-fallback.py --notifications --disk-pressure --cycles 1
+```
+
+This derives a dedicated configuration from `streamer/conf/ubuntupc.conf` and
+uses **streaming port 8501 only**, refusing to start if it is occupied. It sends
+synthetic raw acquisitions at 20 frames/second with 4096 samples per LeCroy
+channel, interrupts only its own consumer twice, holds reconnection unavailable
+until local saving is observed, and then restores streaming. The test disables
+ntfy, retains BP5 files and logs in unique local and Ubuntu directories, and
+compares every stored variable's SHA-256 digest with the generated frame.
+With `--notifications`, the report also checks that ntfy accepted each routing
+transition message exactly once and that no notification failed. Acceptance by
+ntfy does not confirm delivery to an individual subscriber device.
+A `report.json` records frame counts, missing or corrupt frames, duplicate
+copies, overflow losses, unsent frames, and routing transitions. The output
+prints its location. `--cycles` controls the number of outages; `--config`
+selects another server configuration while retaining port 8501.
+
+The November 6, 2026 live run completed two outage/recovery cycles: 186 frames
+generated and recovered (69 remote, 117 local), with zero drops, missing frames,
+corrupt payloads, duplicate copies, or unsent frames. This is a functional
+recovery check with synthetic data, not a sustained throughput measurement.
+
+The optional `--disk-pressure` scenario temporarily sets the test writer's free
+space threshold above the filesystem's total size after local saving begins.
+It verifies buffering below capacity without losses, a full 40-frame buffer
+without losses, and exactly 12 drops for 12 additional frames. Restoring the
+10 GB threshold must drain every retained frame in FIFO order before remote
+streaming resumes. The override applies only to the running test instance and
+is restored in `finally`; the production default stays at 10,000,000,000 bytes.
+The report treats only losses matching the exact logged dropped frame IDs as
+expected, and verifies every retained payload. This scenario also exercises the
+local-pause and local-resumption notifications when `--notifications` is enabled.
