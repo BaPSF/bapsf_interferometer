@@ -10,6 +10,7 @@ import subprocess
 import sys
 import tempfile
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -50,8 +51,18 @@ class ServerConfig:
         self.working_directory = self._required(values, "working_directory")
         self.python = values.get("python", "python3").strip()
         self.script = values.get("script", "streamer/consumer.py").strip()
-        self.connection_file = values.get("connection_file", "conn.json").strip()
         self.output_directory = values.get("output_directory", "out").strip()
+        # Keep old deployment files readable; new configurations need only the base.
+        self.automatic_paths = not any(
+            name in values
+            for name in ("connection_file", "stdout_log", "pid_file", "timing_log")
+        )
+        self.data_directory = str(Path(self.output_directory) / "data")
+        self.log_directory = str(Path(self.output_directory) / "logs")
+        self.set_run_paths(datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S.%fZ"))
+        if not self.automatic_paths:
+            self.data_directory = self.output_directory
+            self.connection_file = values.get("connection_file", "conn.json").strip()
         self.public_key = self._required(values, "public_key")
         self.allow_ip_ranges = tuple(
             item.strip()
@@ -65,16 +76,16 @@ class ServerConfig:
         self.bind_host = values.get("bind_host", fallback=None)
         self.advertise_host = values.get("advertise_host", fallback=None)
         self.engine = values.get("engine", fallback=None)
-        self.timing_log = values.get("timing_log", fallback=None)
+        if not self.automatic_paths:
+            self.timing_log = values.get("timing_log", fallback=None)
         self.file_interval_seconds = self._positive_float(
             values, "file_interval_seconds", 3600.0
         )
-        self.stdout_log = values.get(
-            "stdout_log", "raw_output_consumer.stdout.log"
-        ).strip()
-        self.pid_file = values.get(
-            "pid_file", "raw_output_consumer.pid"
-        ).strip()
+        if not self.automatic_paths:
+            self.stdout_log = values.get(
+                "stdout_log", "raw_output_consumer.stdout.log"
+            ).strip()
+            self.pid_file = values.get("pid_file", "raw_output_consumer.pid").strip()
         self.ssh_command = shlex.split(values.get("ssh_command", "ssh"))
         if not self.ssh_command:
             raise ValueError("server ssh_command must not be empty")
@@ -137,6 +148,14 @@ class ServerConfig:
         ):
             if not getattr(self, name):
                 raise ValueError(f"server {name} must not be empty")
+
+    def set_run_paths(self, start_time):
+        """Select one log set for a producer session, including its relaunches."""
+        prefix = Path(self.log_directory) / f"consumer-{start_time}"
+        self.connection_file = f"{prefix}.conn.json"
+        self.stdout_log = f"{prefix}.stdout.log"
+        self.pid_file = f"{prefix}.pid"
+        self.timing_log = f"{prefix}.jsonl"
 
     @staticmethod
     def is_server_config(path):
@@ -248,7 +267,7 @@ class SSHConsumerLauncher:
         ):
             if value:
                 arguments.extend((option, value))
-        arguments.extend((cfg.connection_file, cfg.output_directory))
+        arguments.extend((cfg.connection_file, cfg.data_directory))
         return arguments
 
     def _remote_command(self):
@@ -264,19 +283,32 @@ class SSHConsumerLauncher:
             for item in self._consumer_arguments()
         )
         polls = max(1, math.ceil(cfg.startup_timeout_seconds * 10))
+        pid_candidates = (
+            quote(cfg.log_directory) + "/consumer-*.pid"
+            if cfg.automatic_paths else pid_file
+        )
+        log_directories = sorted({
+            str(Path(path).parent)
+            for path in (cfg.pid_file, cfg.connection_file, cfg.stdout_log, cfg.timing_log)
+            if path
+        })
         # All consumer descriptors are redirected before the SSH shell exits.
         # nohup makes the process independent of the SSH session's SIGHUP.
         return "\n".join(
             (
                 "set -eu",
                 f"cd {workdir}",
-                f"if [ -f {pid_file} ]; then",
-                f"  old_pid=$(cat {pid_file})",
+                "mkdir -p -- " + " ".join(quote(path) for path in log_directories),
+                f"for previous_pid_file in {pid_candidates}; do",
+                'if [ -f "$previous_pid_file" ]; then',
+                '  old_pid=$(cat "$previous_pid_file")',
                 '  case "$old_pid" in',
                 '    *[!0-9]*|"") ;;',
                 "    *)",
                 '      if tr \'\\000\' \'\\n\' < "/proc/$old_pid/cmdline" 2>/dev/null '
-                f"| grep -Fx -- {script} >/dev/null 2>&1; then",
+                f"| grep -Fx -- {script} >/dev/null 2>&1 "
+                '&& tr \'\\000\' \'\\n\' < "/proc/$old_pid/cmdline" 2>/dev/null '
+                f"| grep -Fx -- {quote(cfg.data_directory)} >/dev/null 2>&1; then",
                 '        kill "$old_pid" 2>/dev/null || true',
                 "        stop_i=0",
                 '        while kill -0 "$old_pid" 2>/dev/null '
@@ -289,6 +321,7 @@ class SSHConsumerLauncher:
                 "      ;;",
                 "  esac",
                 "fi",
+                "done",
                 f"rm -f {connection_file}",
                 f"nohup {consumer} >> {stdout_log} 2>&1 < /dev/null &",
                 "consumer_pid=$!",
@@ -599,7 +632,7 @@ class RestartingSingleSocketIO(IO):
     def _connect_with_retries(self, reason):
         attempt = 0
         expired_key_attempts = 0
-        restart_failure_notified = False
+        failure_notified = False
         while True:
             if self._aborted:
                 raise RuntimeError("Remote consumer output was aborted")
@@ -623,26 +656,28 @@ class RestartingSingleSocketIO(IO):
                         tags=("white_check_mark",),
                     )
                 return
-            except (OSError, EOFError, RuntimeError) as exc:
+            except (OSError, EOFError, RuntimeError, ValueError) as exc:
                 self._record(
                     "consumer.launch_retry",
                     reason=reason,
                     attempt=attempt,
                     host=self._config.host,
+                    error_type=type(exc).__name__,
+                    error=str(exc),
                 )
                 if (
-                    reason == "connection_lost"
-                    and not restart_failure_notified
+                    not failure_notified
                     and self._alert_notifier is not None
                 ):
+                    action = "restart" if reason == "connection_lost" else "start"
                     self._alert_notifier.notify(
-                        "Raw data server restart failed",
-                        f"Restart attempt {attempt} for the remote consumer on "
+                        f"Raw data server {action} failed",
+                        f"{action.capitalize()} attempt {attempt} for the remote consumer on "
                         f"{self._config.host} failed: {type(exc).__name__}: {exc}",
                         priority=5,
                         tags=("rotating_light",),
                     )
-                    restart_failure_notified = True
+                    failure_notified = True
                 maximum = self._config.max_relaunch_attempts
                 if maximum and attempt >= maximum:
                     raise

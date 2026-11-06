@@ -57,10 +57,15 @@ except Exception as exc:
 
 try:
     entries = sorted(
-        path for path in output_directory.iterdir()
+        path for path in (*output_directory.iterdir(), *output_directory.glob("*/*"))
         if path.suffix.lower() in (".bp", ".h5", ".pkl")
     )
-    result["segments"] = [path.name for path in entries]
+    if len(sys.argv) > 5 and sys.argv[5] == "session":
+        prefix = "Opened consumer output "
+        entries = sorted({Path(line[len(prefix):]) for line in
+                          stdout_log.read_text(encoding="utf-8", errors="replace").splitlines()
+                          if line.startswith(prefix)})
+    result["segments"] = [str(path.relative_to(output_directory)) for path in entries]
 except Exception as exc:
     entries = []
     result["segments_error"] = f"{type(exc).__name__}: {exc}"
@@ -155,9 +160,9 @@ for path in entries:
         sample = json.loads(completed.stdout)
         if sample is None:
             raise ValueError("BP segment contains no readable array steps")
-        samples.append(dict(segment=path.name, **sample))
+        samples.append(dict(segment=str(path.relative_to(output_directory)), **sample))
     except Exception as exc:
-        errors.append(dict(segment=path.name, error=f"{type(exc).__name__}: {exc}"))
+        errors.append(dict(segment=str(path.relative_to(output_directory)), error=f"{type(exc).__name__}: {exc}"))
 
 if errors:
     result["payload_sampling_errors"] = errors
@@ -247,6 +252,15 @@ def replace_consumer_name(value, replacement):
 
 def derive_local_paths(config, producer_log=None, producer_stdout=None):
     log_directory = ROOT / "data" / "logs"
+    if getattr(config, "automatic_paths", False):
+        # Consumer names now belong to a remote session; local producer names
+        # remain independent and can always be supplied explicitly.
+        name = config.path.stem
+        if producer_log is None:
+            logs = sorted(log_directory.glob(f"{name}-*.producer.jsonl"))
+            producer_log = logs[-1] if logs else log_directory / f"{name}.producer.jsonl"
+        producer_stdout = producer_stdout or Path(producer_log).with_suffix(".stdout.log")
+        return Path(producer_log), Path(producer_stdout)
     if producer_log is None:
         if not config.timing_log:
             raise ValueError(
@@ -388,6 +402,7 @@ def remote_snapshot(
     operation_description,
     skip_compression=False,
     control_path=None,
+    consumer_start_time=None,
 ):
     if not config.timing_log:
         raise ValueError("The server configuration must define timing_log")
@@ -399,6 +414,19 @@ def remote_snapshot(
     try:
         quote = shlex.quote
         workdir = quote(config.working_directory)
+        if getattr(config, "automatic_paths", False):
+            if consumer_start_time is None:
+                discovery = (
+                    "from pathlib import Path;import sys;"
+                    "logs=sorted(Path(sys.argv[1]).glob('consumer-*.jsonl'));"
+                    "print(logs[-1].name[len('consumer-'):-len('.jsonl')])"
+                )
+                consumer_start_time = run_ssh(
+                    connection, config,
+                    f"cd -- {workdir} && {quote(config.python)} -c "
+                    f"{quote(discovery)} {quote(config.log_directory)}",
+                ).strip()
+            config.set_run_paths(consumer_start_time)
         timing_log = quote(config.timing_log)
         consumer_bytes = run_ssh(
             connection,
@@ -417,10 +445,11 @@ def remote_snapshot(
         if operation_description and not skip_compression:
             description = json.dumps(operation_description, separators=(",", ":"))
         arguments = (
-            config.output_directory,
+            getattr(config, "data_directory", config.output_directory),
             config.pid_file,
             config.stdout_log,
             description,
+            "session" if getattr(config, "automatic_paths", False) else "all",
         )
         command = " ".join(
             [
@@ -993,6 +1022,10 @@ def parse_arguments(argv=None):
     parser.add_argument("config", type=Path, help="remote server configuration file")
     parser.add_argument("report", type=Path, help="Markdown report to write")
     parser.add_argument(
+        "--consumer-start-time",
+        help="consumer log start-time suffix (default: newest remote session)",
+    )
+    parser.add_argument(
         "--producer-log",
         type=Path,
         help="producer JSONL timing log (normally derived from the config)",
@@ -1087,6 +1120,7 @@ def main(argv=None):
             operation_description,
             skip_compression=args.skip_compression,
             control_path=args.ssh_control_path,
+            consumer_start_time=args.consumer_start_time,
         )
         consumer = records_at_cutoff(read_json_lines_bytes(
             consumer_bytes, f"{config.host}:{config.timing_log}"

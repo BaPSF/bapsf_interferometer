@@ -24,6 +24,27 @@ from streamer.analyze_remote_experiment import (
 
 
 class AnalyzeRemoteExperimentTests(unittest.TestCase):
+    def test_remote_snapshot_selects_daily_files_from_one_session(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            output = root / "data"
+            day = output / "20261105"
+            day.mkdir(parents=True)
+            selected = day / "120000.pkl"
+            selected.touch()
+            (day / "110000.pkl").touch()
+            stdout = root / "consumer.stdout.log"
+            stdout.write_text(f"Opened consumer output {selected}\n")
+            pid = root / "consumer.pid"
+            pid.write_text(str(os.getpid()))
+            completed = subprocess.run(
+                [sys.executable, "-c", REMOTE_SNAPSHOT_PROGRAM, str(output),
+                 str(pid), str(stdout), "", "session"],
+                capture_output=True, text=True, timeout=15, check=True,
+            )
+            metadata = json.loads(completed.stdout)
+            self.assertEqual(metadata["segments"], ["20261105/120000.pkl"])
+
     def test_remote_snapshot_survives_native_reader_failure(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
