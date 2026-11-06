@@ -317,8 +317,10 @@ class SSHConsumerLauncher:
         return "\n".join(
             (
                 "set -eu",
+                "umask 002",
                 f"cd {workdir}",
                 "mkdir -p -- " + " ".join(quote(path) for path in log_directories),
+                "chmod 775 " + " ".join(quote(path) for path in log_directories),
                 f"for previous_pid_file in {pid_candidates}; do",
                 'if [ -f "$previous_pid_file" ]; then',
                 '  old_pid=$(cat "$previous_pid_file")',
@@ -343,9 +345,12 @@ class SSHConsumerLauncher:
                 "fi",
                 "done",
                 f"rm -f {connection_file}",
+                f": >> {stdout_log}",
+                f"chmod 775 {stdout_log}",
                 f"nohup {consumer} >> {stdout_log} 2>&1 < /dev/null &",
                 "consumer_pid=$!",
                 f"printf '%s\\n' \"$consumer_pid\" > {pid_file}",
+                f"chmod 775 {pid_file}",
                 "i=0",
                 f'while [ "$i" -lt {polls} ]; do',
                 f"  if [ -s {connection_file} ]; then cat {connection_file}; exit 0; fi",

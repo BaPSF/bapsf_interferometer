@@ -27,6 +27,7 @@ from interf_sim.synthetic import make_raw_shot
 from streamer import RawOutput
 from streamer.arguments import RawOutputSettings
 from streamer.payload import shot_variables
+from streamer.output_permissions import share_output
 
 # Also executed on the consumer host, where the repository provides iter_steps.
 VERIFY_CODE = '''
@@ -64,6 +65,15 @@ def digest(data):
     return h.hexdigest()
 
 
+PERMISSIONS_CODE = """
+import json, stat, sys
+from pathlib import Path
+root = Path(sys.argv[1])
+print(json.dumps([{'path': str(p), 'mode': oct(stat.S_IMODE(p.stat().st_mode))}
+                  for p in [root, *root.rglob('*')] if not p.is_symlink()]))
+"""
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--config', type=Path, default=ROOT / 'streamer/conf/ubuntupc.conf')
@@ -83,6 +93,7 @@ def main():
     stamp = datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S.%fZ')
     run = (args.run_directory or Path('/tmp') / f'interf-fallback-test-{stamp}').resolve()
     run.mkdir(parents=True, exist_ok=False)
+    share_output(run)
     cfg = configparser.ConfigParser(interpolation=None)
     cfg.read(args.config)
     section = cfg['server']
@@ -114,8 +125,10 @@ from streamer.consumer import main
 main()
 '''
     remote('''import pathlib, socket, sys
-root = pathlib.Path(sys.argv[1]); root.mkdir(parents=True, exist_ok=False)
+from streamer.output_permissions import output_directory, share_output
+root = pathlib.Path(sys.argv[1]); assert not root.exists(); output_directory(root)
 (root / 'consumer_control.py').write_text(sys.argv[2])
+share_output(root / 'consumer_control.py')
 s = socket.socket(); s.bind(('0.0.0.0', int(sys.argv[3]))); s.close()
 ''', remote_root, wrapper_code, str(args.port))
     # Use only the dedicated test port, after checking it is unused.
@@ -131,6 +144,7 @@ s = socket.socket(); s.bind(('0.0.0.0', int(sys.argv[3]))); s.close()
     config_path = run / 'server.conf'
     with config_path.open('w') as stream:
         cfg.write(stream)
+    share_output(config_path)
     timing_path = run / 'producer.jsonl'
     output = RawOutput(RawOutputSettings(destination=str(config_path), timing_log=str(timing_path),
                        private_key=str(ROOT / 'keys/testkey'), buffer_seconds=2,
@@ -194,6 +208,7 @@ s = socket.socket(); s.bind(('0.0.0.0', int(sys.argv[3]))); s.close()
     def outage():
         return remote('''import os, pathlib, signal, sys
 pathlib.Path(sys.argv[1]).touch()
+pathlib.Path(sys.argv[1]).chmod(0o775)
 pid = int(pathlib.Path(sys.argv[2]).read_text())
 argv = pathlib.Path(f'/proc/{pid}/cmdline').read_bytes().split(b'\\0')
 assert os.fsencode(sys.argv[3]) in argv, 'Refusing to signal unrelated process'
@@ -247,8 +262,10 @@ print(pid)
              f'cycle {cycle}: acquisition continues with local saving')
 
     scenario_errors = []
+    initial_permissions = []
     try:
         wait(lambda: io._remote_written >= 20, 'initial streaming')
+        initial_permissions = json.loads(remote(PERMISSIONS_CODE, remote_root))
         for cycle in range(args.cycles):
             local_before = io._local_written
             print(f'Cycle {cycle+1}: interrupting test consumer PID {outage().strip()}', flush=True)
@@ -296,6 +313,14 @@ else:
     (run / 'expected.json').write_text(json.dumps(expected, indent=2))
     (run / 'remote-files.json').write_text(json.dumps(remote_result, indent=2))
     (run / 'local-files.json').write_text(json.dumps(local_result, indent=2))
+    for name in ('expected.json', 'remote-files.json', 'local-files.json'):
+        share_output(run / name)
+    remote_permissions = json.loads(remote(PERMISSIONS_CODE, remote_root))
+    local_permissions = json.loads(subprocess.run(
+        [sys.executable, '-c', PERMISSIONS_CODE, str(run)], capture_output=True,
+        text=True, check=True).stdout)
+    permission_errors = [row for row in initial_permissions + remote_permissions + local_permissions
+                         if int(row['mode'], 8) & 0o777 != 0o775]
     observed, corrupt = {}, []
     for row in remote_result['rows'] + local_result['rows']:
         index, checksum, path = row
@@ -328,9 +353,16 @@ else:
         not notification_errors and all(sent_titles[title] == count for title, count in expected_titles.items())
         and expected_titles['Saving raw data locally'] == args.cycles
         and expected_titles['Remote streaming resumed'] == args.cycles
+        and sent_titles['Raw data server started'] == 1
+        and sent_titles['Raw data server restarted'] == args.cycles
+        and sent_titles['Raw data server disconnected'] == args.cycles
+        and sent_titles['Raw data server restart failed'] == args.cycles
     )
-    report = dict(passed=notifications_passed and losses_match and not (unexpected or corrupt or acquisition_errors or scenario_errors or output.unsent_shots),
+    report = dict(passed=notifications_passed and losses_match and not permission_errors and not (unexpected or corrupt or acquisition_errors or scenario_errors or output.unsent_shots),
                   run_directory=str(run), remote_directory=remote_root, source_config=str(args.config),
+                  permissions_passed=not permission_errors, permission_errors=permission_errors,
+                  initial_permissions=initial_permissions, local_permissions=local_permissions,
+                  remote_permissions=remote_permissions,
                   disk_pressure_enabled=args.disk_pressure, pressure_checks=pressure_checks,
                   original_disk_limit=original_disk_limit, restored_disk_limit=io.MIN_FREE_BYTES,
                   dropped_ids=dropped_ids, losses_match=losses_match, retained_missing=retained_missing,
@@ -344,6 +376,7 @@ else:
                   written=output.written_shots, missing=missing, unexpected=unexpected,
                   corrupt=corrupt, acquisition_errors=acquisition_errors, scenario_errors=scenario_errors, phases=phases, transitions=transitions)
     (run / 'report.json').write_text(json.dumps(report, indent=2))
+    share_output(run / 'report.json')
     print(json.dumps(report, indent=2))
     if not report['passed']:
         raise SystemExit(1)

@@ -394,6 +394,11 @@ if `file_interval_seconds` has not elapsed. Existing data names get a numeric
 suffix instead of being overwritten. HDF5 and pickle outputs use the same
 layout with `.h5` and `.pkl` extensions.
 
+New streaming output directories and files use `0775` (`rwxrwxr-x`), including
+BP5 contents, timing and stdout logs, PID files, and encrypted connection files.
+This also applies to producer-local fallback data and overrides a restrictive
+umask. Existing ancestor directories and key files are left unchanged.
+
 Automatic consumer replacements within a producer session append to that
 session's logs; restarting the producer selects a fresh log set. The connection
 file is removed when its consumer exits. The remote command creates the log
@@ -602,7 +607,10 @@ timezone; existing local paths receive numeric suffixes. There is no
 cross-machine filename coordination.
 
 Asynchronous ntfy messages report local saving, remote resumption, local pauses,
-and local resumption once per transition, without directory names. The producer
+and local resumption once per transition, without directory names. Fallback mode
+also reports the initial authenticated server start, disconnects, and successful
+restarts. The first failed start or restart in each launch series goes to the
+alert topic; further failures are suppressed until a connection succeeds. The producer
 timing log includes reasons, directory and file paths, disk checks, clock
 estimates, local writes, and losses. `written_steps` includes both destinations;
 `fallback.write` identifies local successes. Files from failed writes may contain
@@ -627,8 +635,11 @@ channel, interrupts only its own consumer twice, holds reconnection unavailable
 until local saving is observed, and then restores streaming. The test disables
 ntfy, retains BP5 files and logs in unique local and Ubuntu directories, and
 compares every stored variable's SHA-256 digest with the generated frame.
-With `--notifications`, the report also checks that ntfy accepted each routing
-transition message exactly once and that no notification failed. Acceptance by
+With `--notifications`, the report also checks that ntfy accepted the initial
+startup, disconnect, restart, first restart-failure, and routing-transition
+messages with the expected counts and that no notification failed. The report
+checks permissions on local and remote files, including the live connection
+file and BP5 contents. Acceptance by
 ntfy does not confirm delivery to an individual subscriber device.
 A `report.json` records frame counts, missing or corrupt frames, duplicate
 copies, overflow losses, unsent frames, and routing transitions. The output

@@ -31,7 +31,7 @@ class FallbackTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
-        self.config = SimpleNamespace(local_fallback_directory=Path(self.tmp.name),
+        self.config = SimpleNamespace(host="test-server", local_fallback_directory=Path(self.tmp.name),
                                       retry_delay_seconds=.02, file_interval_seconds=3600)
         self.settings = SimpleNamespace(buffer_seconds=10, output_interval_seconds=1)
         self.ready = threading.Event()
@@ -64,6 +64,34 @@ class FallbackTests(unittest.TestCase):
     def enqueue(self, output, start, end):
         for i in range(start, end):
             output.write({'shot_index': np.array(i)}, step=i)
+
+    def test_successful_start_notifies_without_any_frames_or_fallback(self):
+        self.ready.set()
+        output = self.output()
+        wait_until(lambda: any(c.args[0] == 'Raw data server started'
+                              for c in self.notifier.notify.call_args_list))
+        self.assertEqual(output._local_written, 0)
+        self.assertEqual(output._remote_written, 0)
+        self.assertEqual([c.args[0] for c in self.notifier.notify.call_args_list],
+                         ['Raw data server started'])
+
+    def test_failed_launch_alerts_once_until_success_and_rearms_after_disconnect(self):
+        output = self.output()
+        wait_until(lambda: self.factory.call_count >= 3)
+        titles = lambda: [c.args[0] for c in self.notifier.notify.call_args_list]
+        self.assertEqual(titles().count('Raw data server start failed'), 1)
+        self.ready.set()
+        wait_until(lambda: 'Raw data server started' in titles())
+        self.ready.clear()
+        output._remote.write_data.side_effect = OSError('connection lost')
+        self.enqueue(output, 0, 1)
+        wait_until(lambda: 'Raw data server restart failed' in titles())
+        time.sleep(.08)
+        self.assertEqual(titles().count('Raw data server disconnected'), 1)
+        self.assertEqual(titles().count('Raw data server restart failed'), 1)
+        self.ready.set()
+        wait_until(lambda: 'Raw data server restarted' in titles())
+        self.assertEqual(titles().count('Raw data server restarted'), 1)
 
     def test_boundary_fifo_and_remote_recovery_transitions(self):
         output = self.output()
@@ -373,7 +401,7 @@ class SocketOutageIntegrationTests(unittest.TestCase):
                 mock.patch('streamer.fallback_io.RestartingSingleSocketIO', side_effect=connect), \
                 mock.patch.object(protocol, 'timezone_description', return_value={'key': 'America/Los_Angeles'}), \
                 mock.patch('streamer.fallback_io.shutil.disk_usage', return_value=SimpleNamespace(free=10_000_000_001)):
-            config = SimpleNamespace(local_fallback_directory=Path(tmp),
+            config = SimpleNamespace(host="test-server", local_fallback_directory=Path(tmp),
                                      retry_delay_seconds=.02, file_interval_seconds=3600)
             output = FallbackIO(SimpleNamespace(buffer_seconds=10, output_interval_seconds=1), config, key)
             try:
