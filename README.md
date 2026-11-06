@@ -46,16 +46,18 @@ A port without data (channel off or flat, Rigol down) is published as missing wi
 Python 3.11 or later (developed on 3.14). Acquisition runs on **Linux only**. `pip install .` installs the dependencies, including [`lab-scopes`](https://github.com/hjia94/lab_scopes) `v0.4.2`, the scope drivers.
 
 ```bash
-pip install -e '.[ioc,clients]' -c constraints.txt                  # IOC and store extras; constraints.txt pins the EPICS stack
+pip install -e '.[ioc,clients,compression]' -c constraints.txt      # IOC, store and raw output extras; constraints.txt pins them
 python -m diag_ioc --config my_interferometer.toml                  # analysis IOC; a copy of deploy/diag-ioc/interferometer.toml
 INTERF_IOC_LINK=unix:/run/diag-ioc/interferometer/link.sock LECROY_IP=<address> python interf_main.py   # acquisition
 python -m interf_store --prefix LAPD:DIAG:INTERF                    # HDF5 store
 python -m interf_sim --limit 20                                     # no scopes: replay recorded .trc files
 ```
 
-In production the IOC, acquisition and the store run as systemd units from [deploy/systemd/](deploy/systemd/) under the `diag-ioc` account: `diag-ioc@.service` (one IOC per `/etc/diag-ioc/<name>.toml`), `interf-acquire.service` (with `acquire.env.example`) and `interf-store.service`. Install steps are in each unit's header.
+In production the IOC, acquisition and the store run as systemd units from [deploy/systemd/](deploy/systemd/) under the `lapd` account, so operators can refresh the NERSC key daily: `diag-ioc@.service` (one IOC per `/etc/diag-ioc/<name>.toml`), `interf-acquire.service` (with `acquire.env.example`) and `interf-store.service`. The browser page's `interf-web.service` alone runs as `diag-ioc`, an account with no login. Install steps are in each unit's header. The units run from `/opt/bapsf_interferometer`, the operation checkout, which tracks `refactor/linux-epics-daq`; `~jia/code/bapsf_interferometer` on Bobby is a separate test clone.
 
 ## Browser page
+
+**Proposed (D18), not yet live:** the unit stays stopped until its overload limits (about 20 viewers, at most 3 pages per address) are tested on Bobby; so far it has only been run by hand. A page that loses its connection, or whose tab stays hidden for 15 min, says so and asks to be reloaded.
 
 [interf_web/](interf_web/) shows each shot's density vs time for every port, this shot's NE_MEAN and its recent history, in any browser on the lab network at <http://10.97.106.103:8080/>, with nothing to install. It is read-only and has no login. It is a separate process that only reads the IOC's PVs (the `SHOT` group, and `CFG:NE_WINDOW_MS` for the shaded window), so nothing else waits on it; a slow browser skips to the newest shot. History covers only what `interf_web` has seen itself: today and yesterday, from memory and its own files, not from HDF5.
 
@@ -98,7 +100,7 @@ The design is D18 in [ARCHITECTURE.md](docs/ARCHITECTURE.md).
 | [interf_sim/](interf_sim/) | Offline simulation: `.trc` replay, synthetic shots, a development link listener |
 | [streamer/](streamer/) | ADIOS/socket raw output; maintained by another group, not edited here |
 | [deploy/](deploy/) | Production IOC config, read-only access file, systemd units |
-| [constraints.txt](constraints.txt) | Exact versions of the EPICS stack (`softioc`, `epicscorelibs`, `pvxslibs`, `p4p`, `pyepics`) and of `interf_web`'s web stack, for `pip install -c` |
+| [constraints.txt](constraints.txt) | Exact versions of the EPICS stack (`softioc`, `epicscorelibs`, `pvxslibs`, `p4p`, `pyepics`), `blosc2` and `interf_web`'s web stack, for `pip install -c` |
 | [tests/](tests/) | `python -m unittest discover -s tests -v` |
 
 The live GUI will be re-implemented under EPICS (Phoebus, C7). The HDF5 readers and the datarun merge scripts may return later on this branch.

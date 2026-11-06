@@ -7,7 +7,7 @@ python -m interf_sim --limit 20    # from the repo root; --help lists the option
 python -m interf_sim --limit 20 --repeat-traces  # cycle available traces into 20 synthetic shots
 python -m interf_sim --raw-output raw.bp --limit 20  # write complete raw shots to BP5
 python -m interf_sim --ioc-link unix:/tmp/interf.sock --limit 20  # also send shots to a live-analysis listener
-python -m interf_sim --loop --ioc-link unix:/run/diag-ioc/interferometer/link.sock  # until Ctrl-C or SIGTERM; as diag-ioc, which owns the socket
+python -m interf_sim --loop --ioc-link unix:/run/diag-ioc/interferometer/link.sock  # until Ctrl-C or SIGTERM; as lapd, which owns the socket
 ```
 
 `python -m interf_sim.listen ADDRESS [--analyze] [--ne-window-ms START STOP]` is a development listener for `--ioc-link` and `INTERF_IOC_LINK`. It prints one line per shot received, and with `--analyze` adds each port's points and density, or the reason the port is missing. Use `tcp:127.0.0.1:PORT` where unix sockets are unavailable.

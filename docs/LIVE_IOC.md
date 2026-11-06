@@ -7,7 +7,7 @@ The IOC analyzes every shot from acquisition's link and serves the results as EP
 `diag_ioc` runs [interf_ioc.py](../interf_ioc.py), which analyzes every shot from the link with `analyze_shot` and serves the results as EPICS PVs over CA and PVA, under the prefix `LAPD:DIAG:INTERF`.
 
 ```bash
-pip install -e '.[ioc,clients]' -c constraints.txt   # constraints.txt pins the tested EPICS stack
+pip install -e '.[ioc,clients,compression]' -c constraints.txt   # constraints.txt pins the tested EPICS stack and blosc2
 python -m diag_ioc --config my_interferometer.toml   # a copy of deploy/diag-ioc/interferometer.toml
 INTERF_IOC_LINK=unix:/run/diag-ioc/interferometer/link.sock LECROY_IP=<address> python interf_main.py
 ```
@@ -40,4 +40,4 @@ python -m interf_store --prefix LAPD:DIAG:INTERF   # or interf-store; --data-dir
 - A shot's date, number and data all come from the same group update. The dataset name is the shot time: the LeCroy trigger time, or the host time for a shot without one.
 - The IOC sends its latest shot to every new connection, so after a restart or reconnect that shot is found already stored and skipped. Before the IOC's first shot after a start, the group holds no shot (date or timestamp 0), and the store skips it.
 - SIGTERM or Ctrl-C stores what is queued and logs a summary: shots stored, already stored, not received (gaps), dropped, failed writes and unreadable updates.
-- [deploy/systemd/interf-store.service](../deploy/systemd/interf-store.service) runs it as `diag-ioc`, with `INTERF_DATA_DIR=/var/lib/interferometer/hdf5`. systemd creates `/var/lib/interferometer` as 0755, and the files come out 0644, so every local user can read them and only `diag-ioc` can write. Install steps are in its header.
+- [deploy/systemd/interf-store.service](../deploy/systemd/interf-store.service) runs it as `lapd`, like the IOC and acquisition (D10), with `INTERF_DATA_DIR=/var/lib/interferometer/hdf5`. systemd creates `/var/lib/interferometer` as 0755, and the files come out 0644, so every local user can read them and only `lapd` can write. Install steps are in its header.

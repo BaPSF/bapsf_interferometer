@@ -1,12 +1,15 @@
 # Exact versions of the EPICS stack, as run on the lab Linux machine (docs/ARCHITECTURE.md D11). pyproject only sets
-# floors. Install with: pip install -e '.[ioc,clients]' -c constraints.txt. Upgrade deliberately, then re-test.
+# floors. Install with: pip install -e '.[ioc,clients,compression]' -c constraints.txt. Upgrade deliberately, then
+# re-test.
 softioc==4.7.2
 epicscorelibs==7.0.10.99.0.2
 pvxslibs==1.5.3
 p4p==4.3.0
 pyepics==3.5.10
-# interf_web (D18), the web extra: not yet run on the lab machine. starlette and websockets too, because /ws relies on
-# how they and uvicorn report a browser that left.
+# The compression extra (raw output), as installed in /opt/bapsf_interferometer/.venv.
+blosc2==4.14.1
+# interf_web (D18), the web extra: run by hand on the lab machine, not yet as its unit. starlette and websockets too,
+# because /ws relies on how they and uvicorn report a browser that left.
 fastapi==0.162.0
 starlette==1.10.0
 uvicorn==0.54.0

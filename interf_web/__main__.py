@@ -5,6 +5,7 @@ History covers only what this process has seen, in memory and its own files, nev
 """
 import argparse
 import asyncio
+import collections
 import concurrent.futures
 import contextlib
 import dataclasses
@@ -13,6 +14,7 @@ import json
 import logging
 import math
 import os
+import socket
 import struct
 import sys
 import time
@@ -38,6 +40,29 @@ KEEP_DAYS = 2  # shot dates held, the newest ones; normally today and yesterday
 TREND_POINTS_MAX = 5000
 STOP_TIMEOUT_S = 5  # for open sockets at exit; under the unit's TimeoutStopSec (30 s)
 _ROW_WIDTH = 1 + len(PORTS)  # a history row: host_time, then one ne_mean per port
+
+# Limits (D18, J 2026-11-06): the page is for about 20 viewers and shares Bobby's CPU with acquisition.
+MAX_VIEWERS = 20  # open /ws sockets in all; more are closed with TRY_AGAIN_LATER
+MAX_VIEWERS_PER_ADDRESS = 3  # open /ws sockets from one client address
+TRY_AGAIN_LATER = 1013  # the WebSocket close code for a refused or capped socket
+# uvicorn's limit_concurrency counts every open connection, /ws and idle keep-alive ones included, and an HTTP request
+# beyond it gets 503. A viewer holds 2 (its /ws and its /api/trend connection, reused every few seconds, so never idle
+# for KEEP_ALIVE_S), plus the 2-3 its browser opens to load the page. uvicorn does not apply the limit to a WebSocket
+# upgrade, hence MAX_VIEWERS.
+MAX_CONNECTIONS = 4 * MAX_VIEWERS
+# A connection is closed if its next request has not fully arrived this long after it opened or after its last
+# response: idle, or headers dribbled in (_timed_h11_protocol).
+KEEP_ALIVE_S = 30
+SEND_TIMEOUT_S = 30.0  # a /ws send that cannot finish, a browser that stopped reading, ends that socket
+# Proposal, Linux only: the kernel then drops a connection whose sent data stays unacknowledged, so a socket ended by
+# SEND_TIMEOUT_S leaves no connection behind that counts against MAX_CONNECTIONS.
+TCP_USER_TIMEOUT_S = 90
+WS_MAX_SIZE = 4096  # bytes of an incoming WebSocket message; the page sends none
+PING_INTERVAL_S = 30.0
+PING_TIMEOUT_S = 60.0  # a brief network hiccup keeps the viewer; a dead peer is dropped within PING_INTERVAL_S + this
+TREND_RATE_PER_S = 2.0  # /api/trend requests per client address; the page asks at most once per shot (3 s)
+TREND_BURST = 5
+LOG_LINES_PER_MIN = 30  # of uvicorn's own log, which has a line for every WebSocket accept and every 503
 
 
 @dataclasses.dataclass(frozen=True)
@@ -219,7 +244,23 @@ class ShotHub:
 	def __init__(self):
 		self.latest = None
 		self.ne_window_ms = None
+		self.viewers = collections.Counter()  # client address: its open /ws sockets
 		self._changed = asyncio.Event()
+
+	@contextlib.contextmanager
+	def admitted(self, address):
+		"""Yields None while holding one of the MAX_VIEWERS slots for `address`, or why it is refused (the close reason the
+		page shows). Check and count happen with no await between, so two sockets cannot both take the last slot."""
+		if self.viewers.total() >= MAX_VIEWERS:
+			yield f"the page already has {MAX_VIEWERS} viewers; try again later"
+		elif self.viewers[address] >= MAX_VIEWERS_PER_ADDRESS:
+			yield f"{MAX_VIEWERS_PER_ADDRESS} pages are already open from this address; try again later"
+		else:
+			self.viewers[address] += 1
+			try:
+				yield None
+			finally:
+				self.viewers -= collections.Counter([address])  # drops the address at 0
 
 	def publish(self, shot):
 		self.latest = shot
@@ -248,7 +289,7 @@ class ShotFeed:
 	"""The p4p callbacks. They never block (D18) and must not raise: p4p closes a subscription whose callback raises."""
 
 	def __init__(self, group, loop, deliver, hub):
-		self.group, self._loop, self._deliver, self._hub = group, loop, deliver, hub
+		self.group, self.loop, self.deliver, self.hub = group, loop, deliver, hub
 		self._last = None  # (shot_date, shot_number)
 		self._connected = None  # None until p4p's first notice
 		self._monitor = Outage(log, f"PVA monitor of {group}")
@@ -279,24 +320,128 @@ class ShotFeed:
 		if shot is None or (shot.shot_date, shot.shot_number) == self._last:  # the same shot again after a reconnect
 			return
 		self._last = (shot.shot_date, shot.shot_number)
-		self._loop.call_soon_threadsafe(self._deliver, shot)
+		self.loop.call_soon_threadsafe(self.deliver, shot)
 
 	def on_window(self, value):
 		"""<P>:CFG:NE_WINDOW_MS, for the page's shading. Its own monitor: the record is not in the group (interf_ioc)."""
 		try:
-			self._hub.ne_window_ms = [float(edge) for edge in value]
+			self.hub.ne_window_ms = [float(edge) for edge in value]
 		except Exception as e:
 			log.warning("unreadable NE_MEAN window %r (%s)", value, e)
 
 
-def create_app(prefix, state_dir):
+class RateLimiter:
+	"""A token bucket per key: `rate` per s on average, up to `burst` at once. Event loop only, so no lock."""
+
+	def __init__(self, rate, burst):
+		self.rate, self.burst = rate, burst
+		self._buckets = {}  # key: (tokens, time of the last call)
+
+	def allow(self, key):
+		now = time.monotonic()
+		if len(self._buckets) > 1024:  # forget keys whose bucket is full again, so a stream of addresses cannot grow it
+			self._buckets = {k: b for k, b in self._buckets.items() if now - b[1] < self.burst / self.rate}
+		tokens, last = self._buckets.get(key, (self.burst, now))
+		tokens = min(self.burst, tokens + (now - last) * self.rate)
+		allowed = tokens >= 1
+		self._buckets[key] = (tokens - allowed, now)
+		return allowed
+
+
+class ThrottledLog(logging.Filter):
+	"""On uvicorn's logger: at most `per_minute` records below ERROR each minute, then a count of those dropped."""
+
+	def __init__(self, per_minute, clock=time.monotonic):
+		super().__init__()
+		self.per_minute, self._clock = per_minute, clock
+		self._start, self._passed, self._dropped = clock(), 0, 0
+
+	def filter(self, record):
+		if record.levelno >= logging.ERROR:
+			return True
+		now = self._clock()
+		if now - self._start >= 60:
+			if self._dropped:
+				log.warning("%d lines of uvicorn's log dropped in %.0f s (limit %d a minute)", self._dropped,
+				            now - self._start, self.per_minute)
+			self._start, self._passed, self._dropped = now, 0, 0
+		if self._passed < self.per_minute:
+			self._passed += 1
+			return True
+		self._dropped += 1
+		return False
+
+
+def _timed_h11_protocol():
+	"""uvicorn's h11 protocol whose keep-alive timer (KEEP_ALIVE_S) also covers each request until its headers are
+	complete, plus TCP_USER_TIMEOUT_S. In uvicorn 0.54 that timer starts only after a response and any byte cancels it,
+	so a connection that never completes a request stays open. The timer is still cancelled when a request's headers are
+	complete (handle_events, WebSocket upgrades included). Overrides two of H11Protocol's methods: recheck on upgrade."""
+	from uvicorn.protocols.http.h11_impl import H11Protocol  # the web extra
+
+	class TimedH11(H11Protocol):
+		def connection_made(self, transport):
+			super().connection_made(transport)
+			self.timeout_keep_alive_task = self.loop.call_later(self.timeout_keep_alive, self.timeout_keep_alive_handler)
+			sock = transport.get_extra_info("socket")
+			if sock is not None and hasattr(socket, "TCP_USER_TIMEOUT"):
+				sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_USER_TIMEOUT, int(TCP_USER_TIMEOUT_S * 1000))
+
+		def data_received(self, data):  # H11Protocol's, without its _unset_keepalive_if_required()
+			self.conn.receive_data(data)
+			self.handle_events()
+
+	return TimedH11
+
+
+def server_settings(host, port):
+	"""uvicorn.Config keywords. main also throttles uvicorn's log (ThrottledLog)."""
+	# ws and lifespan are named so trouble stops the start: with "auto", a missing websockets package leaves every /ws
+	# refused, and a failed start of the monitor can read as "lifespan unsupported" and serve a page with no data.
+	# No deflate: float32 samples barely compress on a LAN, and each browser's copy would cost the event loop.
+	return dict(host=host, port=port, http=_timed_h11_protocol(), ws="websockets-sansio",
+	            ws_per_message_deflate=False, ws_max_size=WS_MAX_SIZE, ws_ping_interval=PING_INTERVAL_S,
+	            ws_ping_timeout=PING_TIMEOUT_S, limit_concurrency=MAX_CONNECTIONS, timeout_keep_alive=KEEP_ALIVE_S,
+	            lifespan="on", log_config=None, access_log=False, timeout_graceful_shutdown=STOP_TIMEOUT_S)
+
+
+def monitor_ioc(prefix, feed):
+	"""Start the p4p monitors of <prefix>:SHOT and <prefix>:CFG:NE_WINDOW_MS; returns a function that stops them."""
+	from p4p.client.thread import Context  # the clients extra
+
+	ctx = Context("pva")  # EPICS_PVA_* from the environment
+	subscriptions = [ctx.monitor(feed.group, feed.on_shot, request=SHOT_REQUEST, notify_disconnect=True),
+	                 ctx.monitor(f"{prefix}:CFG:NE_WINDOW_MS", feed.on_window)]
+	log.info("monitoring %s", feed.group)
+
+	def stop():
+		for subscription in subscriptions:
+			subscription.close()
+		ctx.close()
+
+	return stop
+
+
+def _address(connection):
+	"""The client address a request or WebSocket counts against (MAX_VIEWERS_PER_ADDRESS, the trend rate limit)."""
+	return connection.client.host if connection.client else ""
+
+
+def _within_send_timeout(awaitable):
+	"""Every /ws send goes through this: a browser that stopped reading blocks a send until the buffer drains."""
+	return asyncio.wait_for(awaitable, SEND_TIMEOUT_S)
+
+
+def create_app(prefix, state_dir, monitor=monitor_ioc):
+	"""`monitor(prefix, feed)` starts the data in and returns its stop function; tests pass one without p4p."""
 	# The web extra; imported here so the pure parts load without it.
-	from fastapi import FastAPI, HTTPException, Query, WebSocket, WebSocketDisconnect
+	from fastapi import FastAPI, HTTPException, Query, Request, WebSocket, WebSocketDisconnect
 	from fastapi.responses import FileResponse, JSONResponse
 	from fastapi.staticfiles import StaticFiles
 
 	hub = ShotHub()
 	history = History(state_dir)
+	trend_limit = RateLimiter(TREND_RATE_PER_S, TREND_BURST)
 
 	def deliver(shot):
 		hub.publish(shot)
@@ -304,21 +449,12 @@ def create_app(prefix, state_dir):
 
 	@contextlib.asynccontextmanager
 	async def lifespan(app):
-		from p4p.client.thread import Context  # the clients extra
-
 		history.load()
-		group = f"{prefix}:SHOT"
-		feed = ShotFeed(group, asyncio.get_running_loop(), deliver, hub)
-		ctx = Context("pva")  # EPICS_PVA_* from the environment
-		subscriptions = [ctx.monitor(group, feed.on_shot, request=SHOT_REQUEST, notify_disconnect=True),
-		                 ctx.monitor(f"{prefix}:CFG:NE_WINDOW_MS", feed.on_window)]
-		log.info("monitoring %s", group)
+		stop = monitor(prefix, ShotFeed(f"{prefix}:SHOT", asyncio.get_running_loop(), deliver, hub))
 		try:
 			yield
 		finally:
-			for subscription in subscriptions:
-				subscription.close()
-			ctx.close()
+			stop()
 			history.close()
 
 	# No openapi_url, so no generated docs either: they load from a CDN the lab network may not reach.
@@ -330,26 +466,33 @@ def create_app(prefix, state_dir):
 		return FileResponse(STATIC_DIR / "index.html")
 
 	@app.get("/api/trend")
-	async def api_trend(start: float, end: float, points: int = Query(ge=1, le=TREND_POINTS_MAX)):
+	async def api_trend(request: Request, start: float, end: float, points: int = Query(ge=1, le=TREND_POINTS_MAX)):
 		# async: it must stay on the event loop with History.add (History has no lock).
+		if not trend_limit.allow(_address(request)):
+			raise HTTPException(429, "too many trend requests from this address", headers={"Retry-After": "1"})
 		if not (math.isfinite(start) and math.isfinite(end) and start < end):
 			raise HTTPException(422, "start and end must be finite, with start < end")
 		# JSONResponse here, or FastAPI's encoder walks every float once more on the event loop.
 		return JSONResponse(trend(history.rows(), start, end, points))
 
 	@app.websocket("/ws")
-	async def stream(socket: WebSocket):
-		"""Never receives (D18)."""
-		await socket.accept()
-		sent = None
-		with contextlib.suppress(WebSocketDisconnect):
+	async def stream(websocket: WebSocket):
+		"""Never receives (D18). Ends when the browser leaves or a send takes over SEND_TIMEOUT_S; uvicorn then closes
+		the connection."""
+		with hub.admitted(_address(websocket)) as refusal, contextlib.suppress(WebSocketDisconnect, TimeoutError):
+			# Accepted even when refused: only an accepted socket carries a close code and reason to the page.
+			await _within_send_timeout(websocket.accept())
+			if refusal is not None:
+				await _within_send_timeout(websocket.close(TRY_AGAIN_LATER, refusal))
+				return
+			sent = None
 			while True:
 				shot = hub.latest
 				if shot is not sent:
 					sent = shot
-					await socket.send_bytes(shot.payload)
+					await _within_send_timeout(websocket.send_bytes(shot.payload))
 				# After the shot, so `now` is never older than its host_time when the page asks for the trend up to `now`.
-				await socket.send_text(hub.status())
+				await _within_send_timeout(websocket.send_text(hub.status()))
 				await hub.wait_newer(sent, STATUS_PERIOD_S)
 
 	return app
@@ -363,12 +506,9 @@ def main(argv=None):
 	import uvicorn  # the web extra
 
 	state_dir = Path(os.environ.get("INTERF_WEB_STATE_DIR", Path.home() / "data" / "interferometer" / "web"))
-	# ws and lifespan are named so trouble stops the start: with "auto", a missing websockets package leaves every /ws
-	# refused, and a failed start of the monitor can read as "lifespan unsupported" and serve a page with no data.
-	# No deflate: float32 samples barely compress on a LAN, and each browser's copy would cost the event loop.
-	uvicorn.run(create_app(args.prefix, state_dir), host=os.environ.get("INTERF_WEB_HOST", "127.0.0.1"),
-	            port=int(os.environ.get("INTERF_WEB_PORT", "8080")), ws="websockets-sansio", ws_per_message_deflate=False,
-	            lifespan="on", log_config=None, access_log=False, timeout_graceful_shutdown=STOP_TIMEOUT_S)
+	logging.getLogger("uvicorn.error").addFilter(ThrottledLog(LOG_LINES_PER_MIN))
+	uvicorn.run(create_app(args.prefix, state_dir), **server_settings(os.environ.get("INTERF_WEB_HOST", "127.0.0.1"),
+	                                                                   int(os.environ.get("INTERF_WEB_PORT", "8080"))))
 	return 0
 
 

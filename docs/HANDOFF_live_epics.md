@@ -90,7 +90,8 @@ Facts from testing that still matter:
   `packages`, in the same commit.
 - Conventional commit prefixes (`feat:`, `fix:`, `refactor:`, `test:`, `docs:`, `chore:`), with a short body saying why.
   Keep the README "Files" and "Configuration" tables current.
-- Setup: `pip install -e '.[ioc,clients]' -c constraints.txt` (`clients` includes `p4p` since C6).
+- Setup: `pip install -e '.[ioc,clients,compression]' -c constraints.txt` (`clients` includes `p4p` since C6;
+  `compression` is `blosc2`, pinned since 2026-11-06).
 - `interf_main`'s main thread owns SIGALRM and the LeCroy re-arm. Anything added there is O(1), never blocks, never
   raises into the loop, and never imports EPICS, except the optional PNG CA monitor (`interf_png`, D16).
 
@@ -358,7 +359,8 @@ can be handed back to the streaming team on its own.
 - A (`streamer/`, with the streaming team's permission, J 2026-10-29): `raw_output.py` (`error`), `raw_output_io.py`
   (the mode by destination, the `error` status), `arguments.py`, `remote_consumer_io.py` (`abort()`, which also stops
   relaunching), `consumer.py` (`--keep-listening`, keepalive), `single_socket_io.py` (keepalive), `network_access.py`
-  (`enable_keepalive`), `consumer_output.py` (names through the shared `unused_path`), `timing_log.py`
+  (`enable_keepalive`), `consumer_output.py` (names through the shared `unused_path`; since the streaming team's PRs #7
+  and #8, in daily UTC `YYYYMMDD/` subfolders, D17 item 5), `timing_log.py`
   (`try_record`), `README.md`, `tests/test_streamer.py`. D17 lists what each change does.
 - B (ours): `interf_main.py` (`_start_raw_output`, logging set up before the outputs, the `raw output` outage log
   after each shot, the stop order and counts), `docs/` (ARCHITECTURE D6, D9, D16, D17; ACQUISITION; LIVE_IOC; this
@@ -377,8 +379,8 @@ can be handed back to the streaming team on its own.
 - Scenario (`test-on-Bobby`):
   - the unit tests;
   - live, a local folder (`INTERF_RAW_OUTPUT=/var/lib/interferometer/raw/`, `INTERF_RAW_OUTPUT_FILE_S=300`): restart
-    acquisition twice and check that no file is overwritten, a new file starts every 5 min, and the stop takes under
-    30 s;
+    acquisition twice and check that no file is overwritten, a new file starts every 5 min in that UTC day's
+    `YYYYMMDD/` subfolder (and at UTC midnight), and the stop takes under 30 s;
   - live, network: a consumer started by hand with `--keep-listening`. Stop it mid-run, then start it again. The IOC
     and HDF5 must keep getting a shot every 3 s, and raw output must resume within one retry (`io.open` after
     `io.error` in the timing log). The acquisition log shows `raw output failed` once and `raw output recovered`
@@ -412,7 +414,9 @@ can be handed back to the streaming team on its own.
   gateway for the outside group if it is on another subnet; the EPICS libraries still bind some UDP sockets on all
   interfaces at random high ports with every address list set to loopback, which is harmless;
 - that only the PVA group is atomic, while a CA client that falls behind can drop or tear a shot;
-- operations: the D10 system units as the `diag-ioc` account, keep the scope clock NTP-synced, and keep
+- operations: the D10 system units, the IOC, acquisition and the store as `lapd` (operators refresh the NERSC key
+  daily) and `interf-web` as `diag-ioc`, run from `/opt/bapsf_interferometer`, the operation checkout on
+  `refactor/linux-epics-daq` (`~jia/code/bapsf_interferometer` on Bobby is a separate test clone); keep the scope clock NTP-synced, and keep
   `INTERF_SHOT_STATE` and `INTERF_LOG_DIR` on a local disk (not a network filesystem), with the state file outside the
   log directory (the acquisition unit sets them under `/var/lib` and `/var/log`).
 

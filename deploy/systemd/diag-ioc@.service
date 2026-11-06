@@ -1,9 +1,8 @@
 # One diag_ioc instance per config: `systemctl enable --now diag-ioc@interferometer` runs
 # /etc/diag-ioc/interferometer.toml (D10).
 # Install as root:
-#   useradd --system --home-dir /var/lib/diag-ioc --no-create-home --shell /usr/sbin/nologin diag-ioc
-#   git clone -b refactor/linux-epics-daq ... /opt/bapsf_interferometer   # root-owned; the service only reads it
-#   cd /opt/bapsf_interferometer && python3 -m venv .venv && .venv/bin/pip install -e '.[ioc,clients]' -c constraints.txt   # clients: interf-store.service
+#   git clone -b refactor/linux-epics-daq ... /opt/bapsf_interferometer   # the operation checkout, root-owned; the service only reads it
+#   cd /opt/bapsf_interferometer && python3 -m venv .venv && .venv/bin/pip install -e '.[ioc,clients,compression]' -c constraints.txt   # clients: interf-store.service; compression: raw output
 #   install -d /etc/diag-ioc && cp deploy/diag-ioc/interferometer.toml deploy/diag-ioc/readonly.acf /etc/diag-ioc/
 #   cp deploy/systemd/diag-ioc@.service /etc/systemd/system/ && systemctl daemon-reload
 [Unit]
@@ -13,10 +12,11 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-# A system account that also runs acquisition (interf-acquire.service), so the unix link socket (0660 inside the
-# 0750 runtime directory below) needs no shared group. Never root, never the old IOC's softioc account.
-User=diag-ioc
-Group=diag-ioc
+# lapd, the operators' account (D10), which also runs acquisition (interf-acquire.service) and the store, so the unix
+# link socket (0660 inside the 0750 runtime directory below) needs no shared group. Never root, never the old IOC's
+# softioc account.
+User=lapd
+Group=lapd
 WorkingDirectory=/opt/bapsf_interferometer
 # EPICS_* settings, e.g. EPICS_CAS_INTF_ADDR_LIST, EPICS_PVAS_INTF_ADDR_LIST, EPICS_CA_MAX_ARRAY_BYTES.
 EnvironmentFile=-/etc/diag-ioc/%i.env

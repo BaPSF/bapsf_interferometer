@@ -1,11 +1,12 @@
 # The browser page (interf_web) as a system unit, beside diag-ioc@interferometer: monitors the IOC's PVA group
 # <prefix>:SHOT and serves http://10.97.106.103:8080/. Its own process: acquisition, the IOC and the store never wait
 # on it (D18).
-# Install as root, after diag-ioc@.service's steps (the diag-ioc account, /opt/bapsf_interferometer and its venv):
+# Install as root, after diag-ioc@.service's steps (/opt/bapsf_interferometer and its venv):
+#   useradd --system --home-dir /var/lib/diag-ioc --no-create-home --shell /usr/sbin/nologin diag-ioc   # if not there yet
 #   cd /opt/bapsf_interferometer
-#   .venv/bin/pip install -e '.[ioc,clients,web]' -c constraints.txt
+#   .venv/bin/pip install -e '.[ioc,clients,compression,web]' -c constraints.txt
 #   cp deploy/systemd/interf-web.service /etc/systemd/system/
-#   # open TCP 8080 from 10.97.106.0/24 in the host firewall, permanently
+#   # no host firewall rule for now: the network's login firewall controls access (D18)
 #   # optional: /etc/interferometer/web.env for overrides (e.g. INTERF_WEB_PORT)
 #   systemctl daemon-reload && systemctl enable --now interf-web
 # Log: journalctl -u interf-web. History files: /var/lib/interf-web.
@@ -17,7 +18,8 @@ After=diag-ioc@interferometer.service
 
 [Service]
 Type=simple
-# The account of the IOC, acquisition and the store (D10).
+# Not lapd, the account of the other three units (D10): the page has no login and needs neither the NERSC key nor sudo.
+# It needs neither the link socket nor /var/lib/interferometer.
 User=diag-ioc
 Group=diag-ioc
 WorkingDirectory=/opt/bapsf_interferometer
@@ -28,6 +30,8 @@ Environment=INTERF_WEB_HOST=10.97.106.103
 Environment=EPICS_PVA_ADDR_LIST=127.0.0.1
 Environment=EPICS_PVA_AUTO_ADDR_LIST=NO
 Environment=PYTHONUNBUFFERED=1
+# numpy's OpenBLAS would start one thread per core at import; the page needs none, and TasksMax counts them.
+Environment=OPENBLAS_NUM_THREADS=1
 EnvironmentFile=-/etc/interferometer/web.env
 ExecStart=/opt/bapsf_interferometer/.venv/bin/python -m interf_web --prefix LAPD:DIAG:INTERF
 # SIGTERM: uvicorn closes the sockets (up to STOP_TIMEOUT_S in interf_web/__main__.py), then the monitor and the history file.
@@ -35,6 +39,50 @@ KillSignal=SIGTERM
 TimeoutStopSec=30
 Restart=always
 RestartSec=5
+
+# The page shares Bobby's CPU with acquisition (D18). Sized for MAX_CONNECTIONS (80) in interf_web/__main__.py
+# (proposal).
+# 10% of one core (J, 2026-11-06): Bobby may host other applications later. Over it the page slows down (D18).
+CPUQuota=10%
+MemoryMax=1G
+# Threads: the event loop, p4p's workers and PVXS's own, the history file's 1, and anyio's pool (up to 40) for static
+# files. Files: 80 sockets, PVXS's sockets and the history file, with room to spare.
+TasksMax=128
+LimitNOFILE=256
+# The scope network, which the page never needs.
+IPAddressDeny=10.106.34.0/24
+NoNewPrivileges=yes
+# Read-only system; StateDirectory= stays writable.
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+ProtectProc=invisible
+ProcSubset=pid
+RestrictSUIDSGID=yes
+LockPersonality=yes
+RestrictNamespaces=yes
+RestrictRealtime=yes
+# diag-ioc runs nothing else since 2026-11-06 (D10), so removing its IPC objects at stop touches no other unit.
+RemoveIPC=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+# AF_NETLINK: PVXS lists the host's network interfaces through it.
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+# A call outside the filter fails with EPERM instead of killing the process (status=31/SYS). Python code then raises
+# OSError [Errno 1] with a traceback, but a compiled library (PVXS, OpenBLAS) may take it quietly and do less: after a
+# start, check that the page works, not only the journal.
+SystemCallErrorNumber=EPERM
+# Read-only is not unreadable: hide what the page never needs but every local user may read. "-": absent is fine.
+InaccessiblePaths=-/etc/interferometer/acquire.env -/etc/diag-ioc -/var/lib/interferometer -/var/log/interferometer
 
 [Install]
 WantedBy=multi-user.target

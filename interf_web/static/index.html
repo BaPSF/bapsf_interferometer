@@ -18,6 +18,7 @@
   #status.off { background: var(--off); }
   .bar { margin-top: 8px; padding: 6px 12px; background: var(--bar); }
   .bar.note { background: var(--note); }
+  .bar.closed { background: var(--off); color: #fff; font-weight: 600; }
   #shot-id { font-size: 20px; font-weight: 600; }
   .row { margin: 8px 0; }
   button { padding: 4px 12px; font: inherit; cursor: pointer; }
@@ -33,6 +34,7 @@
   <h1>Interferometer density</h1>
   <span id="status">Connecting</span>
 </header>
+<div id="closed" class="bar closed" hidden></div>
 <div id="waiting" class="bar" hidden></div>
 <div id="paused-bar" class="bar note" hidden></div>
 
@@ -61,6 +63,7 @@
 <small>Dots are the mean of each time bucket; the bars are its min to max. Drag to zoom, double-click to reset.</small>
 
 <script src="static/uPlot.iife.min.js"></script>
+<script src="static/session.js"></script>
 <script>
 "use strict";
 
@@ -75,8 +78,6 @@ const RANGES = [
   {label: "10 min", seconds: 600}, {label: "1 h", seconds: 3600}, {label: "8 h", seconds: 28800},
   {label: "Today", startKey: "today_start"}, {label: "Yesterday + today", startKey: "yesterday_start"},
 ];
-const FRAME_TIMEOUT_MS = 10000;  // status frames come every second; this long without one is a dead link
-const RECONNECT_MS = 2000;
 
 const byId = id => document.getElementById(id);
 const toUnit = v => (v == null || Number.isNaN(v)) ? null : v / NE_UNIT;
@@ -314,7 +315,6 @@ function decodeShot(buffer) {
 }
 
 function onShot(shot) {
-  if (newest && shot.id === newest.id) return;  // a reconnected socket starts with the shot already here
   newest = shot;
   historyStale = true;
   if (paused) {
@@ -350,27 +350,12 @@ function onStatus(frame) {
   if (historyDue(frame.now)) refreshHistory();
 }
 
-function connect() {
-  const url = new URL("ws", location.href);
-  url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
-  const socket = new WebSocket(url);
-  socket.binaryType = "arraybuffer";
-  let lastFrame = performance.now();
-  const watchdog = setInterval(() => {
-    if (performance.now() - lastFrame < FRAME_TIMEOUT_MS) return;
-    setStatus("Disconnected", "off");
-    socket.close();
-  }, 1000);
-  socket.onmessage = event => {
-    lastFrame = performance.now();
-    if (typeof event.data === "string") onStatus(JSON.parse(event.data));
-    else onShot(decodeShot(event.data));
-  };
-  socket.onclose = () => {
-    clearInterval(watchdog);
-    setStatus("Disconnected", "off");
-    setTimeout(connect, RECONNECT_MS);
-  };
+// The plots and the last values stay as they are; history stops too, since it refreshes on status frames.
+function onClosed(note, reason) {
+  setStatus(note === InterfSession.PAUSED ? "Paused" : "Disconnected", "off");
+  byId("waiting").hidden = true;
+  byId("closed").hidden = false;
+  byId("closed").textContent = reason ? `${note} (${reason})` : note;
 }
 
 new ResizeObserver(() => {
@@ -378,7 +363,12 @@ new ResizeObserver(() => {
   historyPlot.setSize({width: byId("history-plot").clientWidth, height: historyPlot.height});
 }).observe(document.body);
 
-connect();
+const socketUrl = new URL("ws", location.href);
+socketUrl.protocol = socketUrl.protocol === "https:" ? "wss:" : "ws:";
+InterfSession.openSession({
+  url: socketUrl, WebSocket, document, timers: window, now: () => performance.now(),
+  onShot: buffer => onShot(decodeShot(buffer)), onStatus, onClosed,
+});
 </script>
 </body>
 </html>

@@ -2,7 +2,7 @@
 #   cp deploy/systemd/interf-acquire.service /etc/systemd/system/
 #   install -d /etc/interferometer && cp deploy/systemd/acquire.env.example /etc/interferometer/acquire.env   # set LECROY_IP
 #   # stop any acquisition started by hand first (only one may talk to the scopes), then carry its shot counter over
-#   # so numbering continues: install -o diag-ioc -g diag-ioc -D -m 0644 \
+#   # so numbering continues: install -o lapd -g lapd -D -m 0644 \
 #   #   ~jia/data/state/shot_counter.json /var/lib/interferometer/shot_counter.json
 #   systemctl daemon-reload && systemctl enable --now interf-acquire
 # Log: journalctl -u interf-acquire, and /var/log/interferometer/interf_acquire.log.
@@ -15,13 +15,13 @@ Wants=network-online.target diag-ioc@interferometer.service
 
 [Service]
 Type=simple
-# The IOC's account: the link socket (0660) needs no shared group.
-User=diag-ioc
-Group=diag-ioc
+# lapd, the IOC's account (D10): the link socket (0660) needs no shared group.
+User=lapd
+Group=lapd
 WorkingDirectory=/opt/bapsf_interferometer
 Environment=INTERF_IOC_LINK=unix:/run/diag-ioc/interferometer/link.sock
-# The service account has no ~/data: the log and the shot counter go to /var/log/interferometer and
-# /var/lib/interferometer (both local disk, the state outside the log directory, D14).
+# Not the account's ~/data: the log and the shot counter go to /var/log/interferometer and /var/lib/interferometer
+# (both local disk, the state outside the log directory, D14), the latter shared with interf-store.service.
 Environment=INTERF_LOG_DIR=/var/log/interferometer
 Environment=INTERF_SHOT_STATE=/var/lib/interferometer/shot_counter.json
 LogsDirectory=interferometer
