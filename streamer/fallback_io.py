@@ -5,7 +5,7 @@ import time
 from datetime import datetime
 
 from .consumer_output import RotatingConsumerOutput
-from .ntfy_notifications import NtfyNotifier
+from .ntfy_notifications import NtfyNotifier, error_summary
 from .output_permissions import output_directory
 from .raw_output_io import BufferedIO
 from .remote_consumer_io import RestartingSingleSocketIO
@@ -131,14 +131,14 @@ class FallbackIO(BufferedIO):
                     if remote is not None and self._transition_notifier is not None:
                         self._transition_notifier.notify(
                             "Raw data server disconnected",
-                            f"Connection to {self._config.host} was lost: {type(exc).__name__}: {exc}",
+                            f"Connection to {self._config.host} was lost: {error_summary(exc)}",
                             priority=5, tags=("rotating_light",))
                     elif not self._launch_failure_notified and self._alert_notifier is not None:
                         self._launch_failure_notified = True
                         action = "restart" if self._remote_started else "start"
                         self._alert_notifier.notify(
                             f"Raw data server {action} failed",
-                            f"Remote consumer {action} on {self._config.host} failed: {type(exc).__name__}: {exc}",
+                            f"Remote consumer {action} on {self._config.host} failed: {error_summary(exc)}",
                             priority=5, tags=("rotating_light",))
             finally:
                 with self._condition:

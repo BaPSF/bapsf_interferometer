@@ -457,6 +457,10 @@ once per producer run. At 80% or more, notification is immediate and then
 limited to once per hour; later messages include snapshots discarded since
 the previous high-buffer notification.
 
+Notification bodies are limited to 512 UTF-8 bytes. Failure alerts contain a
+short error summary; complete exceptions and consumer log excerpts remain in
+the producer timing log.
+
 When `ssh_key_certificate` and `ntfy_topic_alert` are set, a separate local
 monitor reads the OpenSSH certificate with `ssh-keygen -L`. It warns 6, 3, 2,
 and 1 hour before expiration and reports expired, missing, invalid, or not-yet-

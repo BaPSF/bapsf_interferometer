@@ -7,6 +7,7 @@ import nacl.public
 
 from streamer.connection_security import encrypt_connection_info
 from streamer.remote_consumer_io import RestartingSingleSocketIO, SSHConsumerLauncher
+from streamer.ntfy_notifications import NtfyNotifier, MAX_NOTIFICATION_BYTES
 
 
 class LaunchDiagnosticsTests(unittest.TestCase):
@@ -49,7 +50,7 @@ class LaunchDiagnosticsTests(unittest.TestCase):
         self.alert.notify.assert_called_once_with(
             "Raw data server start failed",
             f"Start attempt 1 for the remote consumer on {self.config.host} failed: "
-            "OSError: Permission denied (publickey).",
+            "OSError: Permission denied (publickey). See producer log for details.",
             priority=5, tags=("rotating_light",),
         )
         self.info.notify.assert_called_once_with(
@@ -122,6 +123,18 @@ class LaunchDiagnosticsTests(unittest.TestCase):
             error_type="OSError", error="SSH failed",
         )
 
+    def test_verbose_launch_failure_is_short_in_alert_and_complete_in_log(self):
+        details = 'Controlled streaming outage\n' + 'Receiving and writing step N\n' * 500
+        self.config.max_relaunch_attempts = 1
+        with mock.patch.object(RestartingSingleSocketIO, '_new_output', side_effect=OSError(details)):
+            with self.assertRaises(OSError):
+                self.make_output()
+        body = self.alert.notify.call_args.args[1]
+        self.assertIn('Controlled streaming outage', body)
+        self.assertNotIn('Receiving and writing', body)
+        self.assertLessEqual(len(body.encode()), MAX_NOTIFICATION_BYTES)
+        self.assertEqual(self.timing_log.record.call_args.kwargs['error'], details)
+
     def test_ssh_failure_preserves_stderr_in_exception(self):
         self.config.ssh_command = ["ssh"]
         self.config.automatic_paths = False
@@ -133,6 +146,27 @@ class LaunchDiagnosticsTests(unittest.TestCase):
                 )):
             with self.assertRaisesRegex(OSError, r"Permission denied \(publickey\)"):
                 launcher.launch()
+
+
+class NotificationSizeTests(unittest.TestCase):
+    def test_long_unicode_message_has_a_byte_limit_and_keeps_valid_utf8(self):
+        opener, log = mock.MagicMock(), mock.Mock()
+        notifier = NtfyNotifier('test-topic', opener=opener, timing_log=log)
+        message = 'Streaming failure: ' + '⚠️ logs\n' * 2000
+        notifier.notify('Failure', message)
+        notifier.close()
+        body = opener.call_args.args[0].data
+        self.assertLessEqual(len(body), MAX_NOTIFICATION_BYTES)
+        self.assertTrue(body.decode().endswith('See producer log for details.'))
+        log.record.assert_any_call('notification.truncated', title='Failure',
+                                   original_bytes=len(message.encode()))
+
+    def test_short_message_is_unchanged(self):
+        opener = mock.MagicMock()
+        notifier = NtfyNotifier('test-topic', opener=opener)
+        notifier.notify('Started', 'Server started.')
+        notifier.close()
+        self.assertEqual(opener.call_args.args[0].data, b'Server started.')
 
 
 if __name__ == "__main__":

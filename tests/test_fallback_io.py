@@ -110,6 +110,17 @@ class FallbackTests(unittest.TestCase):
         self.assertEqual(messages.count('Saving raw data locally'), 1)
         self.assertEqual(messages.count('Remote streaming resumed'), 1)
 
+    def test_verbose_launch_error_keeps_logs_out_of_notification(self):
+        details = 'Controlled streaming outage\n' + 'Receiving and writing step N\n' * 500
+        self.factory.side_effect = OSError(details)
+        self.output()
+        wait_until(lambda: self.notifier.notify.called)
+        body = self.notifier.notify.call_args.args[1]
+        self.assertIn('Controlled streaming outage', body)
+        self.assertNotIn('Receiving and writing', body)
+        self.assertLessEqual(len(body.encode()), 512)
+        self.log.try_record.assert_any_call('io.error', stage='remote', error_type='OSError', error=details)
+
     def test_low_space_preserves_frames_and_overflow_is_bounded(self):
         self.disk.return_value.free = 9_999_999_999
         output = self.output()

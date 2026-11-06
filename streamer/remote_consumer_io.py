@@ -17,7 +17,7 @@ from types import SimpleNamespace
 from .connection_security import decrypt_connection_info
 from .data_operations import load_data_operation
 from .raw_output_io import IO
-from .ntfy_notifications import NtfyNotifier
+from .ntfy_notifications import NtfyNotifier, error_summary
 from .single_socket_io import SingleSocketIO
 from .ssh_key_monitor import read_certificate_validity
 
@@ -704,7 +704,7 @@ class RestartingSingleSocketIO(IO):
                     self._alert_notifier.notify(
                         f"Raw data server {action} failed",
                         f"{action.capitalize()} attempt {attempt} for the remote consumer on "
-                        f"{self._config.host} failed: {type(exc).__name__}: {exc}",
+                        f"{self._config.host} failed: {error_summary(exc)}",
                         priority=5,
                         tags=("rotating_light",),
                     )
@@ -784,12 +784,12 @@ class RestartingSingleSocketIO(IO):
             self._record(
                 "consumer.connection_lost",
                 error_type=type(failure).__name__,
+                error=str(failure),
             )
             if self._notifier is not None:
                 self._notifier.notify(
                     "Raw data server disconnected",
-                    f"Connection to {self._config.host} was lost: "
-                    f"{type(failure).__name__}: {failure}",
+                    f"Connection to {self._config.host} was lost: {error_summary(failure)}",
                     priority=5,
                     tags=("rotating_light",),
                 )
