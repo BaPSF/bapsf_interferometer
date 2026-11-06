@@ -32,6 +32,7 @@ from .socket_protocol import (
     receive_hello,
     receive_message,
     send_ack,
+    send_ready,
     verify_producer_private_key,
 )
 from .timing_log import TimingLog, timestamp
@@ -126,7 +127,7 @@ def remove_own_connection_file(path, expected_contents):
     remove_connection_file_if_unchanged(path, expected_contents)
 
 
-def accept_connection(listener, session_id, public_key, allowed_networks):
+def accept_connection(listener, session_id, public_key, allowed_networks, output_directory=None):
     connection, address = accept_from_allowed_network(listener, allowed_networks)
     try:
         # A producer behind a cut network would otherwise hold this consumer
@@ -134,8 +135,15 @@ def accept_connection(listener, session_id, public_key, allowed_networks):
         enable_keepalive(connection)
         verify_producer_private_key(connection, public_key)
         variables, requested_consumer_id = receive_hello(connection)
+        received_at = time.time()
         if requested_consumer_id != session_id:
             raise RuntimeError("Producer used stale socket connection information")
+        if output_directory is not None:
+            import tempfile
+            Path(output_directory).mkdir(parents=True, exist_ok=True)
+            with tempfile.TemporaryFile(dir=output_directory):
+                pass
+        send_ready(connection, session_id, received_at)
     except Exception:
         connection.close()
         raise
@@ -245,7 +253,7 @@ def main(argv=None):
         while True:
             try:
                 connection = accept_connection(
-                    listener, session_id, public_key, args.allow_ip_range
+                    listener, session_id, public_key, args.allow_ip_range, args.output_directory
                 )
                 # Each connection opens a new output file.
                 receive_steps(

@@ -1,4 +1,5 @@
 import socket
+import time
 
 from .network_access import enable_keepalive
 from .raw_output_io import IO
@@ -6,6 +7,7 @@ from .socket_protocol import (
     PROTOCOL_VERSION,
     prove_private_key,
     receive_ack,
+    receive_ready,
     send_arrays,
     send_end,
     send_hello,
@@ -23,7 +25,6 @@ class SingleSocketIO(IO):
         self._socket = None
         self._operation = operation
         self._consumer_id = None
-        self._hello_sent = False
         version = connection_info.get("protocol_version")
         if version != PROTOCOL_VERSION:
             raise ValueError(
@@ -47,7 +48,14 @@ class SingleSocketIO(IO):
             if connection.family in (socket.AF_INET, socket.AF_INET6):
                 connection.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
                 enable_keepalive(connection)
+            self._socket = connection
+            callback = getattr(settings, "socket_callback", None)
+            if callback is not None:
+                callback(self)
             prove_private_key(connection, private_key)
+            sent_at, sent_mono = time.time(), time.monotonic()
+            send_hello(connection, (), consumer_id, sent_at=sent_at)
+            self.clock_estimate = receive_ready(connection, consumer_id, sent_at, sent_mono)
         except Exception:
             connection.close()
             raise
@@ -55,9 +63,6 @@ class SingleSocketIO(IO):
         self._consumer_id = consumer_id
 
     def write_data(self, data):
-        if not self._hello_sent:
-            send_hello(self._socket, data, self._consumer_id)
-            self._hello_sent = True
         send_arrays(
             self._socket,
             data.items(),
@@ -75,6 +80,10 @@ class SingleSocketIO(IO):
 
     def abort(self):
         """Close a failed channel without attempting a protocol shutdown."""
-        if self._socket is not None:
-            self._socket.close()
-            self._socket = None
+        connection, self._socket = self._socket, None
+        if connection is not None:
+            try:
+                connection.shutdown(socket.SHUT_RDWR)
+            except OSError:
+                pass
+            connection.close()

@@ -1,6 +1,6 @@
 import math
 import time
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -28,7 +28,7 @@ class RotatingConsumerOutput(IO):
         engine,
         interval_seconds=DEFAULT_FILE_INTERVAL_SECONDS,
         clock=time.monotonic,
-        timestamp_factory=datetime.now,
+        timestamp_factory=lambda: datetime.now(timezone.utc),
     ):
         self._output_directory = Path(output_directory)
         self._engine = engine
@@ -36,6 +36,7 @@ class RotatingConsumerOutput(IO):
         self._clock = clock
         self._timestamp_factory = timestamp_factory
         self._output = None
+        self.current_path = None
         self._next_rotation = None
         self._output_day = None
 
@@ -64,6 +65,7 @@ class RotatingConsumerOutput(IO):
             self._output = None
 
         destination = self._new_path(wall_time)
+        self.current_path = destination
         settings = SimpleNamespace(
             destination=str(destination),
             engine=self._engine,
@@ -84,7 +86,7 @@ class RotatingConsumerOutput(IO):
 
     def write_data(self, data):
         now = self._clock()
-        wall_time = self._timestamp_factory().astimezone()
+        wall_time = self._timestamp_factory().astimezone(timezone.utc)
         if (self._output is None or now >= self._next_rotation
                 or wall_time.date() != self._output_day):
             self._rotate(now, wall_time)

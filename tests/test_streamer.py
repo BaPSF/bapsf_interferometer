@@ -339,7 +339,7 @@ class NeverBlockTests(unittest.TestCase):
 class DirectOutputNameTests(unittest.TestCase):
 	def test_midnight_rotates_before_the_interval_expires(self):
 		with tempfile.TemporaryDirectory() as directory:
-			stamp = [datetime(2026, 11, 5, 23, 59, 59).astimezone()]
+			stamp = [datetime(2026, 11, 5, 23, 59, 59, tzinfo=timezone.utc)]
 			output = RotatingConsumerOutput(directory, "BP5", interval_seconds=3600,
 			                               clock=lambda: 0, timestamp_factory=lambda: stamp[0])
 			with mock.patch("streamer.consumer_output.ADIOS2_AVAILABLE", True), \
@@ -347,7 +347,7 @@ class DirectOutputNameTests(unittest.TestCase):
 				output.write_data({"a": np.arange(3)})
 				first = writer.return_value
 				self.assertTrue((Path(directory) / "20261105").is_dir())
-				stamp[0] = datetime(2026, 11, 6, 0, 0, 1).astimezone()
+				stamp[0] = datetime(2026, 11, 6, 0, 0, 1, tzinfo=timezone.utc)
 				output.write_data({"a": np.arange(3)})
 				first.close.assert_called_once()
 				self.assertTrue((Path(directory) / "20261106").is_dir())
