@@ -62,7 +62,7 @@ PING_INTERVAL_S = 30.0
 PING_TIMEOUT_S = 60.0  # a brief network hiccup keeps the viewer; a dead peer is dropped within PING_INTERVAL_S + this
 TREND_RATE_PER_S = 2.0  # /api/trend requests per client address; the page asks at most once per shot (3 s)
 TREND_BURST = 5
-LOG_LINES_PER_MIN = 30  # of uvicorn's own log, which has a line for every WebSocket accept and every 503
+LOG_LINES_PER_MIN = 30  # per throttled log: uvicorn's (a line for every WebSocket accept and every 503), refused /ws
 
 
 @dataclasses.dataclass(frozen=True)
@@ -349,7 +349,7 @@ class RateLimiter:
 
 
 class ThrottledLog(logging.Filter):
-	"""On uvicorn's logger: at most `per_minute` records below ERROR each minute, then a count of those dropped."""
+	"""On one logger: at most `per_minute` records below ERROR each minute, then a count of those dropped."""
 
 	def __init__(self, per_minute, clock=time.monotonic):
 		super().__init__()
@@ -362,7 +362,7 @@ class ThrottledLog(logging.Filter):
 		now = self._clock()
 		if now - self._start >= 60:
 			if self._dropped:
-				log.warning("%d lines of uvicorn's log dropped in %.0f s (limit %d a minute)", self._dropped,
+				log.warning("%d lines of the %s log dropped in %.0f s (limit %d a minute)", self._dropped, record.name,
 				            now - self._start, self.per_minute)
 			self._start, self._passed, self._dropped = now, 0, 0
 		if self._passed < self.per_minute:
@@ -370,6 +370,11 @@ class ThrottledLog(logging.Filter):
 			return True
 		self._dropped += 1
 		return False
+
+
+# uvicorn logs a refused /ws socket only as "[accepted]". Throttled, so a flood of refusals cannot fill the journal.
+_refused_log = log.getChild("refused")
+_refused_log.addFilter(ThrottledLog(LOG_LINES_PER_MIN))
 
 
 def _timed_h11_protocol():
@@ -479,10 +484,12 @@ def create_app(prefix, state_dir, monitor=monitor_ioc):
 	async def stream(websocket: WebSocket):
 		"""Never receives (D18). Ends when the browser leaves or a send takes over SEND_TIMEOUT_S; uvicorn then closes
 		the connection."""
-		with hub.admitted(_address(websocket)) as refusal, contextlib.suppress(WebSocketDisconnect, TimeoutError):
+		address = _address(websocket)
+		with hub.admitted(address) as refusal, contextlib.suppress(WebSocketDisconnect, TimeoutError):
 			# Accepted even when refused: only an accepted socket carries a close code and reason to the page.
 			await _within_send_timeout(websocket.accept())
 			if refusal is not None:
+				_refused_log.info("/ws from %s refused: %s", address, refusal)
 				await _within_send_timeout(websocket.close(TRY_AGAIN_LATER, refusal))
 				return
 			sent = None

@@ -151,7 +151,7 @@ class ThrottledLogTests(unittest.TestCase):
 		now[0] = 61.0
 		with self.assertLogs(web.log, logging.WARNING) as logged:
 			self.assertTrue(throttle.filter(info))
-		self.assertIn("2 lines of uvicorn's log dropped", logged.output[0])
+		self.assertIn("2 lines of the uvicorn.error log dropped", logged.output[0])
 
 
 @unittest.skipUnless(WEB, "needs the web extra (fastapi, uvicorn, websockets)")
@@ -181,6 +181,18 @@ class ServerLimitsTests(unittest.TestCase):
 					fourth.recv(timeout=10)
 				self.assertEqual(refused.exception.rcvd.code, 1013)
 				self.assertEqual(viewers(feed), 3)
+
+	def test_refused_socket_is_logged(self):
+		"""uvicorn's own line for it says only "[accepted]"."""
+		with running(MAX_VIEWERS=1, MAX_VIEWERS_PER_ADDRESS=10) as (port, feed):
+			url = f"ws://{HOST}:{port}/ws"
+			with connect(url, open_timeout=10) as first:
+				first.recv(timeout=10)
+				with self.assertLogs(web._refused_log, logging.INFO) as logged:
+					with connect(url, open_timeout=10) as second, self.assertRaises(ConnectionClosed):
+						second.recv(timeout=10)  # the log line comes before the close
+		self.assertEqual(len(logged.output), 1)
+		self.assertIn(f"/ws from {HOST} refused: the page already has 1 viewers", logged.output[0])
 
 	def test_http_beyond_max_connections_gets_503(self):
 		with running(MAX_CONNECTIONS=4) as (port, feed):
