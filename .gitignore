@@ -9,3 +9,8 @@ build/
 dist/
 interf_sim/log/
 *.egg-info/
+
+# Host config (docs/ARCHITECTURE.md D10, Public repository): never committed.
+*.local.conf
+*.local.env
+local/

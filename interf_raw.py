@@ -53,7 +53,9 @@ LECROY_N_CHANNELS = _env("LECROY_N_CHANNELS", 4)
 LECROY_RETRY_INTERVAL = _env("LECROY_RETRY_INTERVAL", 5.0)  # s between attempts while the LeCroy errors
 TRIGGER_TIMEOUT = _env("TRIGGER_TIMEOUT", 10.0)  # s; > 3 shot periods, so a timeout means a pause
 
-RIGOL_IP = _env("RIGOL_IP", "192.168.7.63")  # "": Rigol disabled, never contacted (missing["rigol"] says so)
+# "": Rigol disabled, never contacted (missing["rigol"] says so). The default is "" because the repository is public: the
+# lab's address is set in the host's acquire.env.
+RIGOL_IP = _env("RIGOL_IP", "")
 RIGOL_DISABLED = "disabled (RIGOL_IP empty)"
 RIGOL_REF_CH = _env("RIGOL_REF_CH", "C1")
 RIGOL_PLA_CH = _env("RIGOL_PLA_CH", "C2")

@@ -6,6 +6,7 @@ import json
 import logging
 import math
 import os
+import re
 import shutil
 import socket
 import subprocess
@@ -108,7 +109,7 @@ def raw_websocket(port, receive_buffer=None):
 
 
 class DecidedValuesTests(unittest.TestCase):
-	"""The numbers of D18 (J, 2026-11-06), and the unit's limits (proposal)."""
+	"""The numbers of D18 (J, 2026-11-06), and the units' placeholders."""
 
 	def test_limits(self):
 		self.assertEqual((web.MAX_VIEWERS, web.MAX_VIEWERS_PER_ADDRESS, web.TRY_AGAIN_LATER), (20, 3, 1013))
@@ -124,20 +125,17 @@ class DecidedValuesTests(unittest.TestCase):
 		self.assertEqual((settings["ws_ping_interval"], settings["ws_ping_timeout"]), (web.PING_INTERVAL_S, web.PING_TIMEOUT_S))
 		self.assertFalse(settings["access_log"])
 
-	def test_unit(self):
-		unit = (REPO / "deploy" / "systemd" / "interf-web.service").read_text(encoding="utf-8").splitlines()
-		for line in ("CPUQuota=10%", "MemoryMax=1G", "TasksMax=128", "LimitNOFILE=256", "IPAddressDeny=10.106.34.0/24",
-		             "NoNewPrivileges=yes", "ProtectSystem=strict", "ProtectHome=yes", "PrivateTmp=yes", "PrivateDevices=yes",
-		             "ProtectKernelTunables=yes", "ProtectKernelModules=yes", "ProtectKernelLogs=yes",
-		             "ProtectControlGroups=yes", "ProtectClock=yes", "ProtectHostname=yes", "ProtectProc=invisible",
-		             "ProcSubset=pid", "RestrictSUIDSGID=yes", "LockPersonality=yes", "RestrictNamespaces=yes",
-		             "RestrictRealtime=yes", "RemoveIPC=yes", "CapabilityBoundingSet=", "AmbientCapabilities=",
-		             "RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK", "SystemCallArchitectures=native",
-		             "SystemCallFilter=@system-service", "SystemCallErrorNumber=EPERM", "User=diag-ioc"):
-			self.assertIn(line, unit)
-		hidden = next(line for line in unit if line.startswith("InaccessiblePaths=")).split("=", 1)[1].split()
-		self.assertEqual(sorted(hidden), sorted(["-/etc/interferometer/acquire.env", "-/etc/diag-ioc",
-		                                         "-/var/lib/interferometer", "-/var/log/interferometer"]))
+	def test_units_hold_placeholders(self):
+		"""The repository is public: each host's drop-in holds the accounts and addresses. A unit installed without it
+		fails to start (an unknown User=) rather than run as root."""
+		units = sorted((REPO / "deploy" / "systemd").glob("*.service"))
+		self.assertEqual(len(units), 4)
+		for path in units:
+			text = path.read_text(encoding="utf-8")
+			lines = text.splitlines()
+			self.assertIn("User=site-dropin-missing", lines, path.name)
+			self.assertEqual([line for line in lines if line.startswith(("Group=", "SupplementaryGroups="))], [], path.name)
+			self.assertEqual(set(re.findall(r"\b\d{1,3}(?:\.\d{1,3}){3}\b", text)) - {"127.0.0.1"}, set(), path.name)
 
 
 class ThrottledLogTests(unittest.TestCase):

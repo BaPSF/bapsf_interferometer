@@ -9,7 +9,7 @@ Acquisition stops once it has the raw samples. It writes nothing to disk but its
 | Scope | Ports | Channels | Link |
 |---|---|---|---|
 | LeCroy (trigger master) | 20 (288 GHz), 29 (282 GHz) | C1/C2 = port 20 ref/plasma, C3/C4 = port 29 ref/plasma | VICP over TCP |
-| Rigol DHO804, `192.168.7.63` | 40 (288 GHz) | C1 = ref, C2 = plasma | SCPI, TCP port 5555; 12-bit WORD reads |
+| Rigol DHO804 | 40 (288 GHz) | C1 = ref, C2 = plasma | SCPI over TCP; 12-bit WORD reads |
 
 The LeCroy trigger-out is hard-wired to the Rigol trigger input, so the Rigol triggers on every LeCroy trigger.
 - The LeCroy is armed for one trigger per shot. It emits no further trigger-out until it is re-armed.
@@ -49,15 +49,14 @@ LECROY_IP=<address> python interf_main.py
 
 ## Configuration
 
-Each variable is read from the environment at startup; unset means the default. The first eleven rows are in [interf_main.py](../interf_main.py) (the `INTERF_RAW_OUTPUT_*` ones through `streamer.arguments.settings_from_env`), `INTERF_TRIG_LAG_MAX_S` in [interf_shot.py](../interf_shot.py), `INTERF_DATA_DIR` in [interf_store.py](../interf_store.py) (not acquisition), the rest in [interf_raw.py](../interf_raw.py). The time zone of trigger times and shot dates is always America/Los_Angeles, not a setting.
+Each variable is read from the environment at startup; unset means the default. The first ten rows are in [interf_main.py](../interf_main.py) (the `INTERF_RAW_OUTPUT_*` ones through `streamer.arguments.settings_from_env`), `INTERF_TRIG_LAG_MAX_S` in [interf_shot.py](../interf_shot.py), `INTERF_DATA_DIR` in [interf_store.py](../interf_store.py) (not acquisition), the rest in [interf_raw.py](../interf_raw.py). The time zone of trigger times and shot dates is always America/Los_Angeles, not a setting.
 
 | Variable | Default | Meaning |
 |---|---|---|
 | `INTERF_LOG_DIR` | `~/data/log` | Log directory |
 | `INTERF_IOC_LINK` | unset | `unix:/path` or `tcp:host:port` of a `diag_ioc` listener. When set, every shot is also sent there for live analysis; unset, acquisition runs exactly as before |
-| `INTERF_PNG_RUN_PV`, `INTERF_PNG_SHOT_PV` | unset | PNG's CA PVs, e.g. `PNG:RunNumber` and `PNG:ShotNumber`. With both set, acquisition monitors them with pyepics (the `clients` extra) and copies their latest values and timestamps into every shot (`RawShot.png`, the shot line, raw output's `png_*` scalars; D16). At start it waits at most 5 s for both first values, then goes on. If PNG's IOC is down, acquisition runs normally and shots keep the last values. If PNG's IOC is on another subnet, set `EPICS_CA_ADDR_LIST` to its address too. One of the two alone is logged and ignored |
-| `INTERF_RAW_OUTPUT` | unset | Raw output's destination (ADIOS, streamer's `RawOutput`, as `interf_sim --raw-output`; [streamer/README.md](../streamer/README.md) has the modes). The mode follows the destination, never the key: an existing directory or a path ending in `/` (e.g. `/var/lib/interferometer/raw/`) gets local timestamped files; a `.conf` launches a consumer over SSH; any other existing file is a connection file from a consumer started by hand; a path that does not exist is one ADIOS output (`-1`, `-2`, ... are added if it exists by the time it is opened again). The `.conf` and connection-file modes need `INTERF_RAW_OUTPUT_PRIVATE_KEY`; without it the start-up check fails and acquisition runs without raw output. Raw output never holds up acquisition (D17). Each start writes a timing log `raw_output_<YYYYMMDDTHHMMSS>.jsonl` in `INTERF_LOG_DIR`; it records `io.error` on every failed retry, and is not rotated. Unset, no raw output |
-| `INTERF_RAW_OUTPUT_PRIVATE_KEY` | unset | Curve25519 private key, for a `.conf` or connection-file destination; ignored for local files |
+| `INTERF_PNG_RUN_PV`, `INTERF_PNG_SHOT_PV` | unset | PNG's CA PVs, e.g. `PNG:RunNumber` and `PNG:ShotNumber`. With both set, acquisition monitors them with pyepics (the `clients` extra) and copies their latest values and timestamps into every shot (`RawShot.png`, the shot line, raw output's `png_*` scalars; D16). At start it waits at most 5 s for both first values, then goes on. If PNG's IOC is down, acquisition runs normally and shots keep the last values. One of the two alone is logged and ignored |
+| `INTERF_RAW_OUTPUT` | unset | Raw output's destination (ADIOS, streamer's `RawOutput`, as `interf_sim --raw-output`; [streamer/README.md](../streamer/README.md) has the modes). The mode follows the destination: an existing directory or a path ending in `/` (e.g. `/var/lib/interf-acquire/raw/`) gets local timestamped files; a `.conf` launches a remote consumer; any other existing file is a connection file from a consumer started by hand; a path that does not exist is one ADIOS output (`-1`, `-2`, ... are added if it exists by the time it is opened again). The `.conf` and connection-file modes need further `INTERF_RAW_OUTPUT_*` settings (streamer's README); if a start-up check fails, acquisition runs without raw output. Raw output never holds up acquisition (D17). Each start writes a timing log `raw_output_<YYYYMMDDTHHMMSS>.jsonl` in `INTERF_LOG_DIR`; it records `io.error` on every failed retry, and is not rotated. Unset, no raw output |
 | `INTERF_RAW_OUTPUT_COMPRESSION` | unset | Compression configuration for socket output, e.g. `streamer/conf/blosc2-zstd.conf` |
 | `INTERF_RAW_OUTPUT_BUFFER_S` | 60 s | Queue length in time (shots at 3 s each, about 12 MB a shot); a full queue drops a queued shot from raw output, and the count is logged at stop |
 | `INTERF_RAW_OUTPUT_FILE_S` | 3600 s | A directory destination starts a new file this often |
@@ -66,13 +65,13 @@ Each variable is read from the environment at startup; unset means the default. 
 | `INTERF_SHOT_STATE` | `~/data/state/shot_counter.json` | Shot counter state (date and last number). Keep it on a local disk and outside `INTERF_LOG_DIR`, whose rotated files are deleted. At start, counting resumes after the later of this file and the last shot line in `interf_acquire.log` and its newest rotated copy. An unreadable file is logged as a warning; only if the logs hold no shot either can a running day repeat numbers |
 | `INTERF_TRIG_LAG_MAX_S` | 5 s | Largest normal host time − trigger time; outside 0 to this, a clock problem is logged. 0 disables the check |
 | `INTERF_DATA_DIR` | `~/data/interferometer` | `interf_store`'s directory of the daily HDF5 files, created if missing; `interf-store.service` sets `/var/lib/interferometer/hdf5`. `--data-dir` overrides it |
-| `LECROY_IP` | `10.10.10.10` | **Placeholder; set it** |
+| `LECROY_IP` | a placeholder | **Set it** to the LeCroy's address |
 | `LECROY_CHANNELS` | `C1,C2,C3,C4` | Channels read, comma-separated. The first one carries the sweep counter used to detect a fresh capture. Each must be one of `C1` … `C<LECROY_N_CHANNELS>`; otherwise acquisition stops at startup with an error naming the bad entries, since a channel the scope lacks would cost a `LECROY_TIMEOUT` at every connection and every shot |
 | `LECROY_TIMEOUT` | 5 s | VICP socket timeout |
 | `LECROY_N_CHANNELS` | 4 | Input channels on the LeCroy: 2, 4 or 8 (anything else stops acquisition at startup). Passed to the driver so it skips its channel-count probe, which costs a full `LECROY_TIMEOUT` per connection on the HDO4104 |
 | `LECROY_RETRY_INTERVAL` | 5 s | Wait before retrying after a LeCroy error |
 | `TRIGGER_TIMEOUT` | 10 s | How long to wait for a trigger before logging a pause and retrying |
-| `RIGOL_IP`, `RIGOL_REF_CH`, `RIGOL_PLA_CH` | `192.168.7.63`, `C1`, `C2` | Rigol address and channels. `RIGOL_IP=` (empty) disables the Rigol: it is never contacted, and every shot has `missing["rigol"]` = `disabled (RIGOL_IP empty)`, so P40 is published as missing with that reason |
+| `RIGOL_IP`, `RIGOL_REF_CH`, `RIGOL_PLA_CH` | empty, `C1`, `C2` | Rigol address and channels; the lab's address is set in the host's `acquire.env`. `RIGOL_IP=` (empty) disables the Rigol: it is never contacted, and every shot has `missing["rigol"]` = `disabled (RIGOL_IP empty)`, so P40 is published as missing with that reason |
 | `RIGOL_RETRY_INTERVAL` | 100 shots | How long the Rigol is skipped after a connect, deadline, or read failure |
 | `RIGOL_CONNECT_TIMEOUT` | 1 s | TCP connect timeout |
 | `RIGOL_OPERATION_TIMEOUT` | 2.5 s | Hard deadline for one Rigol connect, stop, both channel reads, and run (and for `:RUN` on exit). Keep the Rigol at ≤ 1M points: a WORD read takes about 0.77 s per 1M-point channel |

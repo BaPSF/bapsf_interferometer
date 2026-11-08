@@ -1,10 +1,11 @@
-# Acquisition (interf_main.py) as a system unit, beside diag-ioc@interferometer. Install as root:
+# Acquisition (interf_main.py) as a system unit, beside diag-ioc@interferometer. Site settings: see diag-ioc@.service.
+# Install as root:
 #   cp deploy/systemd/interf-acquire.service /etc/systemd/system/
-#   install -d /etc/interferometer && cp deploy/systemd/acquire.env.example /etc/interferometer/acquire.env   # set LECROY_IP
-#   # stop any acquisition started by hand first (only one may talk to the scopes), then carry its shot counter over
-#   # so numbering continues: install -o lapd -g lapd -D -m 0644 \
-#   #   ~jia/data/state/shot_counter.json /var/lib/interferometer/shot_counter.json
-#   systemctl daemon-reload && systemctl enable --now interf-acquire
+#   install -D -m 0644 <the host's drop-in> /etc/systemd/system/interf-acquire.service.d/site.conf
+#   install -d /etc/interferometer && cp deploy/systemd/acquire.env.example /etc/interferometer/acquire.env   # set LECROY_IP and RIGOL_IP
+#   # stop the running acquisition first (only one may talk to the scopes), then copy its shot_counter.json to
+#   # /var/lib/interf-acquire/, owned by the unit's account, so numbering continues
+#   systemctl daemon-reload && systemctl enable --now interf-acquire   # enabled at boot, as are the other three units (D10)
 # Log: journalctl -u interf-acquire, and /var/log/interferometer/interf_acquire.log.
 [Unit]
 Description=Interferometer acquisition (interf_main)
@@ -15,17 +16,17 @@ Wants=network-online.target diag-ioc@interferometer.service
 
 [Service]
 Type=simple
-# lapd, the IOC's account (D10): the link socket (0660) needs no shared group.
-User=lapd
-Group=lapd
+# Placeholder; site.conf sets the account (see diag-ioc@.service).
+User=site-dropin-missing
 WorkingDirectory=/opt/bapsf_interferometer
 Environment=INTERF_IOC_LINK=unix:/run/diag-ioc/interferometer/link.sock
-# Not the account's ~/data: the log and the shot counter go to /var/log/interferometer and /var/lib/interferometer
-# (both local disk, the state outside the log directory, D14), the latter shared with interf-store.service.
+# Not the account's ~/data: the log and the shot counter go to /var/log/interferometer and /var/lib/interf-acquire
+# (both local disk, the state outside the log directory, D14). Not shared with interf-store.service: systemd re-owns a
+# state directory to its unit's User= at every start.
 Environment=INTERF_LOG_DIR=/var/log/interferometer
-Environment=INTERF_SHOT_STATE=/var/lib/interferometer/shot_counter.json
+Environment=INTERF_SHOT_STATE=/var/lib/interf-acquire/shot_counter.json
 LogsDirectory=interferometer
-StateDirectory=interferometer
+StateDirectory=interf-acquire
 Environment=PYTHONUNBUFFERED=1
 # LECROY_IP and the other acquisition settings (docs/ACQUISITION.md, Configuration); it can also override the lines above.
 EnvironmentFile=/etc/interferometer/acquire.env

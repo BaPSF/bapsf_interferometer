@@ -10,6 +10,8 @@ Status: **D1–D15 ACCEPTED by J on 2026-10-08, D16 on 2026-10-28, D17 on 2026-1
 `docs/HANDOFF_live_epics.md`. Every session (the local coding agent and `test-on-Bobby`) pulls the
 branch and reads both before any work. Copies elsewhere (the project's shared folder, an agent's memory) are not
 authoritative. Doc changes land only as commits by the local agent; other sessions send them as patch files.
+The repository is public: D10, Public repository, says what never goes into a commit. Security, account and network
+settings are not in these docs; J keeps them privately.
 
 ## 0. What existed at 32f40cc (before C4r)
 
@@ -38,9 +40,9 @@ the record timestamps are `host_time`. C4r (`4ee26b8`) replaced both, per D6, D1
 | D5 | Where analysis runs | In the IOC process, from raw shots over the link |
 | D6 | Live data contract | Independent of streamer; encoding beside `interf_main`, socket code in `diag_ioc` |
 | D7 | Per-shot consistency | One timestamp per shot, `SHOT:NUM` set last, PVA group `<P>:SHOT` |
-| D8 | Outside group | Read-only access to documented PVs; nothing built for them |
+| D8 | Outside group | Reads documented PVs; nothing built for them |
 | D9 | Source of record | ADIOS raw output; IOC-fed HDF5 is best effort |
-| D10 | Supervision | systemd system units: IOC, acquisition and HDF5 store as `lapd`, browser page as `diag-ioc` |
+| D10 | Supervision | systemd system units, enabled at boot |
 | D11 | Dependencies | Exact pins for `softioc`, `epicscorelibs`, `pvxslibs`, `p4p` |
 | D12 | Repo layout | `diag_ioc` stays here until a 2nd diagnostic exists |
 | D13 | Agent roles | Local agent writes code; `test-on-Bobby` tests every commit on Linux with real `.trc` data |
@@ -48,7 +50,7 @@ the record timestamps are `host_time`. C4r (`4ee26b8`) replaced both, per D6, D1
 | D15 | Shot time | LeCroy WAVEDESC trigger time (scope NTP-synced), float64 epoch seconds |
 | D16 | PNG run and shot | Optional CA monitor in `interf_main`, copied at capture detection, ADIOS only; readers match by `host_time` |
 | D17 | Raw output never holds up acquisition | streamer's writer thread opens, retries and drains; `write()` only queues |
-| D18 | Browser UI | `interf_web`: p4p subscriber on `<P>:SHOT` + FastAPI WebSocket, read-only, per-shot density vs time first |
+| D18 | Browser UI | `interf_web`: p4p subscriber on `<P>:SHOT` + FastAPI WebSocket, per-shot density vs time first |
 
 ### D1. IOC technology: pythonSoftIOC
 - A real EPICS 7 IOC (standard records, alarms, devIocStats, CA + PVA) with the analysis in the same process,
@@ -76,8 +78,7 @@ the record timestamps are `host_time`. C4r (`4ee26b8`) replaced both, per D6, D1
   interferometer, its own 31 plus the host's 9 `STAT:*`/`SHOT:ACK` records. The `<P>:IOC:*` records are not in it:
   softioc's `devIocStats()` loads them from its own template, outside the builder, and they are the standard
   devIocStats set, so a copy in the `.db` would add nothing. It goes in
-  `[ioc] db_dir` (default: the config file's directory). The IOC runs as non-root (D10) and cannot write
-  `/etc/diag-ioc`, so the systemd unit points it at its state directory.
+  `[ioc] db_dir` (default: the config file's directory); the systemd unit points it at its state directory.
 - Lifetime: PVs exist while the IOC runs. After a crash, systemd restarts it within about 5 s and the data PVs are
   INVALID until the next shot. When acquisition stops, PVs keep the last shot and `STAT:STALE` goes MAJOR.
   Copies that survive our restarts are a consumer's own IOC with CA links.
@@ -127,8 +128,7 @@ shot after an IOC start resets its baseline: a restart shows only as a gap in `S
   `interf_store` and other clients only consume results. Offline, `analyze_shot()` re-runs the same analysis on
   the ADIOS raw output.
 - Keeps acquisition's critical path to scope I/O only. Analysis can crash or restart without touching
-  acquisition. The cost is about 12 MB per shot over a local socket. Acquisition and the IOC share a host (unix
-  socket) or use an allow-listed loopback TCP link, since the link is unauthenticated.
+  acquisition. The cost is about 12 MB per shot over a local socket. Acquisition and the IOC share a host.
 - Rejected: a separate analysis process writing into an IOC (loses the single atomic update, needs write access).
 - `analyze()` stays pure and picklable, so a process pool can be added later without touching modules.
 
@@ -138,8 +138,8 @@ shot after an IOC start resets its baseline: a restart shows only as a gap in `S
 - Interferometer side, beside `interf_main` (e.g. `interf_payload.py`): the encoder from `RawShot` to the link
   message (`lecroy_*`, `rigol_*` arrays) and its decoder for the IOC module. Copied from `streamer/payload.py`,
   not imported.
-- Generic side, in `diag_ioc`: `IocLink`, `LinkListener`, and its own framing copy (JSON header + raw arrays, no
-  compression or auth), plus its own `ipv4_network`/allow-list helpers in place of `streamer.network_access`.
+- Generic side, in `diag_ioc`: `IocLink`, `LinkListener`, and its own framing copy (JSON header + raw arrays), plus its
+  own address helpers in place of `streamer.network_access`.
 - Every message starts with a common envelope: `schema_version`, `shot_date`, `shot_number`, `shot_time`,
   `time_source`, `host_time`, `critical_path_s`, `missing_json`, then the diagnostic arrays. A layout change bumps
   `schema_version`, and the decoder rejects unknown versions. The link carries raw samples, so live and offline
@@ -155,7 +155,7 @@ shot after an IOC start resets its baseline: a restart shows only as a gap in `S
   thread. If shot N's chain is still running when shot N+1 is set, chain N publishes a mix of both (reproduced
   in-IOC, and silent). Fix, owned by the `diag_ioc` host so that every module gets it:
   - `SHOT:ACK` = `longOut(OMSL="closed_loop", DOL="<P>:STAT:PUBLISHED", DISP=1, always_update=True, on_update=…)`,
-    FLNK'd from the chain's last record. DOL has no PP, so it reads the stored value. DISP=1 blocks CA puts.
+    FLNK'd from the chain's last record. DOL has no PP, so it reads the stored value.
   - The host increments and sets `STAT:PUBLISHED` just before each `publish()`. Before the next shot, it waits until
     the ack equals the last published count. The wait times out at 2 s, then logs, increments
     `STAT:ACK_TIMEOUTS` and proceeds.
@@ -170,16 +170,12 @@ shot after an IOC start resets its baseline: a restart shows only as a gap in `S
 - Missing data is published as an empty array with INVALID alarm, the port's own reason in `<port>:MISSING` and
   every reason of the shot in `SHOT:MISSING` (cut at 1023 bytes), never as fabricated zeros.
 
-### D8. The outside group is a read-only client
-- Read access to the D4 PVs over CA/PVA, nothing else: no write access, no code or design changes for them, no
-  maintenance owed. Their suggestions are input, not requirements.
-- Enforce with an access-security file that makes every record read-only, installed through
-  `imports.install_pv_logging(acf_path)` before `iocInit` (softioc 4.7.2). Verify that it also covers
-  PVA/QSRV2. If they are on another subnet, put a CA/PVA gateway in front.
-- Phoebus runs on the IOC's own Linux machine (J, 2026-10-08), so our displays need no network access to the IOC.
-- Planned, not in C5: making `CFG:NE_WINDOW_MS` adjustable from the Phoebus screen (J). The access file would then grant
-  writes to that one record from the IOC machine only, and the new window would apply from the next shot. Until then
-  the window is changed in the config, followed by an IOC restart.
+### D8. The outside group is a client
+- They read the D4 PVs over CA/PVA, nothing else: no code or design changes for them, no maintenance owed. Their
+  suggestions are input, not requirements.
+- Phoebus runs on the IOC's own Linux machine (J, 2026-10-08).
+- Planned, not in C5: making `CFG:NE_WINDOW_MS` adjustable from the Phoebus screen (J); the new window would apply from
+  the next shot. Until then the window is changed in the config, followed by an IOC restart.
 
 ### D9. Source of record
 - The live path is latest-wins, so the IOC-fed HDF5 store (C6, `interf_store`) can miss shots. It stays a
@@ -205,7 +201,7 @@ shot after an IOC start resets its baseline: a restart shows only as a gap in `S
 - As built (C6): a missing port's reason is its own `<port>:MISSING` group field (`missing_reason` on P20 and P29,
   `rigol_missing_reason` on P40). An update with `date` or `timeStamp` 0 is the IOC's state before its first shot after
   a start, not a shot, and is skipped; a duplicate after a reconnect is skipped and counted. On SIGTERM or SIGINT it
-  drains the queue and logs a summary. `interf-store.service` runs it as `lapd` (D10) with
+  drains the queue and logs a summary. `interf-store.service` (D10) runs it with
   `INTERF_DATA_DIR=/var/lib/interferometer/hdf5`; without the variable the directory is `~/data/interferometer`.
 - The ADIOS raw output is the record. Anything analyzed can be regenerated with `analyze_shot` over
   `interf_raw_reader.iter_steps` (our reader; streamer only writes raw output). ADIOS carries no D14 fields. A raw output shot is identified by its shot time, recomputed
@@ -216,48 +212,54 @@ shot after an IOC start resets its baseline: a restart shows only as a gap in `S
   `deploy/systemd/interf-acquire.service`, acquisition. Install steps are in each unit's header.
 - The third unit (J, 2026-10-18): `deploy/systemd/interf-store.service`, the HDF5 store (C6, D9).
 - The fourth unit: `deploy/systemd/interf-web.service`, the browser page (D18).
-- Accounts (J, 2026-11-06): the IOC, acquisition and the store run as `lapd`, the lab's operator account, so operators
-  can refresh the NERSC key daily. `interf-web` alone runs as the system account `diag-ioc` (no login): it needs neither
-  the key nor sudo, nor the link socket or `/var/lib/interferometer`. Never root, and never `softioc`, the account of
-  the old procServ IOC. Sharing `lapd`, the IOC and acquisition need no group for the 0660 link socket (in the 0750
-  `/run/diag-ioc/<name>`), and acquisition and the store share `/var/lib/interferometer`. As root, EPICS locks all memory
-  in RAM (about 316 MiB vs 62 MiB idle in the bench). Until 2026-11-06 all units ran as `diag-ioc`; systemd re-owns a
-  unit's `StateDirectory`, `LogsDirectory` and `RuntimeDirectory` to its new `User=` at the next start.
-- Paths: code in `/opt/bapsf_interferometer` (root-owned, with its venv), the operation checkout, tracking
+- Paths: code in `/opt/bapsf_interferometer` (with its venv), the operation checkout, tracking
   `refactor/linux-epics-daq`; Bobby's `~jia/code/bapsf_interferometer` is a separate test clone. Config in `/etc/diag-ioc/<name>.toml`
   (+ optional `<name>.env` for `EPICS_*`) and `/etc/interferometer/acquire.env`, `db_dir` `/var/lib/diag-ioc`, link
   socket `/run/diag-ioc/<name>/link.sock`, acquisition log `/var/log/interferometer`, shot counter
-  `/var/lib/interferometer/shot_counter.json` (copied once from `~jia/data/state`, so numbering continues), HDF5 files
-  `/var/lib/interferometer/hdf5` (`INTERF_DATA_DIR`; systemd makes the state directory 0755 and the files come out 0644,
-  so every local user reads them and only `lapd` writes), store overrides `/etc/interferometer/store.env`, `interf_web`
-  history files `/var/lib/interf-web` (`INTERF_WEB_STATE_DIR`), its overrides `/etc/interferometer/web.env`. Logs also
-  go to the journal.
+  `/var/lib/interf-acquire/shot_counter.json` (copied once from where acquisition kept it, so numbering continues:
+  `/var/lib/interferometer` on Bobby, `~jia/data/state` on a new machine), local raw output, if any, under
+  `/var/lib/interf-acquire/raw/`, HDF5 files `/var/lib/interferometer/hdf5` (`INTERF_DATA_DIR`), store overrides
+  `/etc/interferometer/store.env`, `interf_web` history files `/var/lib/interf-web` (`INTERF_WEB_STATE_DIR`), its
+  overrides `/etc/interferometer/web.env`. Logs also go to the journal. Acquisition and the store have separate state
+  directories.
+- Public repository (J, 2026-11-08): the repository is public and its history stays as it is (no rewrite). Nothing that
+  works like a password or narrows an attack goes into a commit: ntfy topic names or tokens, keys and certificates,
+  public IP allowlists, and collaborators' home paths. They live only in untracked config on the host:
+  `/etc/interferometer/*.env`, `/etc/diag-ioc/*.env`, and the raw output stream `.conf` in the operator's home (for
+  example `~lapd/nersc-stream/stream.conf`). Committed files carry placeholders or `.example` copies, as
+  `deploy/systemd/acquire.env.example` does. Lab-internal 10.x addresses and account names may stay in the docs and
+  units, since nothing outside the lab can reach them. The ntfy topics already in history are retired and replaced on
+  the host, not removed from history. `.gitignore` excludes `*.local.conf`, `*.local.env` and any `local/` directory.
+- Site settings (J, 2026-11-08), stricter than that rule: the units carry no accounts or addresses. Each host adds a
+  drop-in, `/etc/systemd/system/<unit>.d/site.conf`, kept privately; a unit installed without it fails to start (its
+  placeholder `User=` names no account). The Rigol's address is set in the host's `acquire.env` (code default: the
+  Rigol disabled).
 - Ordering: `interf-acquire` has `Wants=` and `After=` on `diag-ioc@interferometer` (and `network-online.target`), never
   `Requires=`/`BindsTo=`/`PartOf=`, so an IOC stop or crash never stops acquisition (D5). `After=` orders process starts,
   not readiness: the IOC listens about 1.3 s after it starts, and the link's retry covers the gap. `interf-store` has
   only `After=` on the IOC (no `Wants=`, never `Requires=`/`BindsTo=`/`PartOf=`), so it never starts or stops the IOC;
-  p4p reconnects to the group by itself. `interf-web` has the same single `After=` and no `network-online.target`: if its
-  address is not up at boot, the bind fails and `Restart=` retries.
+  p4p reconnects to the group by itself. `interf-web` has the same single `After=` and no `network-online.target`: if it
+  cannot start at boot, `Restart=` retries.
+- Start at boot (J, 2026-11-08): all four units are enabled, so the system recovers unattended after a power cut:
+  `systemctl enable diag-ioc@interferometer interf-acquire interf-store interf-web`. Bobby's firmware must be set to
+  power on after AC loss. Raw output whose local checks fail at start (`interf_main._start_raw_output`, D17) stays off
+  until acquisition restarts; acquisition itself runs.
 - Restart: the IOC, the store and the page `always`, acquisition `on-failure`, all 5 s apart; acquisition gets 30 s to
   stop, so SIGTERM can finish the shot in flight and restore the trigger modes, the store 30 s to drain its queue (its
   writer gets 20 s, so the summary is logged before SIGKILL), and the page 30 s (open sockets get 5 s).
 - The prefix `LAPD:DIAG:INTERF` appears in the store and web units' `ExecStart` (`--prefix`) only, never in code or tests (D4).
-- EPICS ports: the default CA 5064 and PVA 5075. The old procServ IOC (prefix `Interferometer:Port31:`) that used them
-  was removed from the lab machine by its admin on 2026-10-11. If a second IOC runs on that host again, clients there,
-  Phoebus included, must search the broadcast address, not unicast `127.0.0.1`, or only one IOC answers.
 - Evidence (`test-on-Bobby`, lab machine, systemd 257, the 55-shot replay in place of acquisition): as `systemctl --user`
   units, 9 of 9 checks passed on 2026-10-11 (restart policy, ordering, clean stops, link recovery). As these system
-  units, all checks passed on 2026-10-12: both run as `diag-ioc`, the socket and `/var` directories have the right
-  owner and modes, `diag-ioc` can read the `.trc` data, a full replay (sent 55, dropped 0, failed 0; `SHOT:LOST`,
+  units, all checks passed on 2026-10-12: a full replay (sent 55, dropped 0, failed 0; `SHOT:LOST`,
   `STAT:DROPPED`, `STAT:ACK_TIMEOUTS` 0), and an IOC SIGKILL mid-replay with restart and link recovery. The replay
-  does not exercise acquisition's `/var/log` and `/var/lib` paths; the first live run does. The store and web units are
-  not yet tried on the lab machine.
+  does not exercise acquisition's `/var/log` and `/var/lib` paths; the first live run does. The store unit is not yet
+  tried on the lab machine; the web unit was on 2026-11-06 (D18, Evidence).
 
 ### D11. Pin the EPICS stack
 - Exact versions of `softioc`, `epicscorelibs`, `pvxslibs` and (for C6) `p4p` in a constraints file (pyproject's `softioc>=4.7.2` is only a
   floor). Upgrades are deliberate and tested. The same file pins `blosc2` (the `compression` extra, as installed in
-  `/opt/bapsf_interferometer/.venv`) and `interf_web`'s web stack (D18), which has run on the lab machine by hand but
-  not as its unit.
+  `/opt/bapsf_interferometer/.venv`) and `interf_web`'s web stack (D18), which has run on the lab machine as its unit
+  (2026-11-06).
 
 ### D12. Repo layout
 - `diag_ioc/` stays in this repo until a second diagnostic exists, then becomes its own package with modules
@@ -368,13 +370,12 @@ shot after an IOC start resets its baseline: a restart shows only as a gap in `S
   1. `RawOutput.write(shot)` assigns `shot_index`, records the `raw_output.write` timing event and queues the shot
      object itself. `shot_variables` runs on the writer thread; `RawShot` arrays are fresh per acquisition and never
      changed afterwards. `write()` raises only after `close()`.
-  2. `RawOutput(settings)` makes only fast local checks (settings values, the private key, the compression
-     configuration, ADIOS2 for direct output) and starts the writer thread. Opening, connecting and launching all run
-     on that thread while shots queue. The mode follows the destination, never the key (J, 2026-10-30): an existing
-     directory or a path ending in `/` is direct ADIOS to local files, even with a key; a `.conf` is the SSH-launched
-     consumer; any other existing file is a connection file from a consumer started by hand; a path that does not
-     exist is one direct ADIOS output. The `.conf` and connection-file modes need the private key, and a missing key
-     (or a file that holds no connection information) fails the start-up check. All modes stay available to
+  2. `RawOutput(settings)` makes only fast local checks (settings values, the compression configuration, ADIOS2 for
+     direct output; streamer's README has the rest) and starts the writer thread. Opening, connecting and launching all
+     run on that thread while shots queue. The mode follows the destination (J, 2026-10-30): an existing directory or a
+     path ending in `/` is direct ADIOS to local files; a `.conf` is a launched remote consumer; any other existing file
+     is a connection file from a consumer started by hand; a path that does not exist is one direct ADIOS output. A
+     connection file that holds no connection information fails the start-up check. All modes stay available to
      `interf_main` and `interf_sim`.
   3. The writer never dies. On any error from opening or writing an output it records `io.error`, closes or aborts
      that output, waits `retry_delay_seconds` (3 s), opens a new one the same way (re-reading the connection file,
@@ -409,21 +410,18 @@ shot after an IOC start resets its baseline: a restart shows only as a gap in `S
   of continuous running).
 
 ### D18. Browser UI: `interf_web` (J, design chosen 2026-11-05)
-- **Goal:** anyone on the lab network opens `http://10.97.106.103:8080/` in a browser, with nothing installed, and
-  sees each shot's density vs time for every port in real time. NE_MEAN now and its history are a bonus on top. The
-  page is read-only.
+- **Goal:** anyone in the lab opens the page in a browser, with nothing installed, and sees each shot's density vs time
+  for every port in real time. NE_MEAN now and its history are a bonus on top. The page only displays.
 - **Why not Phoebus Web Runtime (DBWR) or pvws:** both need Java and Tomcat on Bobby, update each PV on its own (a
   plot can mix two shots), throttle arrays to one per 10 s by default, and a trend would need an EPICS archiver. A
   small Python app reuses the stack `interf_store` already proves (D9).
 - **Process:** the `interf_web` package at the repo root (`python -m interf_web`), its own process like `interf_store` (D9): nothing in `interf_main`,
-  `interf_raw`, the IOC or `interf_store` imports it, calls it or waits on it. It runs as `interf-web.service`, as
-  `diag-ioc`, the only unit not run as `lapd` (D10). New dependencies in the `web` extra: `fastapi`, `uvicorn` and `websockets` (uvicorn alone has
+  `interf_raw`, the IOC or `interf_store` imports it, calls it or waits on it. It runs as `interf-web.service` (D10). New dependencies in the `web` extra: `fastapi`, `uvicorn` and `websockets` (uvicorn alone has
   no WebSocket support). All three and `starlette` are pinned (D11), because `/ws` relies on how they report a browser
   that left. The page is `interf_web/static/index.html` with `uPlot.iife.min.js` and `uPlot.min.css` (uPlot 1.6.30, MIT)
-  vendored next to it and packaged with it, because the lab network may have no internet. No JavaScript framework and
+  vendored next to it and packaged with it, so the page loads nothing from the internet. No JavaScript framework and
   no build step.
-- **Data in:** a p4p monitor on `<P>:SHOT` (`p4p.client.thread.Context("pva")`, `notify_disconnect=True`), with
-  `EPICS_PVA_ADDR_LIST=127.0.0.1` and `EPICS_PVA_AUTO_ADDR_LIST=NO`. pvRequest
+- **Data in:** a p4p monitor on `<P>:SHOT` (`p4p.client.thread.Context("pva")`, `notify_disconnect=True`). pvRequest
   `field(timeStamp,num,date,host_time,missing,<port>.time_array,<port>.ne,<port>.ne_mean,<port>.missing)` for the
   configured ports (lower-case, as in `interf_ioc._add_group`); phase is not needed. QSRV2 honours the field selection
   (on Bobby, 62.8 kB per shot against 94.2 kB for the whole group). A second monitor on `<P>:CFG:NE_WINDOW_MS` feeds the shaded window,
@@ -437,61 +435,16 @@ shot after an IOC start resets its baseline: a restart shows only as a gap in `S
   A status text frame follows each shot and goes out at least once a second: Bobby's time, the newest shot's age, whether
   the page is waiting, the LA midnights of today and yesterday, and the NE_MEAN window. Sending it is also how a server
   that never reads notices a browser that left.
-  The server never reads from the socket, has no route that writes and no p4p `put`; with D8's read-only ACF that makes
-  the page read-only at every layer (POST, PUT and DELETE get 405; `/docs` and `/openapi.json` 404). No login.
-- **Limits (J, 2026-11-06; constants in `interf_web/__main__.py`):** the page is for about 20 viewers and shares Bobby's
-  CPU with acquisition. Bobby found no connection limit, an idle connection that never sent a request open for over an
-  hour, and `/api/trend` unlimited.
-  - At most 20 open `/ws` sockets (`MAX_VIEWERS`), and 3 from one client address; more are accepted and closed at once
-    with code 1013 and a reason the page shows. uvicorn's `limit_concurrency` is 80, 4 per viewer: it counts every open
-    connection, `/ws` and idle keep-alive ones included, and a viewer holds 2 (its `/ws`, and its trend connection,
-    reused every few seconds on the 1 h range) plus the 2-3 its browser opens to load the page. At 40, 20 viewers alone
-    filled it and every trend request got 503. An HTTP request beyond it gets 503. uvicorn does not apply that limit
-    to a WebSocket upgrade, hence the `/ws` caps in the app.
-  - A connection whose next request has not fully arrived 30 s after it opened or after its last response is closed:
-    uvicorn's keep-alive timer, which in uvicorn 0.54 starts only after a response and stops at any byte, is started
-    at connect and kept running until the headers are complete (a small subclass of its h11 protocol). Proposal:
-    `TCP_USER_TIMEOUT` 90 s (Linux), so the kernel drops a connection whose sent data stays unacknowledged.
-  - A `/ws` send that takes over 30 s ends that socket, so a browser that stopped reading frees its slot. Incoming
-    WebSocket messages are limited to 4 kB (the page sends none). Ping every 30 s with a 60 s timeout: a dead peer goes
-    within 90 s, a brief network hiccup does not drop a viewer.
-  - No session limit and no idle logout: a viewer whose tab is visible and still reading frames stays for days, and
-    mouse or keyboard activity is never needed. A window left in front on a screen nobody watches stays live too;
-    with a cap of 20 that should be rare.
-  - `/api/trend` is limited to 2 requests a second per client address, in bursts of up to 5; more get 429. Measured on
-    the development PC (Windows, Python 3.14, numpy 2.5, Intel x86-64 family 6 model 158) over a full two-day history
-    (57,600 rows, synthetic), one request costs 1.9 ms (1 h) to 8.3 ms (48 h) for `trend()` plus about 8 ms for its
-    216 kB JSON body. A page asks at most once per shot (3 s) and once per trend bucket, so 20 viewers on the 1 h range
-    (one request every 2 shots) cost about 0.03 s of CPU per second; 20 asking every shot for 48 h would cost about
-    0.1 s, the whole of the unit's `CPUQuota` of 10% of one core (J, 2026-11-06: Bobby may host other applications
-    later). Over the quota the kernel slows the page (frames and plots arrive late, start takes longer); acquisition
-    is a separate unit and unaffected. Not yet measured on Bobby.
-  - uvicorn logs every WebSocket accept and every 503 at INFO or WARNING: its log passes 30 lines a minute below ERROR,
-    then one line with the count dropped.
-  - The unit (proposal, sized for 80 connections; the list with its reasons is `deploy/systemd/interf-web.service`,
-    and `test_unit` pins it): CPU, memory, task and file limits, and a systemd sandbox. With 1-2 browsers Bobby measured
-    about 150 MB and 11 s of CPU per hour. Not used: `MemoryDenyWriteExecute`, which can stop libraries loaded through
-    ctypes or libffi. If the unit fails to start or the page shows no data, `ProcSubset` (still untested, see Evidence)
-    is the first to remove, then `SystemCallFilter` and `RestrictAddressFamilies`. With `SystemCallErrorNumber=EPERM` a
-    blocked call fails instead of killing the process, and a compiled library may take that quietly, so a clean
-    journal alone does not show the sandbox is harmless.
-  - Why (Bobby, `systemd-analyze security` 9.2 "UNSAFE" before these): code run through a bug in the web stack runs as
-    `diag-ioc`. `IPAddressDeny` keeps it off the scope network. `ProtectSystem=strict` makes files read-only, not
-    unreadable, so `InaccessiblePaths=` hides `/etc/interferometer/acquire.env`, `/etc/diag-ioc`,
-    `/var/lib/interferometer` (the HDF5 files) and `/var/log/interferometer`, which the page never needs. The new
-    score is not yet measured on Bobby.
+- **Capacity (J, 2026-11-06):** the page is for about 20 viewers and shares Bobby's CPU with acquisition, which is a
+  separate unit. Its limits are constants in `interf_web/__main__.py`, kept with their reasons there.
 - **Page connection (`static/session.js`):** one WebSocket for the life of the page, never reopened. When it closes for
-  any reason (network, server restart, a cap, a timeout, or no status frame for 60 s while the tab is visible), a banner
+  any reason (server restart, the server closing it, or no status frame for 60 s while the tab is visible), a banner
   says "Disconnected - reload the page to reconnect", with the server's close reason if it gave one, and the last plot
   stays on screen. A tab hidden or minimized for 15 min (`HIDDEN_PAUSE_MS`, the browser's visibility event) closes its
   socket and says "Paused - reload to resume"; it is cancelled if the tab comes back first. A reload opens a fresh
   socket and refills the history. Tests: `tests/test_interf_web.py`, the page's part in node.
-- **Network:** uvicorn binds to `10.97.106.103` only, never `0.0.0.0` (`enp2s0` is the scope network), set by
-  `INTERF_WEB_HOST` in the unit; the code's default is `127.0.0.1`. Port 8080 (`INTERF_WEB_PORT`) for
-  now (J's plain-HTTP test from another lab PC passed on 2026-11-05). For now there is no host firewall rule for the
-  page (J, 2026-11-05): the network's login firewall controls access, and the lab PCs are not all on `10.97.106.0/24`.
-  The main risk is overload, since the page shares Bobby's CPU with acquisition, so the unit stays stopped until the
-  limits below are tested on Bobby. A WebSocket from another PC is still to be checked.
+- **Address:** `INTERF_WEB_HOST` and `INTERF_WEB_PORT`, set in the host's drop-in (D10); the code's default is
+  `127.0.0.1:8080`. The unit is not yet enabled.
 - **Page, main view (most important; mirrors main's `interf_GUI.py` / `interf_plot.py`):** one plot of density vs
   time for P20, P29 and P40 (x `Time (ms)`, y `ne (10^18 m^-3)`, title "Density assuming 40cm plasma Dia"), colours as
   main (P20 red, P29 blue, P40 green), shot ID (`shot_date-shot_number`) and time above it. Controls: Pause (freezes the
@@ -518,14 +471,11 @@ shot after an IOC start resets its baseline: a restart shows only as a gap in `S
   open today's HDF5 file: `interf_store` opens it once per shot without SWMR, and a failed open drops that shot.
   `GET /api/trend?start=&end=&points=` (points 1 to 5000) returns min, max and mean per time bucket, only for buckets
   holding a shot. The page asks for it at most once per bucket width, and not while its tab is hidden.
-- **Evidence:** a hand test on Bobby on `127.0.0.1:8081`, not the unit: QSRV2 honoured the field selection (Data in),
-  latency was about 0.2 s, and `CFG:NE_WINDOW_MS` read `[5, 10]`. Bobby's kernel is 6.12.115 (Debian 13, systemd
-  257), recent enough for `TCP_USER_TIMEOUT` to drop a browser that stops reading. In a temporary sandbox under
-  Bobby's own account (not the unit; the code before the `MAX_CONNECTIONS` and `CPUQuota` changes), with
-  `SystemCallFilter=@system-service` on its default kill action, importing `interf_web`, a read-only PVA read of the
-  live group and a 2 s server on `127.0.0.1` all completed. Still untried: the unit itself, so `ProcSubset=pid`
-  (systemd ignores it outside a system unit; reads by compiled libraries not checked, no strace), the WebSocket to a
-  browser under the filter, access through the network's login firewall, and the WebSocket from another PC.
+- **Evidence:** a hand test on Bobby, not the unit: QSRV2 honoured the field selection (Data in), latency was about
+  0.2 s, and `CFG:NE_WINDOW_MS` read `[5, 10]`. The unit itself (`test-on-Bobby`, 2026-11-06, from the operation
+  checkout): history loaded with 0 lines skipped, and `/ws` delivered shots about 0.2 s after each shot. Full suite in a
+  venv with the web packages: 210 passed, 11 skipped (5 need node, 6 need `.trc` files); `PageSessionTests`
+  (`session.js`) were not run, as Bobby has no node. Still untried: the page from another lab PC.
 
 ## 2. Open
 
@@ -534,7 +484,7 @@ shot after an IOC start resets its baseline: a restart shows only as a gap in `S
   slightly. Proposed: `interf_store` saves each port's `ne_mean` (already in the group) as an attribute on that shot's
   phase dataset. Until J decides, the history covers only what `interf_web` saw itself.
 - D18, for J: does the browser UI replace the C7 Phoebus screens, or sit beside them?
-- D18: the final port (8080 worked in the test).
+- D18: the final port.
 - Closed 2026-10-18: empty P40 arrays (D9). The main-branch writer has stored empty P40 arrays with
   `rigol_missing=True` since `33ca795` (2026-05-12), so the store's empty arrays match the legacy files; only files
   from before then hold zero-filled placeholders.
@@ -546,7 +496,7 @@ Commit labels and file-level specs are in `HANDOFF_live_epics.md`.
 Done: C4r (`4ee26b8`: streamer restored, live link decoupled, shot identity and trigger time), the link socket lock
 (`ebb0b9f`), C4s (`465b76a`: the shot counter's file write off the acquisition thread, start-up recovery from the
 acquisition log; D14) and C5 (`b8ecf40`: `interf_ioc.py` per D2, D4, D5, D7, the host's `SHOT:ACK` wait, `<name>.db`
-at start, the read-only ACF of D8 and the constraints file of D11). C5's first push, `5928659`, was reverted by
+at start and the constraints file of D11). C5's first push, `5928659`, was reverted by
 `3b3e143` before review. `test-on-Bobby` tested C4s and C5 (119 of 119 tests including PVA; the C5 scenario on 55
 recorded shots with an IOC SIGKILL and restart mid-run). C6 (`442c405`: `interf_store` per D9, `<port>:MISSING`,
 `interf-store.service` per D10): on Bobby its suite ran 143 of 150 passed, 6 skipped, and 1 failed from a test bug in

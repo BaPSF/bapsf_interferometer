@@ -1,12 +1,13 @@
 # The HDF5 store (interf_store) as a system unit, beside diag-ioc@interferometer: monitors the IOC's PVA group
 # <prefix>:SHOT and writes the daily files. Its own process: acquisition and the IOC never wait on it (D9).
+# Site settings: see diag-ioc@.service.
 # Install as root, after diag-ioc@.service's steps (/opt/bapsf_interferometer and its venv; its clients extra brings p4p):
 #   cp deploy/systemd/interf-store.service /etc/systemd/system/
+#   install -D -m 0644 <the host's drop-in> /etc/systemd/system/interf-store.service.d/site.conf
 #   # optional: /etc/interferometer/store.env for EPICS_PVA_* and overrides (e.g. INTERF_DATA_DIR)
-#   systemctl daemon-reload && systemctl enable --now interf-store
-# Log: journalctl -u interf-store. Files: /var/lib/interferometer/hdf5/interferometer_data_YYYY-MM-DD.hdf5. systemd
-# creates the state directory 0755 and interf_store the hdf5 subdirectory; with the default umask both are 0755 and
-# the files 0644, so every local user can read them and only lapd can write.
+#   systemctl daemon-reload && systemctl enable --now interf-store   # enabled at boot, as are the other three units (D10)
+# Log: journalctl -u interf-store. Files: /var/lib/interferometer/hdf5/interferometer_data_YYYY-MM-DD.hdf5
+# (interf_store creates the hdf5 subdirectory).
 [Unit]
 Description=Interferometer HDF5 store (interf_store, PVA client of diag-ioc@interferometer)
 After=network-online.target diag-ioc@interferometer.service
@@ -16,11 +17,11 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-# lapd, the account of the IOC and acquisition (D10).
-User=lapd
-Group=lapd
+# Placeholder; site.conf sets the account (see diag-ioc@.service).
+User=site-dropin-missing
 WorkingDirectory=/opt/bapsf_interferometer
-# /var/lib/interferometer, shared with interf-acquire.service (its shot counter); the files go in its hdf5 subdirectory.
+# /var/lib/interferometer, the store's alone (acquisition has /var/lib/interf-acquire); the files go in its hdf5
+# subdirectory.
 StateDirectory=interferometer
 Environment=INTERF_DATA_DIR=/var/lib/interferometer/hdf5
 Environment=PYTHONUNBUFFERED=1

@@ -6,7 +6,7 @@ only the methods interf_raw calls that would reach the scope, so decoding and va
 driver's own; any other call that reaches the transport raises SimFault.
 
 What a run cannot show:
-- No Rigol: every Rigol connection fails, so every shot has missing["rigol"].
+- No Rigol: every shot has missing["rigol"] (disabled with RIGOL_IP unset; with it set, every connection fails).
 - Transfers cost only the file read, so RawShot.critical_path_s is shorter than on the scopes.
 - Trigger times come from the recorded WAVEDESCs (shifted per pass when looping), so the dt that interf_main logs
   follows the recording, not `shot_period`, and shot dates and numbers are those of the recording's days.
