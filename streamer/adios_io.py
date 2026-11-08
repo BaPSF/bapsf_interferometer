@@ -1,6 +1,9 @@
+from pathlib import Path
+
 import numpy as np
 
 from .raw_output_io import IO
+from .output_permissions import output_directory, share_output
 
 try:
     import adios2
@@ -19,6 +22,8 @@ class AdiosIO(IO):
         connection_info = connection_info or {}
         output = connection_info.get("output", settings.destination)
         engine = connection_info.get("engine", settings.engine)
+        self._output_path = Path(output)
+        output_directory(self._output_path.parent)
 
         self._adios = adios2.Adios()
         self._io = self._adios.declare_io("InterferometerRawOutput")
@@ -30,6 +35,7 @@ class AdiosIO(IO):
         )
         mode = "a" if getattr(settings, "append_output", False) else "w"
         self._stream = adios2.Stream(self._io, output, mode)
+        share_output(self._output_path, recursive=True)
 
     def _variable(self, name, value):
         array = np.asarray(value)
@@ -60,8 +66,10 @@ class AdiosIO(IO):
             variable, array = self._variable(name, value)
             self._stream.write(variable, array)
         self._stream.end_step()
+        share_output(self._output_path, recursive=True)
 
     def close(self):
         if self._stream is not None:
             self._stream.close()
             self._stream = None
+            share_output(self._output_path, recursive=True)

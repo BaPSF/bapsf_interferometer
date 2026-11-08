@@ -8,6 +8,8 @@ from pathlib import Path
 import nacl.exceptions
 import nacl.public
 
+from .output_permissions import output_directory, share_output
+
 
 CONNECTION_FILE_FORMAT = "lapd-curve25519-sealed-box-v1"
 
@@ -65,7 +67,9 @@ def write_encrypted_connection_file(path, connection_info, public_key):
     path = Path(path)
     contents = encrypt_connection_info(connection_info, public_key)
     temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    output_directory(path.parent)
     with temporary.open("w", encoding="utf-8") as stream:
+        share_output(temporary)
         stream.write(contents)
     os.replace(temporary, path)
     return contents

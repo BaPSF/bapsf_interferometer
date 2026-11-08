@@ -2,10 +2,11 @@
 import shutil
 import threading
 import time
-from datetime import datetime, timezone
+from datetime import datetime
 
 from .consumer_output import RotatingConsumerOutput
-from .ntfy_notifications import NtfyNotifier
+from .ntfy_notifications import NtfyNotifier, error_summary
+from .output_permissions import output_directory
 from .raw_output_io import BufferedIO
 from .remote_consumer_io import RestartingSingleSocketIO
 
@@ -32,8 +33,12 @@ class FallbackIO(BufferedIO):
         self._next_local_retry = 0
         self._local_written = 0
         self._remote_written = 0
+        self._remote_started = False
+        self._launch_failure_notified = False
         notifier = NtfyNotifier.from_config(config, timing_log=timing_log)
         self._transition_notifier = notifier
+        self._alert_notifier = NtfyNotifier.from_config(
+            config, timing_log=timing_log, topic_attribute="ntfy_topic_alert")
         super().__init__(lambda: None, getattr(settings, "buffer_seconds", 600.0),
                          getattr(settings, "output_interval_seconds", 3.0), timing_log=timing_log,
                          retry_delay_seconds=config.retry_delay_seconds, prepare=prepare)
@@ -82,7 +87,15 @@ class FallbackIO(BufferedIO):
                                             < math_ceil_90(self._capacity))
                     self._condition.notify_all()
                 self._record("fallback.clock", offset_seconds=estimate[0],
-                             round_trip_seconds=estimate[1])
+                             round_trip_seconds=estimate[1], timezone=str(estimate[4]))
+                action = "restarted" if self._remote_started else "started"
+                self._remote_started = True
+                self._launch_failure_notified = False
+                if self._transition_notifier is not None:
+                    self._transition_notifier.notify(
+                        f"Raw data server {action}",
+                        f"Remote consumer on {self._config.host} {action}.",
+                        priority=3, tags=("white_check_mark",))
                 while True:
                     with self._condition:
                         self._condition.wait_for(lambda: self._closed or self._task is not None)
@@ -114,6 +127,19 @@ class FallbackIO(BufferedIO):
                     if len(self._buffer) + (self._pending is not None) >= math_ceil_90(self._capacity):
                         self._fallback = True
                 self._record_error("remote", exc)
+                if not self._closed:
+                    if remote is not None and self._transition_notifier is not None:
+                        self._transition_notifier.notify(
+                            "Raw data server disconnected",
+                            f"Connection to {self._config.host} was lost: {error_summary(exc)}",
+                            priority=5, tags=("rotating_light",))
+                    elif not self._launch_failure_notified and self._alert_notifier is not None:
+                        self._launch_failure_notified = True
+                        action = "restart" if self._remote_started else "start"
+                        self._alert_notifier.notify(
+                            f"Raw data server {action} failed",
+                            f"Remote consumer {action} on {self._config.host} failed: {error_summary(exc)}",
+                            priority=5, tags=("rotating_light",))
             finally:
                 with self._condition:
                     self._remote = None
@@ -143,11 +169,11 @@ class FallbackIO(BufferedIO):
         if estimate is None:
             if not self._unknown_clock_logged:
                 self._unknown_clock_logged = True
-                self._record("fallback.clock_unknown", message="Using local UTC; server skew unknown")
+                self._record("fallback.clock_unknown", message="Using producer local time and timezone; server clock and timezone unknown")
                 if self._transition_notifier is not None:
-                    self._transition_notifier.notify("Server clock skew unknown", "Using local UTC for local saving")
-            return datetime.now(timezone.utc)
-        return datetime.fromtimestamp(estimate[2] + time.monotonic() - estimate[3], timezone.utc)
+                    self._transition_notifier.notify("Server clock skew unknown", "Using producer local time and timezone for local saving")
+            return datetime.now().astimezone()
+        return datetime.fromtimestamp(estimate[2] + time.monotonic() - estimate[3], estimate[4])
 
     def _close_local(self):
         local, self._local = self._local, None
@@ -156,7 +182,7 @@ class FallbackIO(BufferedIO):
 
     def _write_local(self, data, step):
         directory = self._config.local_fallback_directory
-        directory.mkdir(parents=True, exist_ok=True)
+        output_directory(directory)
         free = shutil.disk_usage(directory).free
         self._record("fallback.disk", directory=str(directory), free_bytes=free,
                      minimum_bytes=self.MIN_FREE_BYTES)
@@ -271,6 +297,8 @@ class FallbackIO(BufferedIO):
         self._recovery.join(.2)
         if self._transition_notifier is not None:
             self._transition_notifier.close()
+        if self._alert_notifier is not None:
+            self._alert_notifier.close()
 
 
 def math_ceil_90(capacity):

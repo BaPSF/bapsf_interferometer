@@ -6,6 +6,7 @@ import threading
 import time
 import unittest
 from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
 from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
@@ -339,7 +340,7 @@ class NeverBlockTests(unittest.TestCase):
 class DirectOutputNameTests(unittest.TestCase):
 	def test_midnight_rotates_before_the_interval_expires(self):
 		with tempfile.TemporaryDirectory() as directory:
-			stamp = [datetime(2026, 11, 5, 23, 59, 59, tzinfo=timezone.utc)]
+			stamp = [datetime(2026, 11, 5, 23, 59, 59, tzinfo=ZoneInfo("America/Los_Angeles"))]
 			output = RotatingConsumerOutput(directory, "BP5", interval_seconds=3600,
 			                               clock=lambda: 0, timestamp_factory=lambda: stamp[0])
 			with mock.patch("streamer.consumer_output.ADIOS2_AVAILABLE", True), \
@@ -347,7 +348,7 @@ class DirectOutputNameTests(unittest.TestCase):
 				output.write_data({"a": np.arange(3)})
 				first = writer.return_value
 				self.assertTrue((Path(directory) / "20261105").is_dir())
-				stamp[0] = datetime(2026, 11, 6, 0, 0, 1, tzinfo=timezone.utc)
+				stamp[0] = datetime(2026, 11, 6, 0, 0, 1, tzinfo=ZoneInfo("America/Los_Angeles"))
 				output.write_data({"a": np.arange(3)})
 				first.close.assert_called_once()
 				self.assertTrue((Path(directory) / "20261106").is_dir())
@@ -380,14 +381,14 @@ class DirectOutputNameTests(unittest.TestCase):
 			output.write_data(step)
 			now[0] = 5.0
 			output.write_data(step)
-			self.assertEqual(len(list((Path(directory) / stamp.astimezone().strftime("%Y%m%d")).iterdir())), 1)
+			self.assertEqual(len(list((Path(directory) / stamp.strftime("%Y%m%d")).iterdir())), 1)
 			now[0] = 10.0
 			output.write_data(step)
 			output.close()
 			restarted = rotating()
 			restarted.write_data(step)
 			restarted.close()
-			self.assertEqual(len(list((Path(directory) / stamp.astimezone().strftime("%Y%m%d")).iterdir())), 3)
+			self.assertEqual(len(list((Path(directory) / stamp.strftime("%Y%m%d")).iterdir())), 3)
 
 
 class SettingsFromEnvTests(unittest.TestCase):

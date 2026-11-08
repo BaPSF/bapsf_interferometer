@@ -4,6 +4,7 @@ import threading
 import time
 import unittest
 from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
 from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
@@ -30,7 +31,7 @@ class FallbackTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
-        self.config = SimpleNamespace(local_fallback_directory=Path(self.tmp.name),
+        self.config = SimpleNamespace(host="test-server", local_fallback_directory=Path(self.tmp.name),
                                       retry_delay_seconds=.02, file_interval_seconds=3600)
         self.settings = SimpleNamespace(buffer_seconds=10, output_interval_seconds=1)
         self.ready = threading.Event()
@@ -51,7 +52,7 @@ class FallbackTests(unittest.TestCase):
         if not self.ready.is_set():
             raise OSError('outage')
         remote = mock.Mock()
-        remote._output.clock_estimate = (5, .1, time.time()+5, time.monotonic())
+        remote._output.clock_estimate = (5, .1, time.time()+5, time.monotonic(), ZoneInfo("America/Los_Angeles"))
         remote.write_data.side_effect = lambda d: self.remote_frames.append(int(d['shot_index']))
         return remote
 
@@ -63,6 +64,34 @@ class FallbackTests(unittest.TestCase):
     def enqueue(self, output, start, end):
         for i in range(start, end):
             output.write({'shot_index': np.array(i)}, step=i)
+
+    def test_successful_start_notifies_without_any_frames_or_fallback(self):
+        self.ready.set()
+        output = self.output()
+        wait_until(lambda: any(c.args[0] == 'Raw data server started'
+                              for c in self.notifier.notify.call_args_list))
+        self.assertEqual(output._local_written, 0)
+        self.assertEqual(output._remote_written, 0)
+        self.assertEqual([c.args[0] for c in self.notifier.notify.call_args_list],
+                         ['Raw data server started'])
+
+    def test_failed_launch_alerts_once_until_success_and_rearms_after_disconnect(self):
+        output = self.output()
+        wait_until(lambda: self.factory.call_count >= 3)
+        titles = lambda: [c.args[0] for c in self.notifier.notify.call_args_list]
+        self.assertEqual(titles().count('Raw data server start failed'), 1)
+        self.ready.set()
+        wait_until(lambda: 'Raw data server started' in titles())
+        self.ready.clear()
+        output._remote.write_data.side_effect = OSError('connection lost')
+        self.enqueue(output, 0, 1)
+        wait_until(lambda: 'Raw data server restart failed' in titles())
+        time.sleep(.08)
+        self.assertEqual(titles().count('Raw data server disconnected'), 1)
+        self.assertEqual(titles().count('Raw data server restart failed'), 1)
+        self.ready.set()
+        wait_until(lambda: 'Raw data server restarted' in titles())
+        self.assertEqual(titles().count('Raw data server restarted'), 1)
 
     def test_boundary_fifo_and_remote_recovery_transitions(self):
         output = self.output()
@@ -80,6 +109,17 @@ class FallbackTests(unittest.TestCase):
         messages = [c.args[0] for c in self.notifier.notify.call_args_list]
         self.assertEqual(messages.count('Saving raw data locally'), 1)
         self.assertEqual(messages.count('Remote streaming resumed'), 1)
+
+    def test_verbose_launch_error_keeps_logs_out_of_notification(self):
+        details = 'Controlled streaming outage\n' + 'Receiving and writing step N\n' * 500
+        self.factory.side_effect = OSError(details)
+        self.output()
+        wait_until(lambda: self.notifier.notify.called)
+        body = self.notifier.notify.call_args.args[1]
+        self.assertIn('Controlled streaming outage', body)
+        self.assertNotIn('Receiving and writing', body)
+        self.assertLessEqual(len(body.encode()), 512)
+        self.log.try_record.assert_any_call('io.error', stage='remote', error_type='OSError', error=details)
 
     def test_low_space_preserves_frames_and_overflow_is_bounded(self):
         self.disk.return_value.free = 9_999_999_999
@@ -117,7 +157,7 @@ class FallbackTests(unittest.TestCase):
         started, cancelled, release = threading.Event(), threading.Event(), threading.Event()
         self.addCleanup(release.set)
         remote = mock.Mock()
-        remote._output.clock_estimate = (0, 0, time.time(), time.monotonic())
+        remote._output.clock_estimate = (0, 0, time.time(), time.monotonic(), ZoneInfo("America/Los_Angeles"))
         def write(data):
             started.set()
             cancelled.wait(3)
@@ -160,12 +200,30 @@ class FallbackTests(unittest.TestCase):
 
     def test_clock_anchor_ignores_wall_clock_jumps_and_refreshes(self):
         output = self.output()
-        output._estimate = (10, .2, 1000, 100)
+        output._estimate = (10, .2, 1000, 100, ZoneInfo("America/Los_Angeles"))
         with mock.patch('streamer.fallback_io.time.monotonic', return_value=102):
             self.assertEqual(output._timestamp().timestamp(), 1002)
-        output._estimate = (-10, .2, 2000, 105)
+        output._estimate = (-10, .2, 2000, 105, ZoneInfo("America/Los_Angeles"))
         with mock.patch('streamer.fallback_io.time.monotonic', return_value=107):
             self.assertEqual(output._timestamp().timestamp(), 2002)
+
+    def test_no_server_uses_producer_local_timezone(self):
+        output = self.output()
+        local = datetime(2026, 11, 5, 23, 30, tzinfo=ZoneInfo("Asia/Tokyo"))
+        with mock.patch('streamer.fallback_io.datetime') as clock:
+            clock.now.return_value.astimezone.return_value = local
+            self.assertEqual(output._timestamp(), local)
+        self.assertTrue(output._unknown_clock_logged)
+
+    def test_last_server_timezone_survives_outage_and_dst_change(self):
+        output = self.output()
+        zone = ZoneInfo("America/Los_Angeles")
+        before = datetime(2026, 11, 1, 8, 59, 59, tzinfo=timezone.utc).timestamp()
+        output._estimate = (0, .1, before, 100, zone)
+        with mock.patch('streamer.fallback_io.time.monotonic', return_value=100):
+            self.assertEqual(output._timestamp().strftime("%Y%m%d/%H%M%S%z"), "20261101/015959-0700")
+        with mock.patch('streamer.fallback_io.time.monotonic', return_value=102):
+            self.assertEqual(output._timestamp().strftime("%Y%m%d/%H%M%S%z"), "20261101/010001-0800")
 
     def test_slow_local_write_bounds_memory_and_remote_waits_for_it(self):
         started, release = threading.Event(), threading.Event()
@@ -258,12 +316,13 @@ class ProtocolTests(unittest.TestCase):
             # outbound .2s, server processing 3s, inbound .2s
             header = dict(type='ready', protocol_version=protocol.PROTOCOL_VERSION,
                           consumer_id='test', server_receive=100+skew+.2,
-                          server_send=103+skew+.2)
+                          server_send=103+skew+.2, server_timezone={"key": "America/Los_Angeles"})
             with mock.patch.object(protocol, '_receive_header', return_value=header), \
                     mock.patch.object(protocol.time, 'monotonic', return_value=13.4):
-                offset, delay, _, _ = protocol.receive_ready(None, 'test', 100, 10)
+                offset, delay, _, _, zone = protocol.receive_ready(None, 'test', 100, 10)
             self.assertAlmostEqual(offset, skew)
             self.assertAlmostEqual(delay, .4)
+            self.assertEqual(zone.key, "America/Los_Angeles")
 
     def test_explicit_version_rejection(self):
         with mock.patch.object(protocol, '_receive_header', return_value={'type':'hello', 'protocol_version':4}):
@@ -351,8 +410,9 @@ class SocketOutageIntegrationTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmp, \
                 mock.patch('streamer.fallback_io.RestartingSingleSocketIO', side_effect=connect), \
+                mock.patch.object(protocol, 'timezone_description', return_value={'key': 'America/Los_Angeles'}), \
                 mock.patch('streamer.fallback_io.shutil.disk_usage', return_value=SimpleNamespace(free=10_000_000_001)):
-            config = SimpleNamespace(local_fallback_directory=Path(tmp),
+            config = SimpleNamespace(host="test-server", local_fallback_directory=Path(tmp),
                                      retry_delay_seconds=.02, file_interval_seconds=3600)
             output = FallbackIO(SimpleNamespace(buffer_seconds=10, output_interval_seconds=1), config, key)
             try:
@@ -369,7 +429,7 @@ class SocketOutageIntegrationTests(unittest.TestCase):
                 wait_until(lambda: output._local is None)
                 files = list(Path(tmp).glob('*/*.bp'))
                 self.assertEqual(len(files), 1)
-                self.assertRegex(files[0].name, r'^\d{6}\.\d{6}\+0000\.bp$')
+                self.assertTrue(files[0].name.endswith(datetime.now(ZoneInfo('America/Los_Angeles')).strftime('%z') + '.bp'))
                 ids = []
                 with adios2.Stream(str(files[0]), 'r') as reader:
                     for _ in reader.steps():
