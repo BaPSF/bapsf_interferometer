@@ -9,6 +9,7 @@ import socket
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 from datetime import datetime
 from pathlib import Path
@@ -17,6 +18,7 @@ from types import SimpleNamespace
 from .connection_security import decrypt_connection_info
 from .data_operations import load_data_operation
 from .raw_output_io import IO
+from .retry_backoff import ConsumerLaunchBackoff
 from .ntfy_notifications import NtfyNotifier, error_summary
 from .single_socket_io import SingleSocketIO
 from .ssh_key_monitor import read_certificate_validity
@@ -397,6 +399,9 @@ class SSHStreamSocket:
     def settimeout(self, timeout):
         self._connection.settimeout(timeout)
 
+    def shutdown(self, how):
+        self._connection.shutdown(how)
+
     def _raise_tunnel_error(self, cause=None):
         returncode = self._process.poll()
         if returncode is None or returncode == 0:
@@ -593,12 +598,16 @@ class RestartingSingleSocketIO(IO):
         single_attempt=False,
         socket_callback=None,
         notifications=True,
+        launch_backoff=None,
     ):
         self._single_attempt = single_attempt
         self._socket_callback = socket_callback
         self._timing_log = timing_log
         self._private_key = private_key
         self._config = config or ServerConfig(settings.destination)
+        self._launch_backoff = launch_backoff or ConsumerLaunchBackoff(
+            self._config.retry_delay_seconds
+        )
         self._operation = load_data_operation(
             getattr(self._config, "compression_config", None)
         )
@@ -625,6 +634,7 @@ class RestartingSingleSocketIO(IO):
         self._output = None
         self._closed = False
         self._aborted = False
+        self._abort_event = threading.Event()
         try:
             self._key_monitor = SSHKeyMonitorProcess(self._config)
             self._connect_with_retries("launch")
@@ -665,11 +675,13 @@ class RestartingSingleSocketIO(IO):
         expired_key_attempts = 0
         failure_notified = False
         while True:
+            self._abort_event.wait(self._launch_backoff.remaining())
             if self._aborted:
                 raise RuntimeError("Remote consumer output was aborted")
             attempt += 1
             try:
                 self._output = self._new_output()
+                self._launch_backoff.reset()
                 self._record(
                     "consumer.launch",
                     reason=reason,
@@ -688,6 +700,7 @@ class RestartingSingleSocketIO(IO):
                     )
                 return
             except (OSError, EOFError, RuntimeError, ValueError) as exc:
+                self._launch_backoff.failed()
                 self._record(
                     "consumer.launch_retry",
                     reason=reason,
@@ -727,8 +740,6 @@ class RestartingSingleSocketIO(IO):
                         attempt = 0
                         expired_key_attempts = 0
                         continue
-                if self._config.retry_delay_seconds:
-                    time.sleep(self._config.retry_delay_seconds)
 
     def _expired_ssh_certificate(self):
         certificate = getattr(self._config, "ssh_key_certificate", None)
@@ -821,6 +832,7 @@ class RestartingSingleSocketIO(IO):
         releases the SSH connection, key monitor and notifiers.
         """
         self._aborted = True
+        self._abort_event.set()
         output = self._output
         if output is not None:
             output.abort()

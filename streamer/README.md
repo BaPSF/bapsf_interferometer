@@ -320,7 +320,7 @@ advertise_host = consumer-host
 
 socket_timeout_seconds = 30
 startup_timeout_seconds = 30
-retry_delay_seconds = 1
+retry_delay_seconds = 15
 max_relaunch_attempts = 0
 ```
 
@@ -421,11 +421,18 @@ newer shots are sent; acquisitions are never recomputed.
 Each replacement consumer creates a new timestamped output and never appends
 to a potentially damaged file. The failed snapshot is retried into the new
 output while earlier outputs remain unchanged. `max_relaunch_attempts = 0`
-retries indefinitely; a positive value limits each launch series. When a
-series ends in failure, the writer records `io.error`, waits
-`retry_delay_seconds` and starts a new one. All of this runs on the writer
+retries indefinitely; a positive value limits each launch series. Remote launch
+failures back off: the first two waits use `retry_delay_seconds` (15 for NERSC),
+then each wait doubles up to 960 seconds. With the NERSC settings the waits are
+15, 15, 30, 60, 120, 240, 480, 960, 960, ... seconds. Only a successful consumer
+connection resets the backoff; a new launch series or an SSH-key update does
+not reset it. A failed series records `io.error` before the writer starts a
+new one, retaining the remote retry deadline. All of this runs on the writer
 thread, so acquisition continues while the consumer is down. `close()` with a
 timeout aborts the socket and stops relaunching.
+
+The same backoff applies to remote server recovery with local fallback enabled.
+Local file writes and local disk retry intervals are unchanged.
 
 Remote recovery records `consumer.connection_lost`, `consumer.launch`,
 `consumer.launch_retry`, `io.retry`, `ssh_key.wait`, and `ssh_key.updated`
@@ -515,6 +522,54 @@ connection owned by an active producer, pass `--ssh-control-path PATH` or set
 `BAPSF_INTERFEROMETER_SSH_CONTROL_PATH`; the analyzer does not close a borrowed
 connection. `--skip-compression` avoids re-encoding sampled arrays while still
 measuring their raw size.
+
+To analyze consecutive producer sessions, repeat `--producer-log FILE`, or put
+the positional configuration and report paths first and use `--producer-logs`
+with several paths or a shell glob:
+
+```bash
+python -m streamer.analyze_remote_experiment \
+    /Users/pnb/shared/Software/LAPD/logs/stream.conf \
+    reports/producer-20261107-09.md \
+    --producer-only \
+    --producer-logs /Users/pnb/shared/Software/LAPD/logs/raw_output_2026110[789]*.jsonl \
+    --producer-stdout /Users/pnb/shared/Software/LAPD/logs/interf_acquire.log.2026-11-07 \
+    --producer-stdout /Users/pnb/shared/Software/LAPD/logs/interf_acquire.log.2026-11-08 \
+    --producer-stdout /Users/pnb/shared/Software/LAPD/logs/interf_acquire.log
+```
+
+`--producer-only` works offline, without loading compression configuration or
+opening SSH. Its report includes per-session counts, shutdown delivery counters,
+cadence, the largest acquisition gaps, enqueue times, connection and buffer
+events, and relevant acquisition stdout incidents. It does not verify remote
+delivery. Repeat `--producer-stdout` to include rotated acquisition logs.
+
+Without `--producer-only`, multiple logs produce a combined summary followed
+by a full remote analysis for each session. Automatic consumer paths are
+required. Consumer log startup timestamps must uniquely match the first
+successful `consumer.launch` in each producer log within 60 seconds, accounting
+for UTC offsets; missing or ambiguous matches fail explicitly. All remote reads
+share one SSH control connection. Each session's timing cutoff is its last
+observed producer event (bounded by the analysis start), so a downloaded log
+cannot be compared against later consumer writes. Data-file inspection still
+reflects the remote files at analysis time.
+
+Sessions are ordered by their first successful write; duplicate file paths are
+read once, and overlapping or empty sessions are rejected. Shot IDs and consumer
+replays are scoped to each session, so shot zero after a restart is counted
+again. Aggregate timing distributions use individual events, and cadence
+excludes gaps between sessions. `--total-shots`, `--interval-seconds` and
+`--buffer-seconds` apply to each remote session. For offline analysis, timing
+comes directly from the observed writes.
+
+Buffer capacity comes from the producer's `io.buffer_config` startup event,
+which records the resolved buffer duration, nominal output interval and capacity
+in shots. This uses the actual settings, including environment overrides; live
+acquisition defaults to 60 seconds, while the simulator defaults to 600 seconds.
+For older logs, the analyzer can use a legacy stdout header or the capacity in
+an `io.buffer_drop` event. Otherwise capacity is reported as unknown and its
+utilization percentage is omitted. Supply `--buffer-seconds 60` when the historical
+setting is known; the analyzer never silently assumes the streamer default.
 
 ## Running a consumer without ADIOS2
 
@@ -619,6 +674,25 @@ timing log includes reasons, directory and file paths, disk checks, clock
 estimates, local writes, and losses. `written_steps` includes both destinations;
 `fallback.write` identifies local successes. Files from failed writes may contain
 an incomplete final step and should be inspected during manual recovery.
+
+### Ubuntu server backoff integration test
+
+Run `python scripts/test-ubuntupc-backoff.py` from the repository root using the
+project's Python environment. This takes about three minutes and measures real
+15, 15, 30, and 60 second waits after controlled remote launch failures. After
+a successful restart, a second outage verifies that the waits reset to 15, 15
+seconds. Each measured wait must be within 0.05 seconds below to 3 seconds
+above the expected interval; no clocks or retry logic are mocked.
+
+The test copies the current `streamer` source into an isolated directory on
+ubuntupc and uses an ephemeral public key and dedicated port 8598 (`--port`
+overrides it). It signals only its own consumer, disables notifications, and
+leaves the remote checkout unchanged. An occupied port stops the test. The
+retained `report.json` includes source hashes, launch timestamps, measured
+waits, and confirmation that the consumer wrote all three test frames.
+`producer.jsonl` and `consumer.jsonl` retain the detailed timing evidence.
+The output prints the report location; `--run-directory` overrides the local
+destination and `--config` selects another SSH server configuration.
 
 ### Ubuntu fallback integration test
 

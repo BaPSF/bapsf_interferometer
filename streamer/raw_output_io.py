@@ -84,8 +84,11 @@ class IO(ABC):
 
             private_key = cls._load_required_private_key(settings)
             config = ServerConfig(settings.destination)
+            from .retry_backoff import ConsumerLaunchBackoff
+            launch_backoff = ConsumerLaunchBackoff(config.retry_delay_seconds)
             return lambda: RestartingSingleSocketIO(
-                settings, private_key, config=config, timing_log=timing_log
+                settings, private_key, config=config, timing_log=timing_log,
+                launch_backoff=launch_backoff,
             )
 
         if destination.exists():
@@ -271,6 +274,9 @@ class BufferedIO(IO):
         self._unsent_steps = 0
         self._error = None
         self._next_drop_index = 1 if self._capacity > 1 else 0
+        self._record("io.buffer_config", buffer_seconds=buffer_seconds,
+                     output_interval_seconds=output_interval_seconds,
+                     buffer_capacity_steps=self._capacity)
         # A daemon: a destination that never answers cannot keep the process alive.
         self._worker = threading.Thread(
             target=self._write_pending,

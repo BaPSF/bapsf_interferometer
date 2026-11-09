@@ -9,6 +9,7 @@ from .ntfy_notifications import NtfyNotifier, error_summary
 from .output_permissions import output_directory
 from .raw_output_io import BufferedIO
 from .remote_consumer_io import RestartingSingleSocketIO
+from .retry_backoff import ConsumerLaunchBackoff
 
 
 class FallbackIO(BufferedIO):
@@ -17,6 +18,7 @@ class FallbackIO(BufferedIO):
     def __init__(self, settings, config, private_key, timing_log=None, prepare=None):
         self._count_pending = True
         self._config = config
+        self._launch_backoff = ConsumerLaunchBackoff(config.retry_delay_seconds)
         self._settings = settings
         self._key = private_key
         self._remote = None
@@ -76,6 +78,7 @@ class FallbackIO(BufferedIO):
                     socket_callback=self._socket_available, notifications=False,
                 )
                 estimate = remote._output.clock_estimate
+                self._launch_backoff.reset()
                 with self._condition:
                     if self._closed:
                         return
@@ -122,6 +125,7 @@ class FallbackIO(BufferedIO):
                     if retired:
                         break
             except Exception as exc:
+                self._launch_backoff.failed()
                 with self._condition:
                     self._fallback_armed = True
                     if len(self._buffer) + (self._pending is not None) >= math_ceil_90(self._capacity):
@@ -150,7 +154,7 @@ class FallbackIO(BufferedIO):
                     self._quietly("remote.close", remote.close)
             with self._condition:
                 self._condition.wait_for(lambda: self._closed,
-                                         timeout=max(.01, self._retry_delay_seconds))
+                                         timeout=max(.01, self._launch_backoff.remaining()))
 
     def _transition(self, state, message, **details):
         if self._transition_state == state:
