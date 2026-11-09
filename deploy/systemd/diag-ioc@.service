@@ -1,14 +1,13 @@
 # One diag_ioc instance per config: `systemctl enable --now diag-ioc@interferometer` runs
 # /etc/diag-ioc/interferometer.toml (D10). Enabled at boot, as are the other three units (D10).
-# Site settings (the account and the host's own settings) are not in this repository: each unit gets a drop-in,
-# /etc/systemd/system/<unit>.d/site.conf, kept with the host. Without it the placeholder User= stops the start.
 # Install as root:
-#   git clone -b refactor/linux-epics-daq ... /opt/bapsf_interferometer   # the operation checkout; the service only reads it
+#   useradd --system --home-dir /var/lib/diag-ioc --no-create-home --shell /usr/sbin/nologin diag-ioc   # if not there yet
+#   git clone -b refactor/linux-epics-daq ... /opt/bapsf_interferometer   # the operation checkout, root-owned; the service only reads it
 #   cd /opt/bapsf_interferometer && python3 -m venv .venv && .venv/bin/pip install -e '.[ioc,clients,compression]' -c constraints.txt   # clients: interf-store.service; compression: raw output
 #   install -d /etc/diag-ioc && cp deploy/diag-ioc/interferometer.toml deploy/diag-ioc/readonly.acf /etc/diag-ioc/
-#   cp deploy/systemd/diag-ioc@.service /etc/systemd/system/
-#   install -D -m 0644 <the host's drop-in> /etc/systemd/system/diag-ioc@.service.d/site.conf
-#   systemctl daemon-reload
+#   cp deploy/systemd/diag-ioc@.service /etc/systemd/system/ && systemctl daemon-reload
+# A host drop-in (/etc/systemd/system/<unit>.d/site.conf) holds only values that differ per machine (D10); none is needed
+# on Bobby.
 [Unit]
 Description=diag_ioc EPICS IOC (%i)
 After=network-online.target
@@ -16,9 +15,10 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-# Placeholder; site.conf sets the account. A user that does not exist fails the start (status 217/USER), so a unit
-# installed without its drop-in never runs, and never as root.
-User=site-dropin-missing
+# diag-ioc, a system account with no login, shared with the store and the page (D10): the IOC needs neither sudo nor
+# the NERSC key. Never root (as root EPICS locks all memory in RAM), never the old procServ IOC's softioc account.
+User=diag-ioc
+Group=diag-ioc
 WorkingDirectory=/opt/bapsf_interferometer
 # EPICS_* settings, e.g. EPICS_CAS_INTF_ADDR_LIST, EPICS_PVAS_INTF_ADDR_LIST, EPICS_CA_MAX_ARRAY_BYTES.
 EnvironmentFile=-/etc/diag-ioc/%i.env
@@ -29,8 +29,13 @@ ExecStart=/opt/bapsf_interferometer/.venv/bin/python -m diag_ioc --config /etc/d
 # systemd removes the directory whenever the service stops, Restart= restarts included, so no stale socket
 # outlives a crash here; the IOC replaces a stale socket itself only when run outside systemd.
 RuntimeDirectory=diag-ioc/%i
-# /var/lib/diag-ioc, kept across stops: the config's db_dir, where each instance writes <name>.db (every PV) at start.
+# The socket is 0660 in this 0750 directory: acquisition (lapd) reaches it through SupplementaryGroups=diag-ioc.
+RuntimeDirectoryMode=0750
+# /var/lib/diag-ioc, kept across stops: the config's db_dir, where each instance writes <name>.db (every PV) at start;
+# the IOC, not root, cannot write /etc/diag-ioc.
 StateDirectory=diag-ioc
+# The scope network (enp2s0 on Bobby): only acquisition talks to the scopes.
+IPAddressDeny=10.106.34.0/24
 # SIGTERM: the IOC closes its listeners (removing the socket) and exits 0 within about a second.
 KillSignal=SIGTERM
 TimeoutStopSec=15

@@ -34,11 +34,12 @@ import interf_raw
 from diag_ioc.outage import LOG_FORMAT
 from interf_shot import ShotCounter, ShotIdentifier, local_time
 
-# TRC_DIR = Path("D:/data/raw data")  # recorded shots on this PC; on Linux edit this line or pass --trc-dir
-TRC_DIR = Path("/home/adios/shared/Software/LAPD/data")
+# The recorded .trc folder differs per machine, so there is no default; --trc-dir overrides it.
+TRC_DIR_ENV = "INTERF_TRC_DIR"
+TRC_DIR = Path(os.environ[TRC_DIR_ENV]) if os.environ.get(TRC_DIR_ENV) else None
 
-# LeCroy auto-save name <channel>-<title>-shot<counter>.trc. The counter wraps (the recording in
-# TRC_DIR runs 68015..99998, then 0..57507), so shots are ordered by trigger time, never by counter.
+# LeCroy auto-save name <channel>-<title>-shot<counter>.trc. The counter wraps (the lab's recording runs
+# 68015..99998, then 0..57507), so shots are ordered by trigger time, never by counter.
 _TRC_NAME = re.compile(r"(C[1-8])-interf-shot(\d+)\.trc", re.IGNORECASE)
 # LeCroyScope.acquire_bytes/parse_wavedesc hardcode a 15-byte :WAVEFORM? preamble; a .trc prefix is shorter.
 _PREAMBLE_PAD = b"\0" * (15 - TRC_BLOCK_PREFIX_BYTES)
@@ -58,7 +59,7 @@ class SimFault(BaseException):
 	"""
 
 
-def trc_shots(directory=TRC_DIR):
+def trc_shots(directory):
 	"""[(counter, {ch: Path})] for every shot with a file for any interf_raw.LECROY_CHANNELS, in trigger-time order.
 
 	A channel without a file answers :TRACE? OFF (_Transport.query), so interf_raw reports it "trace off" and never

@@ -5,9 +5,10 @@
 name = "LAPD:DIAG:INTERF:IOC"  # devIocStats prefix: LAPD:DIAG:INTERF:IOC:HEARTBEAT, ...
 # Largest CA array: a max_points float64 waveform, 16 KiB at 2048, plus the CA header; 64 KiB leaves room.
 ca_max_array_bytes = 65536
-# interferometer.db (every PV) is written here at each start: the unit's StateDirectory.
+# interferometer.db (every PV) is written here at each start. The unit's StateDirectory: the non-root IOC
+# cannot write /etc/diag-ioc.
 db_dir = "/var/lib/diag-ioc"
-acf = "readonly.acf"  # installed before iocInit (diag_ioc/host.py)
+acf = "readonly.acf"  # every PV read-only over CA and PVA (D8)
 
 [[module]]
 name = "interferometer"

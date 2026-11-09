@@ -3,18 +3,19 @@
 [interf_sim/](../interf_sim/) runs `interf_main` and `interf_raw` on recorded LeCroy `.trc` files, and contacts no scope. It replaces only the two lab_scopes driver classes that `interf_raw` imports, so a change to `interf_main` or `interf_raw` takes effect in the simulation without editing it. Overview in the [README](../README.md).
 
 ```bash
+export INTERF_TRC_DIR=<.trc folder>   # the recorded shots; or pass --trc-dir
 python -m interf_sim --limit 20    # from the repo root; --help lists the options
 python -m interf_sim --limit 20 --repeat-traces  # cycle available traces into 20 synthetic shots
 python -m interf_sim --raw-output raw.bp --limit 20  # write complete raw shots to BP5
 python -m interf_sim --ioc-link unix:/tmp/interf.sock --limit 20  # also send shots to a live-analysis listener
-python -m interf_sim --loop --ioc-link unix:/run/diag-ioc/interferometer/link.sock  # until Ctrl-C or SIGTERM
+python -m interf_sim --loop --ioc-link unix:/run/diag-ioc/interferometer/link.sock  # until Ctrl-C or SIGTERM; as an account in the diag-ioc group (the socket is 0660)
 ```
 
 `python -m interf_sim.listen ADDRESS [--analyze] [--ne-window-ms START STOP]` is a development listener for `--ioc-link` and `INTERF_IOC_LINK`. It prints one line per shot received, and with `--analyze` adds each port's points and density, or the reason the port is missing. Use `tcp:127.0.0.1:PORT` where unix sockets are unavailable.
 
 ## Behavior
 
-- The `.trc` directory is `TRC_DIR` in [interf_sim/trc_replay.py](../interf_sim/trc_replay.py) (the lab's recordings; another machine's path is commented out above it). Elsewhere, edit that line or pass `--trc-dir`.
+- The `.trc` directory is `INTERF_TRC_DIR`, or `--trc-dir`, which overrides it. It differs per machine, so there is no default: with neither, `interf_sim` stops with an error naming both, and the tests that need the recordings are skipped.
 - Shots play in trigger-time order, because the file counter wraps. Indexing reads one header per shot: 5–20 s for 29k shots, depending on the disk cache. Each machine trigger, every `--period` s (default 3; 0 = as fast as files load), serves the next shot.
 - `--repeat-traces` requires `--limit`. It cycles the indexed shots until it has exactly that many entries, assigning consecutive counters from the first selected counter. The channel dictionaries refer to the original `.trc` files, so their recorded trigger timestamps do not change: each cycle repeats the trigger times and runs back in time. For long runs use `--loop`.
 - `--loop` serves the selected shots (`--start-shot`, `--limit`) pass after pass until Ctrl-C or SIGTERM, then stops as acquisition does and prints the link summary. Every pass looks like new shots:
@@ -27,7 +28,7 @@ python -m interf_sim --loop --ioc-link unix:/run/diag-ioc/interferometer/link.so
 - When the shots run out (never with `--loop`), the simulator sends SIGINT, so the Ctrl-C stop and release path runs. The log goes to `interf_sim/log/` and rotates by size, keeping at most about 250 MB, because a `--loop` or `--period 0` run can log far more per day than acquisition.
 - Transfers take only the file read time, so `critical_path_s` and the timing line's channel reads are shorter than on the scopes. The logged `dt` follows the recorded trigger times, not `--period`.
 - Shot dates are the recording's. Shot numbers start at 0 on every run and are not saved (`INTERF_SHOT_STATE` is not used), so runs are repeatable and never add to acquisition's numbering. The trigger-lag check is off, since recorded trigger times are older than the replay.
-- `--raw-output` enables the integrated output package. It accepts a direct ADIOS output, a socket connection file, or a remote server configuration. See [streamer/README.md](../streamer/README.md) for the payload and consumer commands.
+- `--raw-output` enables the integrated output package. It accepts a direct ADIOS output, an encrypted socket connection file, or a remote server configuration. See [streamer/README.md](../streamer/README.md) for the payload and consumer commands.
 
 ## Synthetic shots
 

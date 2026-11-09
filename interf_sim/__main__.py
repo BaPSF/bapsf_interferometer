@@ -5,7 +5,8 @@ from pathlib import Path
 
 import interf_payload
 from diag_ioc.link import IocLink, address_arg
-from interf_sim.trc_replay import MACHINE_PERIOD_S, TRC_DIR, ReplayLeCroy, loop_offset, repeat_trc_shots, run_main, trc_shots
+from interf_sim.trc_replay import (MACHINE_PERIOD_S, TRC_DIR, TRC_DIR_ENV, ReplayLeCroy, loop_offset, repeat_trc_shots,
+                                   run_main, trc_shots)
 from streamer import RawOutput
 from streamer.arguments import add_raw_output_arguments, settings_from_args
 
@@ -15,7 +16,7 @@ RAW_OUTPUT_TIMING_LOG = LOG_DIR / "raw_output.jsonl"
 
 def main():
 	parser = argparse.ArgumentParser(prog="python -m interf_sim", description=__doc__)
-	parser.add_argument("--trc-dir", type=Path, default=TRC_DIR, help=f"default: {TRC_DIR}")
+	parser.add_argument("--trc-dir", type=Path, default=TRC_DIR, help=f"the recorded .trc folder (default: ${TRC_DIR_ENV})")
 	parser.add_argument("--period", type=float, default=MACHINE_PERIOD_S,
 		help=f"s between machine triggers; 0 = as fast as files load (default: {MACHINE_PERIOD_S:g})")
 	parser.add_argument("--start-shot", type=int, help="file counter to start at (default: the earliest trigger)")
@@ -34,6 +35,8 @@ def main():
 		help="also send each shot to a diag_ioc listener at unix:/path or tcp:host:port (as INTERF_IOC_LINK does live)")
 	add_raw_output_arguments(parser, RAW_OUTPUT_TIMING_LOG)
 	args = parser.parse_args()
+	if args.trc_dir is None:
+		parser.error(f"no .trc folder: set {TRC_DIR_ENV} or pass --trc-dir")
 	if args.repeat_traces and (args.limit is None or args.limit < 1):
 		parser.error("--repeat-traces requires --limit to be a positive integer")
 	if args.loop and args.repeat_traces:

@@ -50,16 +50,16 @@ pip install -e '.[ioc,clients,compression]' -c constraints.txt      # IOC, store
 python -m diag_ioc --config my_interferometer.toml                  # analysis IOC; a copy of deploy/diag-ioc/interferometer.toml
 INTERF_IOC_LINK=unix:/run/diag-ioc/interferometer/link.sock LECROY_IP=<address> python interf_main.py   # acquisition
 python -m interf_store --prefix LAPD:DIAG:INTERF                    # HDF5 store
-python -m interf_sim --limit 20                                     # no scopes: replay recorded .trc files
+INTERF_TRC_DIR=<.trc folder> python -m interf_sim --limit 20        # no scopes: replay recorded .trc files
 ```
 
-In production four systemd units from [deploy/systemd/](deploy/systemd/), all enabled at boot, run the system: `diag-ioc@.service` (one IOC per `/etc/diag-ioc/<name>.toml`), `interf-acquire.service` (with `acquire.env.example`), `interf-store.service` and the browser page's `interf-web.service`. Site settings, such as accounts and addresses, are not in this public repository: each host adds a drop-in per unit, and a unit installed without it does not start. Install steps are in each unit's header. This repository is public: ntfy topics, keys, public IP allowlists and home paths stay in untracked config on the host and never go into a commit (rule in [ARCHITECTURE.md](docs/ARCHITECTURE.md), D10, Public repository). The units run from `/opt/bapsf_interferometer`, the operation checkout, which tracks `refactor/linux-epics-daq`; `~jia/code/bapsf_interferometer` on Bobby is a separate test clone.
+In production four systemd units from [deploy/systemd/](deploy/systemd/), all enabled at boot, run the system: `diag-ioc@.service` (one IOC per `/etc/diag-ioc/<name>.toml`), `interf-acquire.service` (with `acquire.env.example`), `interf-store.service` and the browser page's `interf-web.service`. Acquisition runs as `lapd`, which holds the NERSC stream key that operators renew daily; the IOC, the store and the page run as `diag-ioc`, a system account with no login. Install steps are in each unit's header; a host drop-in holds only values that differ per machine. This repository is public: design public, secrets private. It holds the design and its hardening with their reasons; keys, tokens, ntfy topics, public IP allowlists, home paths and known weaknesses not yet fixed stay in untracked config on the host or private notes, never in a commit (rule in [ARCHITECTURE.md](docs/ARCHITECTURE.md), D10, Public repository). The units run from `/opt/bapsf_interferometer`, the operation checkout, which tracks `refactor/linux-epics-daq`; Bobby's test clone, in the tester's home (`~<tester>/code/bapsf_interferometer`), is separate.
 
 ## Browser page
 
 **Live on Bobby since 2026-11-09** at `http://<Bobby's lab address>/diagnostic/interferometer/`, behind nginx ([deploy/nginx/](deploy/nginx/)). A page that loses its connection, or whose tab stays hidden for 15 min, says so and asks to be reloaded; after a restart of the page's service, the reload works about 30 s later.
 
-[interf_web/](interf_web/) shows each shot's density vs time for every port, this shot's NE_MEAN and its recent history, in any browser in the lab, with nothing to install. It only displays. It is a separate process that only reads the IOC's PVs (the `SHOT` group, and `CFG:NE_WINDOW_MS` for the shaded window), so nothing else waits on it; a slow browser skips to the newest shot. History covers only what `interf_web` has seen itself: today and yesterday, from memory and its own files, not from HDF5.
+[interf_web/](interf_web/) shows each shot's density vs time for every port, this shot's NE_MEAN and its recent history, in any browser in the lab, with nothing to install. It is read-only and has no login. It is a separate process that only reads the IOC's PVs (the `SHOT` group, and `CFG:NE_WINDOW_MS` for the shaded window), so nothing else waits on it; a slow browser skips to the newest shot. History covers only what `interf_web` has seen itself: today and yesterday, from memory and its own files, not from HDF5.
 
 To install the unit, follow the steps in the header of [interf-web.service](deploy/systemd/interf-web.service), then those for the proxy in [diagnostic.nginx.example](deploy/nginx/diagnostic.nginx.example). To run it by hand, on `127.0.0.1:8080` unless `INTERF_WEB_HOST` and `INTERF_WEB_PORT` say otherwise:
 
@@ -99,7 +99,7 @@ The design is D18 in [ARCHITECTURE.md](docs/ARCHITECTURE.md).
 | [interf_raw_reader.py](interf_raw_reader.py) | Reads raw output files (ADIOS) back for offline reanalysis with `analyze_shot` |
 | [interf_sim/](interf_sim/) | Offline simulation: `.trc` replay, synthetic shots, a development link listener |
 | [streamer/](streamer/) | ADIOS/socket raw output; maintained by another group, not edited here |
-| [deploy/](deploy/) | Production IOC config and systemd units |
+| [deploy/](deploy/) | Production IOC config, read-only access file, systemd units, nginx proxy |
 | [constraints.txt](constraints.txt) | Exact versions of the EPICS stack (`softioc`, `epicscorelibs`, `pvxslibs`, `p4p`, `pyepics`), `blosc2` and `interf_web`'s web stack, for `pip install -c` |
 | [tests/](tests/) | `python -m unittest discover -s tests -v` |
 

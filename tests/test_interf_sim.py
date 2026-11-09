@@ -1,4 +1,4 @@
-"""interf_sim --loop on the recorded .trc files in trc_replay.TRC_DIR (test-on-Bobby); skipped where they are absent."""
+"""interf_sim --loop on the recorded .trc files in $INTERF_TRC_DIR (test-on-Bobby); skipped where it is unset or empty."""
 import datetime
 import re
 import signal
@@ -18,12 +18,12 @@ from lab_scopes.lecroy.wavedesc import WAVEDESC_FMT
 import interf_payload
 from diag_ioc.link import LinkListener
 from interf_shot import SHOT_ZONE, ShotCounter, local_time, shot_date
-from interf_sim.trc_replay import (MACHINE_PERIOD_S, TRC_DIR, ReplayLeCroy, _wavedesc, loop_offset, shift_trigger,
-                                   trc_shots, trc_trigger_time)
+from interf_sim.trc_replay import (MACHINE_PERIOD_S, TRC_DIR, TRC_DIR_ENV, ReplayLeCroy, _wavedesc, loop_offset,
+                                   shift_trigger, trc_shots, trc_trigger_time)
 from ioc_harness import REPO, wait_for
 
-RECORDED = TRC_DIR.is_dir() and any(TRC_DIR.glob("C*-interf-shot*.trc"))
-NEEDS_RECORDINGS = f"needs the recorded .trc files in {TRC_DIR} (interf_sim.trc_replay.TRC_DIR)"
+RECORDED = TRC_DIR is not None and TRC_DIR.is_dir() and any(TRC_DIR.glob("C*-interf-shot*.trc"))
+NEEDS_RECORDINGS = f"needs the recorded .trc files in ${TRC_DIR_ENV}"
 
 
 def _midnight_after(t, days=1):

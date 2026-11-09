@@ -16,7 +16,7 @@ from interf_analysis import analyze_shot
 from interf_ioc import MAX_POINTS, NE_WINDOW_MS, missing_text
 from interf_shot import SHOT_ZONE, ShotCounter, ShotIdentifier
 from interf_sim.synthetic import make_raw_shot
-from interf_sim.trc_replay import TRC_DIR, ReplayLeCroy, iter_shots, trc_shots
+from interf_sim.trc_replay import TRC_DIR, TRC_DIR_ENV, ReplayLeCroy, iter_shots, trc_shots
 from interf_file import create_sourcefile_dataset, init_hdf5_file
 from interf_store import ShotWriter, daily_path, last_stored, shot_from_group, store_shot
 from ioc_harness import REPO, ChildProcess, IocProcess, free_port, have, interferometer_config, publish, pva_available
@@ -26,7 +26,7 @@ DAY_S = 86400.0
 T0 = datetime.datetime(2026, 10, 9, 14, 30, 0, tzinfo=SHOT_ZONE).timestamp() + 0.125
 SAMPLES = 1 << 14  # 32 phase points: the store only copies arrays
 GROUPS = {"P20": "phase_p20", "P29": "phase_p29", "P40": "phase_p40"}  # the legacy layout's phase group of each port
-# test-on-Bobby's recordings in TRC_DIR (2026-10-11): shot 82435 has only C2, 82437 has no C4 (and 82436 is absent).
+# test-on-Bobby's recordings ($INTERF_TRC_DIR, 2026-10-11): shot 82435 has only C2, 82437 has no C4 (and 82436 is absent).
 KNOWN_MISSING = {82435: {"P20", "P29"}, 82437: {"P29"}}
 
 
@@ -320,8 +320,8 @@ def _replayed(trc_dir):
 	return expected
 
 
-@unittest.skipUnless(have("softioc", "epics") and pva_available() and TRC_DIR.is_dir(),
-                     f"needs softioc, pyepics, p4p, kernel IPv6 and recorded .trc files in {TRC_DIR}")
+@unittest.skipUnless(have("softioc", "epics") and pva_available() and TRC_DIR is not None and TRC_DIR.is_dir(),
+                     f"needs softioc, pyepics, p4p, kernel IPv6 and recorded .trc files in ${TRC_DIR_ENV}")
 class RecordedShotTests(_StoreAssertions):
 	"""test-on-Bobby: the recorded .trc shots, replayed by interf_sim through the real IOC, stored by interf_store."""
 	PERIOD_S = 0.5  # replay trigger period, far above the 0.064 s analysis, so neither the link nor the IOC drops a shot

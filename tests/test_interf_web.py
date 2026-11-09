@@ -6,7 +6,6 @@ import json
 import logging
 import math
 import os
-import re
 import shutil
 import socket
 import subprocess
@@ -109,7 +108,7 @@ def raw_websocket(port, receive_buffer=None):
 
 
 class DecidedValuesTests(unittest.TestCase):
-	"""The numbers of D18 (J, 2026-11-06), and the units' placeholders."""
+	"""The numbers of D18 (J, 2026-11-06), and the units' accounts and the page's limits and sandbox (D10, D18)."""
 
 	def test_limits(self):
 		self.assertEqual((web.MAX_VIEWERS, web.MAX_VIEWERS_PER_ADDRESS, web.TRY_AGAIN_LATER), (20, 3, 1013))
@@ -126,17 +125,43 @@ class DecidedValuesTests(unittest.TestCase):
 		self.assertFalse(settings["access_log"])
 		self.assertEqual((settings["proxy_headers"], settings["forwarded_allow_ips"]), (True, "127.0.0.1"))
 
-	def test_units_hold_placeholders(self):
-		"""The repository is public: each host's drop-in holds the accounts and addresses. A unit installed without it
-		fails to start (an unknown User=) rather than run as root."""
-		units = sorted((REPO / "deploy" / "systemd").glob("*.service"))
-		self.assertEqual(len(units), 4)
-		for path in units:
-			text = path.read_text(encoding="utf-8")
-			lines = text.splitlines()
-			self.assertIn("User=site-dropin-missing", lines, path.name)
-			self.assertEqual([line for line in lines if line.startswith(("Group=", "SupplementaryGroups="))], [], path.name)
-			self.assertEqual(set(re.findall(r"\b\d{1,3}(?:\.\d{1,3}){3}\b", text)) - {"127.0.0.1"}, set(), path.name)
+	def test_unit_accounts(self):
+		"""D10: acquisition alone as lapd (the NERSC key), reaching the link socket through the diag-ioc group; the
+		others as diag-ioc and off the scope network, which only acquisition talks to."""
+		def unit(name):
+			return (REPO / "deploy" / "systemd" / f"{name}.service").read_text(encoding="utf-8").splitlines()
+
+		for name in ("diag-ioc@", "interf-store", "interf-web"):
+			lines = unit(name)
+			for line in ("User=diag-ioc", "Group=diag-ioc", "IPAddressDeny=10.106.34.0/24"):
+				self.assertIn(line, lines, name)
+		self.assertIn("RuntimeDirectoryMode=0750", unit("diag-ioc@"))
+		acquire = unit("interf-acquire")
+		for line in ("User=lapd", "Group=lapd", "SupplementaryGroups=diag-ioc"):
+			self.assertIn(line, acquire)
+		self.assertEqual([line for line in acquire if line.startswith("IPAddressDeny=")], [])
+		for name in ("interf-store", "interf-web"):  # the lab's gateway republishes our PVs on the subnet (D3)
+			lines = unit(name)
+			self.assertIn("Environment=EPICS_PVA_ADDR_LIST=127.0.0.1", lines, name)
+			self.assertIn("Environment=EPICS_PVA_AUTO_ADDR_LIST=NO", lines, name)
+
+	def test_web_unit_sandbox(self):
+		unit = (REPO / "deploy" / "systemd" / "interf-web.service").read_text(encoding="utf-8").splitlines()
+		for line in ("CPUQuota=10%", "MemoryMax=1G", "TasksMax=128", "LimitNOFILE=256",
+		             "NoNewPrivileges=yes", "ProtectSystem=strict", "ProtectHome=yes", "PrivateTmp=yes", "PrivateDevices=yes",
+		             "ProtectKernelTunables=yes", "ProtectKernelModules=yes", "ProtectKernelLogs=yes",
+		             "ProtectControlGroups=yes", "ProtectClock=yes", "ProtectHostname=yes", "ProtectProc=invisible",
+		             "ProcSubset=pid", "RestrictSUIDSGID=yes", "LockPersonality=yes", "RestrictNamespaces=yes",
+		             "RestrictRealtime=yes", "RemoveIPC=yes", "CapabilityBoundingSet=", "AmbientCapabilities=",
+		             "RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK", "SystemCallArchitectures=native",
+		             "SystemCallFilter=@system-service", "SystemCallErrorNumber=EPERM"):
+			self.assertIn(line, unit)
+		hidden = next(line for line in unit if line.startswith("InaccessiblePaths=")).split("=", 1)[1].split()
+		self.assertEqual(sorted(hidden), sorted(["-/etc/interferometer/acquire.env", "-/etc/diag-ioc",
+		                                         "-/var/lib/interferometer", "-/var/lib/interf-acquire",
+		                                         "-/var/log/interferometer"]))
+		# 127.0.0.1 is the code's default; nginx is the way in from the lab network (D18).
+		self.assertEqual([line for line in unit if "INTERF_WEB_HOST" in line and not line.startswith("#")], [])
 
 
 class ThrottledLogTests(unittest.TestCase):

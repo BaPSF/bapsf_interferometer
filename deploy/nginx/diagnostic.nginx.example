@@ -9,7 +9,7 @@
 #   ln -s /etc/nginx/sites-available/diagnostic /etc/nginx/sites-enabled/diagnostic
 #   install -D -m 0644 <the host's drop-in> /etc/systemd/system/nginx.service.d/site.conf   # nginx.site.conf.example
 #   nginx -t
-#   # interf-web's site.conf: INTERF_WEB_HOST=127.0.0.1, or no INTERF_WEB_HOST (the same default)
+#   # interf_web must serve 127.0.0.1:8080, its default: no INTERF_WEB_HOST elsewhere in a drop-in or web.env
 #   systemctl unmask nginx && systemctl daemon-reload && systemctl restart interf-web && systemctl enable --now nginx
 # Optional, host-only: worker_processes 2; in /etc/nginx/nginx.conf. The default, auto, starts one worker per core.
 

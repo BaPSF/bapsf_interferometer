@@ -8,18 +8,20 @@ not repeat their reasons. A question neither file answers goes to the user befor
 Every session (the local coding agent and `test-on-Bobby`) pulls the branch and reads both before any work. Copies
 elsewhere (the project's shared folder, an agent's memory) are not authoritative. Doc changes land only as commits by
 the local agent; other sessions send them to the user as patch files. The repository is public (ARCHITECTURE
-D10, Public repository); security, account and network settings are not in these docs; the user keeps them privately.
+D10, Public repository): design public, secrets private.
 
 - **Local agent (Windows):** writes and pushes each commit to `origin/refactor/linux-epics-daq`, pulling first. Never
   force-push; no pull request unless asked. It runs no tests unless the user asks, and each commit message lists what
   it ran and what it did not.
 - **`test-on-Bobby`** (the Linux lab machine with the `.trc` recordings; the only test session since 2026-10-11): for
-  each pushed commit, runs the full suite (the PVA tests included), that commit's scenario on real `.trc` files and
+  each pushed commit, runs the full suite (the PVA tests included; `INTERF_TRC_DIR` set to the recordings, or the
+  tests that need them skip), that commit's scenario on real `.trc` files and
   the real-data checks (§5), then reports. It pushes nothing. Linux-only tests (unix sockets, acquisition
   timers, the IOC) are verified there, not before the push. The cloud test session is retired, and no new synthetic
   data generators are needed; the unit tests keep using `interf_sim.synthetic`.
-- Bobby's old procServ IOC was removed by its admin on 2026-10-11. Test IOCs still run on
-  `ioc_harness.isolated_epics_env()`, so they never meet a deployed IOC.
+- Bobby's old procServ IOC (prefix `Interferometer:Port31:`, default CA 5064 and PVA 5075) was removed by its admin on
+  2026-10-11. Test IOCs still run on `ioc_harness.isolated_epics_env()` (private ports, loopback only), so they never
+  meet a deployed IOC.
 
 ## 1. Done so far
 
@@ -34,7 +36,7 @@ D10, Public repository); security, account and network settings are not in these
 | ebb0b9f | `LinkListener` holds an `flock` on `<path>.lock`, so a second listener on one unix socket path fails at start |
 | 73ccb44 | Docs synced to the latest review; `docs/` on this branch is the single source |
 | 465b76a C4s | `ShotCounter` writes its state on a daemon thread (latest wins) and resumes from the later of the state file and the acquisition log; the replay persists no counter |
-| b8ecf40 C5 (5928659, pushed before review, was reverted by 3b3e143) | `interf_ioc` module (D4 PVs, chain, PVA group `<P>:SHOT`); host `SHOT:ACK` wait, `STAT:PUBLISHED`/`ACK_TIMEOUTS`, `<name>.db` export to `[ioc] db_dir`; `create_records` returns the chain tail; `constraints.txt`; `ioc_harness.monitor_all` |
+| b8ecf40 C5 (5928659, pushed before review, was reverted by 3b3e143) | `interf_ioc` module (D4 PVs, chain, PVA group `<P>:SHOT`); host `SHOT:ACK` wait, `STAT:PUBLISHED`/`ACK_TIMEOUTS`, `<name>.db` export to `[ioc] db_dir`, `[ioc] acf` with `readonly.acf`; `create_records` returns the chain tail; `constraints.txt`; `ioc_harness.monitor_all` |
 | 442c405 C6 | `interf_store` (PVA client of `<P>:SHOT`, own process, daily HDF5 in the legacy layout; missing P20/P29 as NaN); `<port>:MISSING` PVs; `interf_file` `lecroy_missing=`/`shot=`, `ShotExists`; `interf-store.service`; `p4p` in `clients`; `ioc_harness.ChildProcess` |
 
 **Tested on Linux with real recordings** (`test-on-Bobby`, 2026-10-11): C4s `465b76a` and C5 `b8ecf40`. 119 of 119
@@ -56,6 +58,8 @@ Facts from testing that still matter:
   the repo.
 - Installed and working on Bobby: softioc 4.7.2, epicscorelibs 7.0.10.99.0.2, pvxslibs 1.5.3, p4p 4.3.0, pyepics 3.5.10,
   lab-scopes 0.4.1 (`constraints.txt` pins the EPICS ones). The pin is now lab-scopes 0.4.2 (`n_channels=`, TCP_NODELAY).
+- The EPICS libraries bind some UDP sockets on all interfaces at random high ports, even with every address list set
+  to loopback. Harmless; C8's deployment notes say so.
 - `critical_path_s` is unchanged by the link (median about 4 ms with and without).
 - Two listeners on one unix socket path (one config spelling it two ways, or two IOC processes) used to let the second
   silently take the socket, and stopping the first then removed it. Fixed after C4r: `LinkListener` holds
@@ -117,6 +121,7 @@ or unparseable. It never raises, and in the repeated fall-back hour it returns t
 - Chains: `diag_ioc.records.chain(makers)` creates records last-to-first, passing `FLNK=<next>`. `rec.FLNK = other` after
   construction also works (checked on 4.7.2: `WriteRecords` shows the link). Use the existing `records.waveform`,
   `records.scalar`, `records.add_group` and `records.fit_text` helpers.
+- `imports.install_pv_logging(acf_path)` installs an access-security file before `iocInit`.
 - Ack pattern (verified in the IOC bench, which stays outside the repo):
   `longOut(name, OMSL="closed_loop", DOL="<P>:STAT:PUBLISHED", DISP=1, always_update=True, on_update=cb)`. DOL without PP
   reads the stored value, DISP=1 turns CA puts into no-ops, and `on_update` runs after the whole chain has processed.
@@ -187,10 +192,10 @@ and a corrupt state file on a running day repeats numbers already used.
   - `next()` returns while the writer is blocked (a stub that waits on an `Event`), and `close()` writes the last state.
 
 **C5 `feat: interferometer IOC module` (D2, D4, D5, D7, D8, D11). Done**; kept as the record of what it does.
-Includes the version pins (part at the end). Files: `interf_ioc.py`,
+Includes the read-only access file and the version pins (parts at the end). Files: `interf_ioc.py`,
 `deploy/diag-ioc/interferometer.toml`, `diag_ioc/host.py`, `diag_ioc/module.py`, `deploy/systemd/diag-ioc@.service`,
 `tests/ioc_harness.py`, `tests/dummy_ioc_module.py`, `tests/test_interf_ioc.py`; as built also `diag_ioc/__main__.py`
-(resolves `db_dir` against the config file's directory), `diag_ioc/records.py` (`passive()`, which
+(resolves `db_dir` and `acf` against the config file's directory), `diag_ioc/records.py` (`passive()`, which
 `scalar`/`waveform` now build on), `tests/test_diag_ioc.py`, `tests/test_interf_payload.py`, and
 `tests/test_ioc_link.py` (from `test-on-Bobby`: unix socket tests make their temporary directory in `/tmp`, since a
 long TMPDIR pushed the socket path over 107 bytes). The PV names are the D4 list. Records:
@@ -241,7 +246,7 @@ long TMPDIR pushed the socket path over 107 bytes). The PV names are the D4 list
   - Write `<name>.db` (the config file's name, e.g. `interferometer.db`; `__main__` passes the path to `run`) with
     `WriteRecords` at every start into the new optional `[ioc] db_dir` (default: the config
     file's directory). The systemd unit adds `StateDirectory=diag-ioc`, and the example config sets
-    `db_dir = "/var/lib/diag-ioc"`. As built: written to a
+    `db_dir = "/var/lib/diag-ioc"`, because the non-root IOC cannot write `/etc/diag-ioc`. As built: written to a
     temporary file and renamed; a failure is logged and the IOC still starts.
 - `ioc_harness.monitor_all(names, callback, timeout)` implements the pyepics flush rule (§3). `IocProcess` no longer
   passes `EPICS_CA_MAX_ARRAY_BYTES` to the IOC, so the config's `ca_max_array_bytes` applies, as deployed.
@@ -262,6 +267,12 @@ long TMPDIR pushed the socket path over 107 bytes). The PV names are the D4 list
   - Read the D4 list over CA.
   - `STAT:STALE` goes MAJOR after the simulator stops.
   - Kill and restart the IOC mid-run: acquisition continues, and the link logs the outage and recovery.
+
+**C5, read-only access (D8).** Add `deploy/diag-ioc/readonly.acf` (reads for all, writes for none), installed via the
+new optional `[ioc] acf` path. Making `CFG:NE_WINDOW_MS` writable from the screen is a later change, not part of C5.
+Test: a CA put is rejected. On an IPv6 machine, check that PVA puts are rejected too, and say so in the commit body.
+As built: the CA test checks that the access right itself is refused (DISP=1 alone leaves it granted), and
+`test_pva_puts_are_rejected` covers PVA, including `IOC:HEARTBEAT` (DISP=0); it runs only where IPv6 works.
 
 **C5, version pins (D11).** Add `constraints.txt` with exact `softioc`, `epicscorelibs`, `pvxslibs` and
 `p4p` versions as tested, and document `-c constraints.txt` in the README. As built: Bobby's versions (§1), plus
@@ -305,7 +316,7 @@ the `clients` extra and the script `interf-store`. As built also `interf_ioc.py`
     `phase_p20` dataset.
   - A duplicate is `interf_file.ShotExists` (a `ValueError`). An update with `date` or `timeStamp` 0 (the IOC's state
     before its first shot after a start, sent to every new or reconnected monitor) is not a shot.
-  - `interf-store.service`: `StateDirectory=interferometer`, `INTERF_DATA_DIR=/var/lib/interferometer/hdf5`
+  - `interf-store.service`: `diag-ioc`, `StateDirectory=interferometer`, `INTERF_DATA_DIR=/var/lib/interferometer/hdf5`
     (`interf_store` creates `hdf5`), `EnvironmentFile=-/etc/interferometer/store.env`, `After=` only on the IOC,
     `Restart=always`, `TimeoutStopSec=30`. `interf_store.STOP_TIMEOUT_S` is 20 s, under that, so the exit summary is
     logged before SIGKILL.
@@ -316,7 +327,7 @@ the `clients` extra and the script `interf-store`. As built also `interf_ioc.py`
   - Disconnects, a full queue (100 shots) and failed writes use `diag_ioc.outage.Outage`. The callback ignores the
     `Disconnected` that p4p sends before the first connection. Each stored shot is logged.
   - `tests/test_interf_store.py` also has `RecordedShotTests` for `test-on-Bobby` (skipped without the `.trc` files in
-    `interf_sim.trc_replay.TRC_DIR`). It runs the real IOC, `interf_store` and `python -m interf_sim --ioc-link` on
+    `$INTERF_TRC_DIR`). It runs the real IOC, `interf_store` and `python -m interf_sim --ioc-link` on
     every recorded shot, then checks every stored shot against `analyze_shot` of the same replayed shot. It also
     checks the known gaps (82435: P20 and P29 missing; 82437: P29 missing; P40 missing on every shot).
   - Gaps use `interf_ioc.LostShots`, the rule of `SHOT:LOST`. `create_sourcefile_dataset` no longer prints a line
@@ -384,7 +395,9 @@ can be handed back to the streaming team on its own.
 **C7 `feat: Phoebus screens`.** Files: `phoebus/interf_overview.bob`, `phoebus/diag_ioc_health.bob`, `phoebus/settings.ini`,
 `tests/test_phoebus_screens.py`.
 - PV names carry no protocol prefix. Macros are `P` and `IOC`.
-- Phoebus runs on the IOC machine; `settings.ini` sets its CA and PVA address lists.
+- Phoebus runs on the IOC machine. `settings.ini` sets the CA and PVA address lists to `127.0.0.1` with automatic
+  address lists off, so the IOC's interface lists must include loopback (C8 says so). Loopback also keeps it off the
+  lab gateway's copies of our PVs (ARCHITECTURE D3).
 - Overview (about 1280×800):
   - a "Density" tab: an XY plot of `$(P):<port>:TIME_ARRAY` against `:NE` for each port;
   - a "Phase" tab: the same with `PHASE`;
@@ -400,12 +413,17 @@ can be handed back to the streaming team on its own.
 - the Files/Configuration tables, including `INTERF_SHOT_STATE` (default `~/data/state/shot_counter.json`) and
   `INTERF_TRIG_LAG_MAX_S`, and the fixed LA zone;
 - the module contract, and how to add a diagnostic (another `[[module]]`, or another `diag-ioc@<name>`);
-- several IOCs on one host (no network, account or security settings: the repository is public);
+- networking: Phoebus on the IOC machine over loopback, interface address lists, several IOCs on one host, the lab's
+  PV gateway that republishes our PVs (clients on the host search loopback only, ARCHITECTURE D3), and a
+  gateway for the outside group if it is on another subnet; the EPICS libraries still bind some UDP sockets on all
+  interfaces at random high ports with every address list set to loopback, which is harmless;
 - that only the PVA group is atomic, while a CA client that falls behind can drop or tear a shot;
-- the public-repository rule (D10): ntfy topics, keys, public IP allowlists and home paths stay in untracked host
-  config, never in a commit;
-- operations: the D10 system units, all enabled at boot, each with its host's site drop-in, run from `/opt/bapsf_interferometer`, the operation checkout on
-  `refactor/linux-epics-daq` (`~jia/code/bapsf_interferometer` on Bobby is a separate test clone); keep the scope clock NTP-synced, and keep
+- the public-repository rule (D10), design public, secrets private: the hardening is committed with its reasons;
+  passwords and keys of any kind (ntfy topics included), public IP allowlists, home paths and known weaknesses not yet
+  fixed stay in untracked host config or private notes;
+- operations: the D10 system units, all enabled at boot, acquisition as `lapd` (it holds the NERSC stream key, renewed
+  daily) and the IOC, the store and `interf-web` as `diag-ioc`, run from `/opt/bapsf_interferometer`, the operation checkout on
+  `refactor/linux-epics-daq` (Bobby's test clone, in the tester's home, is separate); keep the scope clock NTP-synced, and keep
   `INTERF_SHOT_STATE` and `INTERF_LOG_DIR` on a local disk (not a network filesystem), with the state file outside the
   log directory (the acquisition unit sets them under `/var/lib` and `/var/log`); the browser page is reached through
   nginx (`deploy/nginx/`, D18).
