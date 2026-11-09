@@ -516,6 +516,45 @@ connection owned by an active producer, pass `--ssh-control-path PATH` or set
 connection. `--skip-compression` avoids re-encoding sampled arrays while still
 measuring their raw size.
 
+To analyze consecutive producer sessions, repeat `--producer-log FILE`, or put
+the positional configuration and report paths first and use `--producer-logs`
+with several paths or a shell glob:
+
+```bash
+python -m streamer.analyze_remote_experiment \
+    /Users/pnb/shared/Software/LAPD/logs/stream.conf \
+    reports/producer-20261107-09.md \
+    --producer-only \
+    --producer-logs /Users/pnb/shared/Software/LAPD/logs/raw_output_2026110[789]*.jsonl \
+    --producer-stdout /Users/pnb/shared/Software/LAPD/logs/interf_acquire.log.2026-11-07 \
+    --producer-stdout /Users/pnb/shared/Software/LAPD/logs/interf_acquire.log.2026-11-08 \
+    --producer-stdout /Users/pnb/shared/Software/LAPD/logs/interf_acquire.log
+```
+
+`--producer-only` works offline, without loading compression configuration or
+opening SSH. Its report includes per-session counts, shutdown delivery counters,
+cadence, the largest acquisition gaps, enqueue times, connection and buffer
+events, and relevant acquisition stdout incidents. It does not verify remote
+delivery. Repeat `--producer-stdout` to include rotated acquisition logs.
+
+Without `--producer-only`, multiple logs produce a combined summary followed
+by a full remote analysis for each session. Automatic consumer paths are
+required. Consumer log startup timestamps must uniquely match the first
+successful `consumer.launch` in each producer log within 60 seconds, accounting
+for UTC offsets; missing or ambiguous matches fail explicitly. All remote reads
+share one SSH control connection. Each session's timing cutoff is its last
+observed producer event (bounded by the analysis start), so a downloaded log
+cannot be compared against later consumer writes. Data-file inspection still
+reflects the remote files at analysis time.
+
+Sessions are ordered by their first successful write; duplicate file paths are
+read once, and overlapping or empty sessions are rejected. Shot IDs and consumer
+replays are scoped to each session, so shot zero after a restart is counted
+again. Aggregate timing distributions use individual events, and cadence
+excludes gaps between sessions. `--total-shots`, `--interval-seconds` and
+`--buffer-seconds` apply to each remote session. For offline analysis, timing
+comes directly from the observed writes.
+
 ## Running a consumer without ADIOS2
 
 The socket consumer can run without the `adios2` Python module. In that case,

@@ -5,6 +5,7 @@ import subprocess
 import sys
 import textwrap
 import unittest
+from unittest import mock
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
@@ -13,17 +14,146 @@ from streamer.analyze_remote_experiment import (
     REMOTE_SNAPSHOT_PROGRAM,
     bp_shot_indexes,
     experiment_settings,
+    analyze_sessions,
+    load_producer_sessions,
+    main,
     normalize_consumer_writes,
+    parse_arguments,
+    parse_time,
     records_at_cutoff,
     parse_producer_stdout,
     process_rss_mib,
     render_report,
+    render_session_report,
+    select_consumer_session,
     sampled_bytes_per_step,
     summarize,
 )
 
 
 class AnalyzeRemoteExperimentTests(unittest.TestCase):
+    def session_logs(self, root):
+        start = datetime(2026, 11, 7, 16, tzinfo=timezone.utc)
+        paths = []
+        for index in range(2):
+            began = start + timedelta(days=index)
+            rows = [dict(event="raw_output.write", shot=shot, status="ok",
+                         called_at=(began + timedelta(seconds=3 * shot)).isoformat(),
+                         duration_seconds=0.001) for shot in range(2)]
+            rows.append(dict(event="consumer.launch", logged_at=(began + timedelta(seconds=1)).isoformat()))
+            rows.append(dict(event="io.close", logged_at=(began + timedelta(seconds=4)).isoformat(),
+                             written_steps=2, dropped_steps=0, unsent_steps=0))
+            path = root / f"producer-{index}.jsonl"
+            path.write_text("".join(json.dumps(row) + "\n" for row in rows))
+            paths.append(path)
+        return paths, start + timedelta(days=3)
+
+    def test_multiple_sessions_preserve_restarted_shots_and_exclude_boundary_cadence(self):
+        with tempfile.TemporaryDirectory() as directory:
+            paths, cutoff = self.session_logs(Path(directory))
+            sessions = load_producer_sessions([paths[1], paths[0], paths[0]], cutoff)
+            self.assertEqual([session["path"] for session in sessions], [path.resolve() for path in paths])
+            report = render_session_report(Path("stream.conf"), sessions, cutoff, [])
+        self.assertIn("2 sessions; 4 successful producer writes", report)
+        self.assertIn("Acquisition cadence (2 intervals)", report)
+        self.assertIn("maximum **3.000000 s**", report)
+        self.assertIn("remote latency, storage and completion are unverified", report)
+        self.assertEqual(report.count("0 / 1 | 2 |"), 2)
+
+    def test_overlapping_and_empty_producer_logs_fail_clearly(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            paths, cutoff = self.session_logs(root)
+            paths[1].write_bytes(paths[0].read_bytes())
+            with self.assertRaisesRegex(ValueError, "sessions overlap"):
+                load_producer_sessions(paths, cutoff)
+            paths[1].write_text("")
+            with self.assertRaisesRegex(ValueError, "no successful writes"):
+                load_producer_sessions(paths, cutoff)
+
+    def test_consumer_selection_uses_absolute_time_and_rejects_ambiguity(self):
+        session = dict(path=Path("producer.jsonl"), records=[
+            dict(event="consumer.launch", logged_at="2026-11-07T08:00:02-08:00")])
+        selected = "20261107T160000.000000+0000"
+        self.assertEqual(select_consumer_session(session, [selected]), selected)
+        with self.assertRaisesRegex(ValueError, "found 0"):
+            select_consumer_session(session, ["20261108T160000.000000+0000"])
+        with self.assertRaisesRegex(ValueError, "found 2"):
+            select_consumer_session(session, [selected, "20261107T160001.000000+0000"])
+
+    def test_cli_preserves_options_before_positionals_and_supports_many_logs(self):
+        args = parse_arguments(["--producer-log", "a.jsonl", "--producer-stdout", "out.log",
+                                "stream.conf", "report.md"])
+        self.assertEqual(args.producer_log, [Path("a.jsonl")])
+        args = parse_arguments(["stream.conf", "report.md", "--producer-log", "a.jsonl",
+                                "--producer-logs", "b.jsonl", "c.jsonl"])
+        self.assertEqual(args.producer_log, list(map(Path, ["a.jsonl", "b.jsonl", "c.jsonl"])))
+
+    def test_producer_only_cli_never_opens_ssh_or_loads_compression(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            paths, _ = self.session_logs(root)
+            config = root / "stream.conf"
+            config.write_text("[server]\nhost=unreachable\nworking_directory=/unused\n"
+                              "public_key=missing.pub\nallow_ip_range=127.0.0.1/32\n"
+                              "compression_config=missing.conf\n")
+            stdout = root / "stdout.log"
+            stdout.write_text("2026-11-07 16:00:01,000 WARNING interf_main: raw output failed test\n"
+                              "2026-11-07 16:00:02,000 WARNING interf_main: shot routine warning\n"
+                              "2026-11-06 16:00:01,000 ERROR interf_main: outside selected sessions\n")
+            report = root / "report.md"
+            with mock.patch("streamer.analyze_remote_experiment.SSHControlConnection") as ssh, \
+                    mock.patch("streamer.analyze_remote_experiment.load_data_operation") as operation:
+                result = main([str(config), str(report), "--producer-only", "--producer-logs",
+                               *map(str, paths), "--producer-stdout", str(stdout)])
+                ssh.assert_not_called()
+                operation.assert_not_called()
+            self.assertEqual(result, 0)
+            text = report.read_text()
+            self.assertIn("raw output failed test", text)
+            self.assertNotIn("routine warning", text)
+            self.assertNotIn("outside selected sessions", text)
+
+    def test_remote_multiple_sessions_reuse_connection_and_keep_shot_zero_distinct(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            paths, cutoff = self.session_logs(root)
+            sessions = load_producer_sessions(paths, cutoff)
+            suffixes = [session["start"].strftime("%Y%m%dT%H%M%S.%f%z") for session in sessions]
+            config = SimpleNamespace(automatic_paths=True, compression_config=None, host="host",
+                                     working_directory="/work", python="python3", log_directory="logs",
+                                     timing_log="log")
+            args = SimpleNamespace(config=Path("stream.conf"), producer_only=False,
+                                   ssh_control_path=None, skip_compression=True,
+                                   interval_seconds=None, buffer_seconds=None, total_shots=None)
+            def snapshot(cfg, operation, **kwargs):
+                self.assertIs(kwargs["connection"], connection)
+                index = suffixes.index(kwargs["consumer_start_time"])
+                writes = [dict(row, event="io.write", step=row["shot"],
+                               called_at=(parse_time(row["called_at"]) + timedelta(seconds=0.2)).isoformat())
+                          for row in sessions[index]["writes"]]
+                return "\n".join(map(json.dumps, writes)).encode(), {}
+            connection = mock.Mock()
+            with mock.patch("streamer.analyze_remote_experiment.SSHControlConnection", return_value=connection) as ssh, \
+                    mock.patch("streamer.analyze_remote_experiment.run_ssh", return_value=json.dumps(suffixes)), \
+                    mock.patch("streamer.analyze_remote_experiment.remote_snapshot", side_effect=snapshot):
+                report = analyze_sessions(args, config, paths, [], cutoff)
+                ssh.assert_called_once()
+                connection.close.assert_called_once()
+            self.assertIn("4 unique consumer writes", report)
+            self.assertIn("median **0.201000 s**", report)
+            # A downloaded active log ends before its final shot is consumed.
+            # Later remote events must not inflate the local snapshot's totals.
+            rows = [json.loads(line) for line in paths[-1].read_text().splitlines()]
+            paths[-1].write_text("".join(json.dumps(row) + "\n" for row in rows
+                                         if row["event"] != "io.close"))
+            with mock.patch("streamer.analyze_remote_experiment.SSHControlConnection", return_value=connection), \
+                    mock.patch("streamer.analyze_remote_experiment.run_ssh", return_value=json.dumps(suffixes)), \
+                    mock.patch("streamer.analyze_remote_experiment.remote_snapshot", side_effect=snapshot):
+                report = analyze_sessions(args, config, paths, [], cutoff)
+            self.assertIn("3 unique consumer writes", report)
+            self.assertIn("**1** producer shots without a matching consumer write", report)
+
     def test_remote_snapshot_selects_daily_files_from_one_session(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

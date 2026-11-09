@@ -3,6 +3,7 @@
 
 import argparse
 import base64
+import copy
 import json
 import math
 import os
@@ -403,11 +404,13 @@ def remote_snapshot(
     skip_compression=False,
     control_path=None,
     consumer_start_time=None,
+    connection=None,
 ):
     if not config.timing_log:
         raise ValueError("The server configuration must define timing_log")
 
-    connection = (
+    owns_connection = connection is None
+    connection = connection or (
         BorrowedSSHControlConnection(config, control_path)
         if control_path else SSHControlConnection(config)
     )
@@ -469,7 +472,8 @@ def remote_snapshot(
             ) from exc
         return consumer_bytes, metadata
     finally:
-        connection.close()
+        if owns_connection:
+            connection.close()
 
 
 def is_contiguous(records):
@@ -1017,6 +1021,223 @@ def render_report(
     return "\n".join(lines)
 
 
+def load_producer_sessions(paths, cutoff):
+    """Keep shot IDs scoped to their input file and order sessions by event time."""
+    sessions = []
+    for path in dict.fromkeys(Path(path).resolve() for path in paths):
+        records = records_at_cutoff(read_json_lines(path), cutoff)
+        writes = [row for row in records
+                  if row.get("event") in ("raw_output.write", "io.write")
+                  and row.get("status") == "ok"]
+        if not writes:
+            raise ValueError(f"Producer log {path} has no successful writes before the cutoff")
+        start = parse_time(writes[0]["called_at"])
+        end = completion_time(writes[-1])
+        closes = [row for row in records if row.get("event") == "io.close"]
+        sessions.append(dict(path=path, records=records, writes=writes,
+                             start=start, end=end, close=closes[-1] if closes else None))
+    sessions.sort(key=lambda session: session["start"])
+    for previous, current in zip(sessions, sessions[1:]):
+        if current["start"] <= previous["end"]:
+            raise ValueError(f"Producer sessions overlap: {previous['path']} and {current['path']}")
+    return sessions
+
+
+def select_consumer_session(session, available):
+    """Match server startup time to the first recorded successful launch.
+
+    The server chooses its filename immediately before launch. Fail closed on
+    ambiguous candidates rather than silently matching another run's shot zero.
+    """
+    launches = [row for row in session["records"] if row.get("event") == "consumer.launch"]
+    if not launches:
+        raise ValueError(f"No consumer launch timestamp in {session['path']}; cannot select a remote session")
+    launch = parse_time(launches[0]["logged_at"])
+    candidates = []
+    for suffix in available:
+        started = datetime.strptime(suffix, "%Y%m%dT%H%M%S.%f%z")
+        if abs((started - launch).total_seconds()) <= 60:
+            candidates.append(suffix)
+    if len(candidates) != 1:
+        raise ValueError(f"Expected one consumer session within 60 seconds of {launch.isoformat()} "
+                         f"for {session['path']}; found {len(candidates)}")
+    return candidates[0]
+
+
+def stdout_incidents(paths, sessions):
+    """Read rotated acquisition logs in producer-local time, excluding routine shot warnings."""
+    incidents = set()
+    for path in paths:
+        try:
+            lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+        except OSError as exc:
+            raise ValueError(f"Unable to read producer stdout log {path}: {exc}") from exc
+        for line in lines:
+            match = re.match(r"(\d{4}-\d\d-\d\d \d\d:\d\d:\d\d,\d+) (.*)", line)
+            if not match:
+                continue
+            message = match[2]
+            if not (" ERROR " in f" {message} " or " CRITICAL " in f" {message} "
+                    or "raw output" in message.lower()
+                    or "capture resumed after" in message.lower()):
+                continue
+            local_time = datetime.strptime(match[1], "%Y-%m-%d %H:%M:%S,%f")
+            for session in sessions:
+                # Acquisition logs have no UTC offset; use the producer's recorded offset.
+                timestamp = local_time.replace(tzinfo=session["start"].tzinfo)
+                end = (parse_time(session["close"]["logged_at"])
+                       if session["close"] else session["end"])
+                starts_session = ("raw output started:" in message.lower()
+                                  and session["path"].name in message)
+                if (session["start"] <= timestamp <= end
+                        or (starts_session and session["start"] - timedelta(seconds=10) <= timestamp <= end)):
+                    incidents.add((timestamp, line))
+                    break
+    return [line for _, line in sorted(incidents)]
+
+
+def render_session_report(config_path, sessions, cutoff, stdout_paths, remote_reports=None):
+    """Aggregate counts/distributions, never merge restarting shot counters."""
+    writes = [row for session in sessions for row in session["writes"]]
+    cadence = [(parse_time(b["called_at"]) - parse_time(a["called_at"])).total_seconds()
+               for session in sessions for a, b in zip(session["writes"], session["writes"][1:])]
+    enqueue = distribution(row["duration_seconds"] for row in writes)
+    cadence_stats = distribution(cadence)
+    lines = ["# Consecutive producer session analysis", "",
+             f"Configuration: `{config_path}`  ",
+             f"Snapshot cutoff: **{cutoff.isoformat(timespec='microseconds')}**  ",
+             f"Observed range: **{sessions[0]['start'].isoformat()}** to **{sessions[-1]['end'].isoformat()}**",
+             "", f"**{len(sessions):,} sessions; {len(writes):,} successful producer writes.**", "",
+             "Shot IDs are local to each producer session. Counts and timing distributions are "
+             "combined across sessions; latency matching and replay detection stay within each session.", ""]
+    if remote_reports is None:
+        lines += ["Producer-only analysis: no consumer logs or data files were read. Producer enqueue "
+                  "success does not establish remote delivery. Shutdown counters describe the producer's "
+                  "recorded delivery state; remote latency, storage and completion are unverified.", ""]
+    else:
+        summaries = [entry[0] for entry in remote_reports]
+        latency = distribution(value for summary in summaries for value in summary["latency_by_step"].values())
+        lines += [f"**{sum(s['consumed_steps'] for s in summaries):,} unique consumer writes** "
+                  f"across the matched sessions; **{sum(s['outstanding_shots'] for s in summaries):,}** "
+                  "producer shots without a matching consumer write.", "",
+                  f"Combined end-to-end latency: median **{latency['median']:.6f} s**, "
+                  f"p95 **{latency['p95']:.6f} s**, maximum **{latency['max']:.6f} s**.", ""]
+    lines += ["## Sessions", "",
+              "| Producer log | First / last shot | Writes | Cadence median / max (s) | Enqueue max (ms) | Shutdown written / dropped / unsent |",
+              "|---|---:|---:|---:|---:|---|"]
+    for session in sessions:
+        rows = session["writes"]
+        intervals = [(parse_time(b["called_at"]) - parse_time(a["called_at"])).total_seconds()
+                     for a, b in zip(rows, rows[1:])]
+        stats = distribution(intervals)
+        close = session["close"]
+        shutdown = (" / ".join(str(close.get(key, "unknown")) for key in
+                              ("written_steps", "dropped_steps", "unsent_steps"))
+                    if close else "no shutdown record (capture may be active)")
+        timing = f"{stats['median']:.6f} / {stats['max']:.6f}" if stats else "unavailable"
+        first, last = (row.get("shot", row.get("step")) for row in (rows[0], rows[-1]))
+        lines.append(f"| `{session['path'].name}` | {first} / {last} | {len(rows):,} | {timing} | "
+                     f"{1000 * max(row['duration_seconds'] for row in rows):.3f} | {shutdown} |")
+    lines += ["", "## Combined timing", "",
+              "Intervals across session boundaries are excluded from cadence statistics.", ""]
+    if cadence_stats:
+        lines += [f"Acquisition cadence ({cadence_stats['count']:,} intervals): median "
+                  f"**{cadence_stats['median']:.6f} s**, p95 **{cadence_stats['p95']:.6f} s**, "
+                  f"maximum **{cadence_stats['max']:.6f} s**.", ""]
+    lines += [f"Producer enqueue: median **{enqueue['median'] * 1000:.3f} ms**, "
+              f"p95 **{enqueue['p95'] * 1000:.3f} ms**, maximum **{enqueue['max'] * 1000:.3f} ms**.", "",
+              "## Session boundaries and events", ""]
+    for index, session in enumerate(sessions):
+        lines += [f"### {session['path'].name}", "",
+                  f"First write: `{session['start'].isoformat()}`; last write: `{session['end'].isoformat()}`.", ""]
+        if index:
+            gap = (session["start"] - sessions[index - 1]["end"]).total_seconds()
+            lines += [f"Gap since previous session's last write: **{gap:.3f} s**.", ""]
+        steps = [dict(row, step=row.get("shot", row.get("step"))) for row in session["writes"]]
+        lines += [f"Producer shot IDs contiguous: **{is_contiguous(steps)}**.", ""]
+        intervals = [
+            ((parse_time(b["called_at"]) - parse_time(a["called_at"])).total_seconds(), a, b)
+            for a, b in zip(session["writes"], session["writes"][1:])
+        ]
+        intervals.sort(key=lambda entry: entry[0])
+        if intervals:
+            lines += ["Largest intervals between producer writes:", ""]
+            for seconds, previous, current in reversed(intervals[-3:]):
+                lines.append(f"- **{seconds:.6f} s**: `{previous['called_at']}` → "
+                             f"`{current['called_at']}` (shots "
+                             f"{previous.get('shot', previous.get('step'))} → "
+                             f"{current.get('shot', current.get('step'))}).")
+            lines.append("")
+        for row in session["records"]:
+            event = row.get("event", "")
+            if (event in ("consumer.launch", "consumer.connection_lost", "consumer.launch_retry",
+                          "io.error", "io.retry", "io.buffer_drop", "io.close", "notification.failed")
+                    or (event in ("raw_output.write", "io.write") and row.get("status") != "ok")
+                    or (event == "notification.sent" and "buffer" in row.get("title", "").lower())):
+                detail = {key: value for key, value in row.items() if key not in ("event", "logged_at")}
+                lines.append(f"- `{row.get('logged_at', row.get('called_at', 'unknown'))}` "
+                             f"`{event}`: `{json.dumps(detail, ensure_ascii=True)}`")
+        lines.append("")
+    incidents = stdout_incidents(stdout_paths, sessions)
+    if incidents:
+        lines += ["## Acquisition stdout incidents", "", "```text", *incidents, "```", ""]
+    if remote_reports:
+        for session, (_, report) in zip(sessions, remote_reports):
+            lines += [f"## Remote analysis: {session['path'].name}", ""]
+            lines += [("##" + line if line.startswith("#") else line) for line in report.splitlines()]
+            lines.append("")
+    lines += ["## Inputs", "", *[f"- Producer: `{session['path']}`" for session in sessions],
+              *[f"- Stdout: `{path}`" for path in stdout_paths], ""]
+    return "\n".join(lines)
+
+
+def analyze_sessions(args, config, producer_paths, stdout_paths, cutoff):
+    sessions = load_producer_sessions(producer_paths, cutoff)
+    remote_reports = None
+    if not args.producer_only:
+        if not config.automatic_paths:
+            raise ValueError("Multiple remote sessions require automatic consumer paths; "
+                             "use --producer-only for legacy configurations")
+        connection = (BorrowedSSHControlConnection(config, args.ssh_control_path)
+                      if args.ssh_control_path else SSHControlConnection(config))
+        try:
+            discovery = ("from pathlib import Path;import json,sys;"
+                         "print(json.dumps([p.name[len('consumer-'):-len('.jsonl')] "
+                         "for p in Path(sys.argv[1]).glob('consumer-*.jsonl')]))")
+            available = json.loads(run_ssh(connection, config,
+                f"cd -- {shlex.quote(config.working_directory)} && {shlex.quote(config.python)} "
+                f"-c {shlex.quote(discovery)} {shlex.quote(config.log_directory)}"))
+            selected = [select_consumer_session(session, available) for session in sessions]
+            if len(set(selected)) != len(selected):
+                raise ValueError("Multiple producer logs matched the same consumer session")
+            operation = (load_data_operation(config.compression_config)
+                         if config.compression_config and not args.skip_compression else None)
+            remote_reports = []
+            for session, suffix in zip(sessions, selected):
+                session_config = copy.copy(config)
+                consumer_bytes, remote = remote_snapshot(
+                    session_config, operation.description() if operation else None,
+                    skip_compression=args.skip_compression, consumer_start_time=suffix,
+                    connection=connection)
+                # Downloads may be older than the remote consumer's current log.
+                # Freeze at the last observed local event, not the time of analysis.
+                observed = [parse_time(row["logged_at"]) if row.get("logged_at") else completion_time(row)
+                            for row in session["records"] if row.get("logged_at") or row.get("called_at")]
+                session_cutoff = min(cutoff, max(observed))
+                consumer = records_at_cutoff(read_json_lines_bytes(consumer_bytes, suffix), session_cutoff)
+                settings = experiment_settings(session["records"], interval_seconds=args.interval_seconds,
+                                               buffer_seconds=args.buffer_seconds, total_shots=args.total_shots)
+                summary = summarize(session["records"], consumer, settings,
+                                    bytes_per_step=sampled_bytes_per_step(remote),
+                                    consumer_shots=bp_shot_indexes(remote), snapshot_at=session_cutoff)
+                report = render_report(session_config, args.config, session["path"],
+                                       ", ".join(map(str, stdout_paths)), settings, summary, remote)
+                remote_reports.append((summary, report))
+        finally:
+            connection.close()
+    return render_session_report(args.config, sessions, cutoff, stdout_paths, remote_reports)
+
+
 def parse_arguments(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("config", type=Path, help="remote server configuration file")
@@ -1027,14 +1248,21 @@ def parse_arguments(argv=None):
     )
     parser.add_argument(
         "--producer-log",
-        type=Path,
-        help="producer JSONL timing log (normally derived from the config)",
+        type=Path, action="append",
+        help="producer JSONL timing log (repeat for consecutive sessions)",
+    )
+    parser.add_argument(
+        "--producer-logs", dest="producer_log",
+        type=Path, nargs="+", action="extend",
+        help="multiple producer JSONL logs; accepts shell globs (put config and report first)",
     )
     parser.add_argument(
         "--producer-stdout",
-        type=Path,
-        help="producer stdout log (normally derived from the config)",
+        type=Path, action="append",
+        help="producer stdout logs, including rotations (repeatable)",
     )
+    parser.add_argument("--producer-only", action="store_true",
+                        help="analyze local producer logs without SSH or consumer verification")
     parser.add_argument(
         "--skip-compression",
         action="store_true",
@@ -1064,7 +1292,10 @@ def parse_arguments(argv=None):
             "(or set BAPSF_INTERFEROMETER_SSH_CONTROL_PATH)"
         ),
     )
-    return parser.parse_args(argv)
+    args = parser.parse_args(argv)
+    if args.consumer_start_time and (args.producer_only or len(args.producer_log or []) > 1):
+        parser.error("--consumer-start-time is only supported for a single remote session")
+    return args
 
 
 def positive_float(value, description):
@@ -1093,16 +1324,29 @@ def main(argv=None):
         if args.report.suffix.lower() != ".md":
             raise ValueError("report path must have a .md extension")
         config = ServerConfig(args.config)
+        default_stdout = None
+        if args.producer_log and (args.producer_only or len(args.producer_log) > 1):
+            default_stdout = args.producer_log[0].with_suffix(".stdout.log")
         producer_log, producer_stdout = derive_local_paths(
-            config, args.producer_log, args.producer_stdout
+            config, args.producer_log[0] if args.producer_log else None,
+            args.producer_stdout[0] if args.producer_stdout else default_stdout
         )
         snapshot_at = datetime.now().astimezone()
+        if args.producer_only or len(args.producer_log or []) > 1:
+            report = analyze_sessions(
+                args, config, args.producer_log or [producer_log],
+                args.producer_stdout or ([producer_stdout] if producer_stdout.is_file() else []),
+                snapshot_at)
+            args.report.parent.mkdir(parents=True, exist_ok=True)
+            args.report.write_text(report, encoding="utf-8")
+            print(f"Wrote {args.report}")
+            return 0
         producer = records_at_cutoff(read_json_lines(producer_log), snapshot_at)
         stdout_settings = {}
         if args.producer_stdout is not None or producer_stdout.is_file():
-            stdout_settings = parse_producer_stdout(
-                producer_stdout, require_mock_header=False
-            )
+            for stdout_path in args.producer_stdout or [producer_stdout]:
+                stdout_settings.update(parse_producer_stdout(
+                    stdout_path, require_mock_header=False))
         settings = experiment_settings(
             producer,
             stdout_settings,
