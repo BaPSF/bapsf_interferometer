@@ -562,6 +562,15 @@ excludes gaps between sessions. `--total-shots`, `--interval-seconds` and
 `--buffer-seconds` apply to each remote session. For offline analysis, timing
 comes directly from the observed writes.
 
+Buffer capacity comes from the producer's `io.buffer_config` startup event,
+which records the resolved buffer duration, nominal output interval and capacity
+in shots. This uses the actual settings, including environment overrides; live
+acquisition defaults to 60 seconds, while the simulator defaults to 600 seconds.
+For older logs, the analyzer can use a legacy stdout header or the capacity in
+an `io.buffer_drop` event. Otherwise capacity is reported as unknown and its
+utilization percentage is omitted. Supply `--buffer-seconds 60` when the historical
+setting is known; the analyzer never silently assumes the streamer default.
+
 ## Running a consumer without ADIOS2
 
 The socket consumer can run without the `adios2` Python module. In that case,

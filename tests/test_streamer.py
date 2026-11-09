@@ -284,6 +284,18 @@ class NeverBlockTests(unittest.TestCase):
 	def _events(self):
 		return [json.loads(line)["event"] for line in self.timing_log.read_text(encoding="utf-8").splitlines()]
 
+	def test_startup_records_resolved_buffer_configuration(self):
+		self.settings = RawOutputSettings(destination=self.settings.destination,
+		                                  timing_log=str(self.timing_log), buffer_seconds=60.0,
+		                                  output_interval_seconds=7.0)
+		output = self._raw_output(lambda: _ListOutput([]))
+		output.close(5)
+		records = [json.loads(line) for line in self.timing_log.read_text().splitlines()]
+		config = next(row for row in records if row["event"] == "io.buffer_config")
+		self.assertEqual(config["buffer_seconds"], 60.0)
+		self.assertEqual(config["output_interval_seconds"], 7.0)
+		self.assertEqual(config["buffer_capacity_steps"], 9)
+
 	def test_write_returns_at_once_while_opening_hangs(self):
 		release = threading.Event()
 		self.addCleanup(release.set)

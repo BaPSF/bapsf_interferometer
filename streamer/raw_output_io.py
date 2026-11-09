@@ -274,6 +274,9 @@ class BufferedIO(IO):
         self._unsent_steps = 0
         self._error = None
         self._next_drop_index = 1 if self._capacity > 1 else 0
+        self._record("io.buffer_config", buffer_seconds=buffer_seconds,
+                     output_interval_seconds=output_interval_seconds,
+                     buffer_capacity_steps=self._capacity)
         # A daemon: a destination that never answers cannot keep the process alive.
         self._worker = threading.Thread(
             target=self._write_pending,

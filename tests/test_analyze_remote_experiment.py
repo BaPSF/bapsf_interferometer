@@ -369,8 +369,37 @@ class AnalyzeRemoteExperimentTests(unittest.TestCase):
         settings = experiment_settings(producer, total_shots=4)
 
         self.assertEqual(settings["interval_seconds"], 3.0)
-        self.assertEqual(settings["buffer_seconds"], 600.0)
+        self.assertIsNone(settings["buffer_seconds"])
+        self.assertIsNone(settings["buffer_capacity_steps"])
         self.assertEqual(settings["total_steps"], 4)
+
+    def test_buffer_capacity_uses_recorded_configuration_not_observed_cadence(self):
+        producer = [dict(event="io.buffer_config", buffer_seconds=60.0,
+                         output_interval_seconds=3.0, buffer_capacity_steps=20)]
+        settings = experiment_settings(producer, interval_seconds=4.0)
+        self.assertEqual(settings["buffer_seconds"], 60.0)
+        self.assertEqual(settings["buffer_capacity_steps"], 20)
+
+        overridden = experiment_settings(producer, interval_seconds=4.0, buffer_seconds=120.0)
+        self.assertEqual(overridden["buffer_seconds"], 120.0)
+        self.assertEqual(overridden["buffer_capacity_steps"], 40)
+
+    def test_legacy_buffer_capacity_requires_evidence_or_override(self):
+        settings = experiment_settings([], {"interval_seconds": 3.0, "buffer_seconds": 60.0})
+        self.assertEqual(settings["buffer_capacity_steps"], 20)
+        settings = experiment_settings([], interval_seconds=3.0, buffer_seconds=60.0)
+        self.assertEqual(settings["buffer_capacity_steps"], 20)
+        settings = experiment_settings([dict(event="io.buffer_drop", buffer_capacity_steps=20)],
+                                       interval_seconds=3.0)
+        self.assertIsNone(settings["buffer_seconds"])
+        self.assertEqual(settings["buffer_capacity_steps"], 20)
+
+    def test_conflicting_buffer_configurations_are_rejected(self):
+        producer = [dict(event="io.buffer_config", buffer_seconds=seconds,
+                         output_interval_seconds=3.0, buffer_capacity_steps=seconds // 3)
+                    for seconds in (60, 600)]
+        with self.assertRaisesRegex(ValueError, "Conflicting buffer configurations"):
+            experiment_settings(producer, interval_seconds=3.0)
 
     def test_summarizes_raw_shots_and_renders_markdown(self):
         start = datetime(2026, 1, 1, tzinfo=timezone.utc)
@@ -448,6 +477,7 @@ class AnalyzeRemoteExperimentTests(unittest.TestCase):
         self.assertIn("`empty.bp`: Empty BP segment", report)
         self.assertIn("3 / 4 (75.00%)", report)
         self.assertIn("Mean sampled payload per shot: **1.000 MiB**", report)
+        self.assertIn("Ring-buffer capacity: **2 shots** (6 seconds)", report)
         process_section = report.split("## Remote process", 1)[1]
         self.assertIn("- Consumer hostname: `remote.example`", process_section)
 
@@ -492,6 +522,9 @@ class AnalyzeRemoteExperimentTests(unittest.TestCase):
         self.assertIsNone(summary["completion_fraction"])
         self.assertIn("2 observed", report)
         self.assertIn("no target supplied", report)
+        self.assertIn("Ring-buffer capacity: **unknown**", report)
+        self.assertNotIn("% of capacity", report)
+        self.assertNotIn("600 seconds", report)
 
 
 if __name__ == "__main__":

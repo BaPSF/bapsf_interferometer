@@ -351,11 +351,34 @@ def experiment_settings(
         settings["total_steps"] = total_shots
     else:
         settings.setdefault("total_steps", None)
-    settings["buffer_seconds"] = (
-        buffer_seconds
-        if buffer_seconds is not None
-        else settings.get("buffer_seconds", 600.0)
-    )
+    configs = [row for row in producer if row.get("event") == "io.buffer_config"]
+    configurations = {(row["buffer_seconds"], row["output_interval_seconds"],
+                       row["buffer_capacity_steps"]) for row in configs}
+    if len(configurations) > 1:
+        raise ValueError("Conflicting buffer configurations; analyze producer sessions separately")
+    if configs:
+        config = configs[0]
+        settings["buffer_seconds"] = config["buffer_seconds"]
+        settings["buffer_capacity_steps"] = config["buffer_capacity_steps"]
+    if buffer_seconds is not None:
+        settings["buffer_seconds"] = buffer_seconds
+        # Capacity uses the producer's nominal interval, not observed cadence.
+        nominal_interval = (configs[0]["output_interval_seconds"] if configs
+                            else settings["interval_seconds"])
+        settings["buffer_capacity_steps"] = max(1, math.ceil(buffer_seconds / nominal_interval))
+    elif not configs:
+        settings.setdefault("buffer_seconds", None)
+        if settings["buffer_seconds"] is not None:
+            settings["buffer_capacity_steps"] = max(1, math.ceil(
+                settings["buffer_seconds"] / settings["interval_seconds"]))
+        else:
+            # Older logs expose capacity only when the buffer drops a shot.
+            capacities = {row["buffer_capacity_steps"] for row in producer
+                          if row.get("event") == "io.buffer_drop"
+                          and "buffer_capacity_steps" in row}
+            if len(capacities) > 1:
+                raise ValueError("Conflicting buffer capacities; analyze producer sessions separately")
+            settings["buffer_capacity_steps"] = next(iter(capacities), None)
     return settings
 
 
@@ -752,10 +775,17 @@ def render_report(
     latency = summary["latency"]
     cadence = summary["cadence"]
     consumer_write = summary["consumer_write"]
-    buffer_capacity = math.ceil(
-        settings["buffer_seconds"] / settings["interval_seconds"]
-    )
-    peak_percent = 100 * summary["maximum_queued"] / buffer_capacity
+    buffer_capacity = settings.get("buffer_capacity_steps")
+    if buffer_capacity is None and settings.get("buffer_seconds") is not None:
+        buffer_capacity = max(1, math.ceil(
+            settings["buffer_seconds"] / settings["interval_seconds"]))
+    buffer_duration = (f"{settings['buffer_seconds']:g} seconds"
+                       if settings.get("buffer_seconds") is not None else "duration unknown")
+    buffer_description = (f"**{buffer_capacity} shots** ({buffer_duration})"
+                          if buffer_capacity is not None
+                          else "**unknown** (not recorded; supply --buffer-seconds)")
+    peak_description = (f"{100 * summary['maximum_queued'] / buffer_capacity:.1f}% of capacity, "
+                        if buffer_capacity is not None else "")
     disk_gib = remote.get("disk_kib", 0) / 2**20
     payload_known = math.isfinite(summary["bytes_per_step"])
     payload_per_shot = (
@@ -872,11 +902,10 @@ def render_report(
         "",
         f"- Producer shots contiguous: **{'yes' if summary['producer_contiguous'] else 'no'}**.",
         f"- Consumer shots contiguous: **{'yes' if summary['consumer_contiguous'] else 'no'}**.",
-        f"- Ring-buffer capacity: **{buffer_capacity} shots** "
-        f"({settings['buffer_seconds']:g} seconds).",
+        f"- Ring-buffer capacity: {buffer_description}.",
         f"- Maximum unacknowledged shots: **{summary['maximum_unacknowledged']}**.",
         f"- Estimated maximum queued shots: **{summary['maximum_queued']}** "
-        f"({peak_percent:.1f}% of capacity, "
+        f"({peak_description}"
         f"{queued_payload}).",
         "",
         "## Data volume",
@@ -1281,7 +1310,7 @@ def parse_arguments(argv=None):
     parser.add_argument(
         "--buffer-seconds",
         type=lambda value: positive_float(value, "buffer duration"),
-        help="producer buffer duration (default: 600)",
+        help="producer buffer duration override (default: read logs; unknown if not recorded)",
     )
     parser.add_argument(
         "--ssh-control-path",
