@@ -124,6 +124,7 @@ class DecidedValuesTests(unittest.TestCase):
 		self.assertEqual(settings["ws_max_size"], web.WS_MAX_SIZE)
 		self.assertEqual((settings["ws_ping_interval"], settings["ws_ping_timeout"]), (web.PING_INTERVAL_S, web.PING_TIMEOUT_S))
 		self.assertFalse(settings["access_log"])
+		self.assertEqual((settings["proxy_headers"], settings["forwarded_allow_ips"]), (True, "127.0.0.1"))
 
 	def test_units_hold_placeholders(self):
 		"""The repository is public: each host's drop-in holds the accounts and addresses. A unit installed without it

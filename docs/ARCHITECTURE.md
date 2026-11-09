@@ -227,7 +227,7 @@ shot after an IOC start resets its baseline: a restart shows only as a gap in `S
   public IP allowlists, and collaborators' home paths. They live only in untracked config on the host:
   `/etc/interferometer/*.env`, `/etc/diag-ioc/*.env`, and the raw output stream `.conf` in the operator's home (for
   example `~lapd/nersc-stream/stream.conf`). Committed files carry placeholders or `.example` copies, as
-  `deploy/systemd/acquire.env.example` does. Lab-internal 10.x addresses and account names may stay in the docs and
+  `deploy/systemd/acquire.env.example` and `deploy/nginx/` do. Lab-internal 10.x addresses and account names may stay in the docs and
   units, since nothing outside the lab can reach them. The ntfy topics already in history are retired and replaced on
   the host, not removed from history. `.gitignore` excludes `*.local.conf`, `*.local.env` and any `local/` directory.
 - Site settings (J, 2026-11-08), stricter than that rule: the units carry no accounts or addresses. Each host adds a
@@ -443,8 +443,14 @@ shot after an IOC start resets its baseline: a restart shows only as a gap in `S
   stays on screen. A tab hidden or minimized for 15 min (`HIDDEN_PAUSE_MS`, the browser's visibility event) closes its
   socket and says "Paused - reload to resume"; it is cancelled if the tab comes back first. A reload opens a fresh
   socket and refills the history. Tests: `tests/test_interf_web.py`, the page's part in node.
-- **Address:** `INTERF_WEB_HOST` and `INTERF_WEB_PORT`, set in the host's drop-in (D10); the code's default is
-  `127.0.0.1:8080`. The unit is not yet enabled.
+- **Address (2026-11-09):** behind nginx at `/diagnostic/<name>/` (`http://<lab address>/diagnostic/interferometer/`),
+  `interf_web` on `127.0.0.1:8080`, the code's default (`INTERF_WEB_HOST`, `INTERF_WEB_PORT`). The proxy's site file
+  and its drop-in are `.example` copies in `deploy/nginx/`; install steps are in the site file's header. The proxy
+  passes the viewer's address in `X-Forwarded-For`, which `interf_web` reads from 127.0.0.1 only (`server_settings`),
+  so the per-address limits count each viewer, not the proxy. The unit is not yet enabled.
+- **Restart (known effect, 2026-11-09):** a restart of `interf-web` takes the page down for about 32 s: nginx answers
+  502, open pages say "Disconnected", and a reload after that is Live. About 25 s of it is Python start-up under
+  `CPUQuota=10%` (J, 2026-11-06: Bobby may host other apps; a slow restart was accepted).
 - **Page, main view (most important; mirrors main's `interf_GUI.py` / `interf_plot.py`):** one plot of density vs
   time for P20, P29 and P40 (x `Time (ms)`, y `ne (10^18 m^-3)`, title "Density assuming 40cm plasma Dia"), colours as
   main (P20 red, P29 blue, P40 green), shot ID (`shot_date-shot_number`) and time above it. Controls: Pause (freezes the
@@ -475,7 +481,12 @@ shot after an IOC start resets its baseline: a restart shows only as a gap in `S
   0.2 s, and `CFG:NE_WINDOW_MS` read `[5, 10]`. The unit itself (`test-on-Bobby`, 2026-11-06, from the operation
   checkout): history loaded with 0 lines skipped, and `/ws` delivered shots about 0.2 s after each shot. Full suite in a
   venv with the web packages: 210 passed, 11 skipped (5 need node, 6 need `.trc` files); `PageSessionTests`
-  (`session.js`) were not run, as Bobby has no node. Still untried: the page from another lab PC.
+  (`session.js`) were not run, as Bobby has no node. Behind nginx (`test-on-Bobby`, 2026-11-09, `72af7fd` plus host
+  files): the URL without its trailing slash redirects (301); `static/` and `api/trend` work; `/` returns 404; a `/ws`
+  socket held 200 s, past the proxy's 90 s timeout; the 4th socket from one address was refused with 1013 and logged
+  with the viewer's address, not 127.0.0.1; a made-up `X-Forwarded-For` from the client had no effect; port 8080 was
+  refused from the lab address; `systemd-analyze security nginx` went from 9.4 to 6.1 with the drop-in. J checked the
+  page in a browser. Still untried: the page from another lab PC.
 
 ## 2. Open
 
@@ -484,7 +495,7 @@ shot after an IOC start resets its baseline: a restart shows only as a gap in `S
   slightly. Proposed: `interf_store` saves each port's `ne_mean` (already in the group) as an attribute on that shot's
   phase dataset. Until J decides, the history covers only what `interf_web` saw itself.
 - D18, for J: does the browser UI replace the C7 Phoebus screens, or sit beside them?
-- D18: the final port.
+- Closed 2026-11-09: D18's final port. The page is behind nginx at `/diagnostic/interferometer/` (D18, Address).
 - Closed 2026-10-18: empty P40 arrays (D9). The main-branch writer has stored empty P40 arrays with
   `rigol_missing=True` since `33ca795` (2026-05-12), so the store's empty arrays match the legacy files; only files
   from before then hold zero-filled placeholders.

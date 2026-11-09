@@ -407,7 +407,8 @@ can be handed back to the streaming team on its own.
 - operations: the D10 system units, all enabled at boot, each with its host's site drop-in, run from `/opt/bapsf_interferometer`, the operation checkout on
   `refactor/linux-epics-daq` (`~jia/code/bapsf_interferometer` on Bobby is a separate test clone); keep the scope clock NTP-synced, and keep
   `INTERF_SHOT_STATE` and `INTERF_LOG_DIR` on a local disk (not a network filesystem), with the state file outside the
-  log directory (the acquisition unit sets them under `/var/lib` and `/var/log`).
+  log directory (the acquisition unit sets them under `/var/lib` and `/var/log`); the browser page is reached through
+  nginx (`deploy/nginx/`, D18).
 
 ## 5. Real-data checks (`test-on-Bobby`, connected 2026-10-11)
 

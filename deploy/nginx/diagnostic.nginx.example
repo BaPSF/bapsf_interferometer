@@ -1,0 +1,66 @@
+# /etc/nginx/sites-available/diagnostic (enabled by a symlink in sites-enabled); the host keeps the real file, with its
+# lab address in place of <lab address>. The host's diagnostic pages under http://<lab address>/diagnostic/<name>/.
+# Each page's own server listens on 127.0.0.1 only; this proxy is the one way in from the lab network (D18).
+# Install as root (tried with Debian 13's nginx 1.26):
+#   systemctl mask nginx                  # before apt, so Debian's default site never starts on 0.0.0.0:80
+#   apt install nginx && dpkg -l nginx    # the state must read ii
+#   rm /etc/nginx/sites-enabled/default
+#   install -m 0644 <the host's copy of this file> /etc/nginx/sites-available/diagnostic
+#   ln -s /etc/nginx/sites-available/diagnostic /etc/nginx/sites-enabled/diagnostic
+#   install -D -m 0644 <the host's drop-in> /etc/systemd/system/nginx.service.d/site.conf   # nginx.site.conf.example
+#   nginx -t
+#   # interf-web's site.conf: INTERF_WEB_HOST=127.0.0.1, or no INTERF_WEB_HOST (the same default)
+#   systemctl unmask nginx && systemctl daemon-reload && systemctl restart interf-web && systemctl enable --now nginx
+# Optional, host-only: worker_processes 2; in /etc/nginx/nginx.conf. The default, auto, starts one worker per core.
+
+# WebSocket upgrade: "upgrade" when the browser asks for it, otherwise a normal keep-alive-less request.
+map $http_upgrade $connection_upgrade {
+	default upgrade;
+	''      close;
+}
+
+# Requests in progress per viewer address. Generous on purpose: interf_web's own caps (3 pages per address, 20 in all)
+# refuse first and say why; this only stops one PC flooding plain requests from taking all of interf_web's 80
+# connections (MAX_CONNECTIONS).
+limit_conn_zone $binary_remote_addr zone=diag_per_address:1m;
+
+server {
+	# The lab network's address only, never 0.0.0.0: the scope network must not reach it.
+	listen <lab address>:80;
+	server_name _;
+	server_tokens off;
+	limit_conn diag_per_address 20;
+	limit_conn_status 429;
+	# Every page is read-only (GET and WebSocket); nothing needs a request body.
+	client_max_body_size 1k;
+
+	# Without the trailing slash the page's relative links (static/, api/trend, ws) would resolve under /diagnostic/.
+	location = /diagnostic/interferometer {
+		return 301 /diagnostic/interferometer/;
+	}
+
+	location /diagnostic/interferometer/ {
+		# The trailing slash strips the prefix: /diagnostic/interferometer/ws reaches interf_web as /ws.
+		proxy_pass http://127.0.0.1:8080/;
+		proxy_http_version 1.1;
+		proxy_set_header Upgrade $http_upgrade;
+		proxy_set_header Connection $connection_upgrade;
+		proxy_set_header Host $host;
+		# The viewer's own address, replacing anything the browser sent: interf_web's per-address limits
+		# (MAX_VIEWERS_PER_ADDRESS, the trend rate limit) count against it. interf_web reads this header from 127.0.0.1
+		# only (server_settings).
+		proxy_set_header X-Forwarded-For $remote_addr;
+		# interf_web pings every 30 s (PING_INTERVAL_S) and drops a dead peer after 60 s more; 90 s covers a quiet socket.
+		proxy_read_timeout 90s;
+		proxy_send_timeout 90s;
+		# Frames go straight through, never held in nginx's buffers.
+		proxy_buffering off;
+		# A viewer reloads /api/trend every few seconds: one line each would fill the log. Errors still go to error.log.
+		access_log off;
+	}
+
+	# Nothing else is served yet.
+	location / {
+		return 404;
+	}
+}

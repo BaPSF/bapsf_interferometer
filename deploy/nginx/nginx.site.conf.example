@@ -1,0 +1,25 @@
+# /etc/systemd/system/nginx.service.d/site.conf; the host keeps the real file.
+[Service]
+# The scope network, which nginx never needs (as on the IOC, store and page units).
+IPAddressDeny=<scope network>
+# nginx binds the lab address itself: if that address is not up yet at boot the start fails, and this retries.
+Restart=on-failure
+RestartSec=5
+# Light sandboxing that leaves nginx's own needs alone (it starts as root, binds port 80, then runs workers as
+# www-data; it writes /var/log/nginx, /var/lib/nginx and /run).
+ProtectHome=yes
+PrivateTmp=yes
+ProtectSystem=full
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+NoNewPrivileges=yes
+RestrictNamespaces=yes
+RestrictRealtime=yes
+LockPersonality=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+# No SystemCallFilter= or CapabilityBoundingSet=: the master process needs root to bind port 80 and switch to
+# www-data. Compare `systemd-analyze security nginx` before and after.

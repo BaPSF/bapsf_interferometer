@@ -57,11 +57,11 @@ In production four systemd units from [deploy/systemd/](deploy/systemd/), all en
 
 ## Browser page
 
-**Proposed (D18), not yet live:** the unit was tested on Bobby on 2026-11-06, but is not yet enabled. A page that loses its connection, or whose tab stays hidden for 15 min, says so and asks to be reloaded.
+**Live on Bobby since 2026-11-09** at `http://<Bobby's lab address>/diagnostic/interferometer/`, behind nginx ([deploy/nginx/](deploy/nginx/)). A page that loses its connection, or whose tab stays hidden for 15 min, says so and asks to be reloaded; after a restart of the page's service, the reload works about 30 s later.
 
 [interf_web/](interf_web/) shows each shot's density vs time for every port, this shot's NE_MEAN and its recent history, in any browser in the lab, with nothing to install. It only displays. It is a separate process that only reads the IOC's PVs (the `SHOT` group, and `CFG:NE_WINDOW_MS` for the shaded window), so nothing else waits on it; a slow browser skips to the newest shot. History covers only what `interf_web` has seen itself: today and yesterday, from memory and its own files, not from HDF5.
 
-To install the unit, follow the steps in the header of [interf-web.service](deploy/systemd/interf-web.service). To run it by hand, on `127.0.0.1:8080` unless `INTERF_WEB_HOST` and `INTERF_WEB_PORT` say otherwise:
+To install the unit, follow the steps in the header of [interf-web.service](deploy/systemd/interf-web.service), then those for the proxy in [diagnostic.nginx.example](deploy/nginx/diagnostic.nginx.example). To run it by hand, on `127.0.0.1:8080` unless `INTERF_WEB_HOST` and `INTERF_WEB_PORT` say otherwise:
 
 ```bash
 pip install -e '.[clients,web]' -c constraints.txt

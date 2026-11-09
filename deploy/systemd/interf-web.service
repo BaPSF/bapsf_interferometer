@@ -1,13 +1,13 @@
 # The browser page (interf_web) as a system unit, beside diag-ioc@interferometer: monitors the IOC's PVA group
 # <prefix>:SHOT and serves the page. Its own process: acquisition, the IOC and the store never wait on it (D18).
-# Site settings, the page's address among them (INTERF_WEB_HOST; without it the page serves 127.0.0.1 only): see
-# diag-ioc@.service.
+# Serves 127.0.0.1:8080 (the code's default); the lab opens it through nginx (deploy/nginx/, D18) at
+# http://<lab address>/diagnostic/interferometer/. Site settings: see diag-ioc@.service.
 # Install as root, after diag-ioc@.service's steps (/opt/bapsf_interferometer and its venv):
 #   cd /opt/bapsf_interferometer
 #   .venv/bin/pip install -e '.[ioc,clients,compression,web]' -c constraints.txt
 #   cp deploy/systemd/interf-web.service /etc/systemd/system/
 #   install -D -m 0644 <the host's drop-in> /etc/systemd/system/interf-web.service.d/site.conf
-#   # optional: /etc/interferometer/web.env for overrides (e.g. INTERF_WEB_PORT)
+#   # optional: /etc/interferometer/web.env for overrides (e.g. INTERF_WEB_PORT, which nginx's proxy_pass must match)
 #   systemctl daemon-reload && systemctl enable --now interf-web   # enabled at boot, as are the other three units (D10)
 # Log: journalctl -u interf-web. History files: /var/lib/interf-web.
 [Unit]

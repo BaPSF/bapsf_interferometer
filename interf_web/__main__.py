@@ -404,7 +404,11 @@ def server_settings(host, port):
 	# ws and lifespan are named so trouble stops the start: with "auto", a missing websockets package leaves every /ws
 	# refused, and a failed start of the monitor can read as "lifespan unsupported" and serve a page with no data.
 	# No deflate: float32 samples barely compress on a LAN, and each browser's copy would cost the event loop.
-	return dict(host=host, port=port, http=_timed_h11_protocol(), ws="websockets-sansio",
+	# X-Forwarded-For from the proxy on this host (deploy/nginx/) gives the viewer's address, which the per-address
+	# limits count against. Named, not uvicorn's default: that reads FORWARDED_ALLOW_IPS from the environment, so a
+	# stray env file would change whose header is believed.
+	return dict(host=host, port=port, proxy_headers=True, forwarded_allow_ips="127.0.0.1",
+	            http=_timed_h11_protocol(), ws="websockets-sansio",
 	            ws_per_message_deflate=False, ws_max_size=WS_MAX_SIZE, ws_ping_interval=PING_INTERVAL_S,
 	            ws_ping_timeout=PING_TIMEOUT_S, limit_concurrency=MAX_CONNECTIONS, timeout_keep_alive=KEEP_ALIVE_S,
 	            lifespan="on", log_config=None, access_log=False, timeout_graceful_shutdown=STOP_TIMEOUT_S)
