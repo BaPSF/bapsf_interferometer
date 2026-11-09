@@ -256,17 +256,17 @@ shot after an IOC start resets its baseline: a restart shows only as a gap in `S
   these stay out of commits, in untracked host config or private notes: anything that works like a password (keys,
   certificates, tokens, ntfy topic names), public IP allowlists, personal home paths, and the list of known weaknesses
   not yet fixed (each until it is fixed). Committed files carry placeholders or `.example` copies for these, as
-  `deploy/systemd/acquire.env.example` and `deploy/nginx/` do. Untracked host config: `/etc/interferometer/*.env`,
+  `deploy/systemd/acquire.env.example` and `deploy/nginx/diagnostic.nginx.example` (its listen address) do. Untracked host config: `/etc/interferometer/*.env`,
   `/etc/diag-ioc/*.env`, and the raw output stream `.conf` in the operator's home (for example
   `~lapd/nersc-stream/stream.conf`). The ntfy topics already in history are retired and replaced on the host, not
   removed from history. `.gitignore` excludes `*.local.conf`, `*.local.env` and any `local/` directory. When unsure,
   ask: would this help someone outside get in? If yes, keep it private; if not, commit it with its reason.
 - Site settings (J, 2026-11-09): a host's drop-in, `/etc/systemd/system/<unit>.d/site.conf`, holds only values that
   differ per machine, such as a listen address. The four units need none on Bobby (`interf_web` keeps its default,
-  127.0.0.1). nginx, a Debian package, takes its settings through its drop-in (`deploy/nginx/nginx.site.conf.example`),
-  and its site file holds the one per-machine value, the listen address. From 2026-11-08 to 2026-11-09 the units
-  carried a placeholder `User=` and Bobby's drop-ins held the accounts and the hardening; those drop-ins now repeat the
-  units and can be removed. The Rigol's address is set in the host's `acquire.env` (code default: the Rigol disabled).
+  127.0.0.1). nginx, a Debian package, takes its settings through a drop-in, `deploy/nginx/nginx.site.conf`, installed
+  as committed, like the units; only its site file, `deploy/nginx/diagnostic.nginx.example`, has a placeholder, for the
+  one per-machine value, the listen address. From 2026-11-08 to 2026-11-09 the units carried a placeholder `User=` and
+  Bobby's drop-ins held the accounts and the hardening; Bobby removed those drop-ins on 2026-11-09 (Evidence). The Rigol's address is set in the host's `acquire.env` (code default: the Rigol disabled).
 - Ordering: `interf-acquire` has `Wants=` and `After=` on `diag-ioc@interferometer` (and `network-online.target`), never
   `Requires=`/`BindsTo=`/`PartOf=`, so an IOC stop or crash never stops acquisition (D5). `After=` orders process starts,
   not readiness: the IOC listens about 1.3 s after it starts, and the link's retry covers the gap. `interf-store` has
@@ -294,7 +294,13 @@ shot after an IOC start resets its baseline: a restart shows only as a gap in `S
   owner and modes, `diag-ioc` can read the `.trc` data, a full replay (sent 55, dropped 0, failed 0; `SHOT:LOST`,
   `STAT:DROPPED`, `STAT:ACK_TIMEOUTS` 0), and an IOC SIGKILL mid-replay with restart and link recovery. The replay
   does not exercise acquisition's `/var/log` and `/var/lib` paths; the first live run does. Since 2026-11-09 all four
-  units run on Bobby with the accounts above (acquisition as `lapd`, the rest as `diag-ioc`).
+  units run on Bobby with the accounts above (acquisition as `lapd`, the rest as `diag-ioc`). At 05:34 that day Bobby
+  installed the four repo units unchanged from `/opt` at `ff04e83` and removed their drop-ins: `systemctl show` gave
+  the same effective settings, except the store's environment in another order and the page's `INTERF_WEB_HOST`, now
+  unset, so the code's default 127.0.0.1. Bobby runs the repo units with no drop-ins; nginx's is the only one.
+  `systemd-analyze verify` passes on the four units, and the full suite ran 249 tests, all OK, 11 skipped. `nginx -t`
+  on the site file with the address filled in reported "syntax is ok" (run as a normal user, which then cannot bind
+  port 80).
 
 ### D11. Pin the EPICS stack
 - Exact versions of `softioc`, `epicscorelibs`, `pvxslibs` and (for C6) `p4p` in a constraints file (pyproject's `softioc>=4.7.2` is only a
@@ -531,7 +537,9 @@ shot after an IOC start resets its baseline: a restart shows only as a gap in `S
   socket and refills the history. Tests: `tests/test_interf_web.py`, the page's part in node.
 - **Address (2026-11-09):** behind nginx at `/diagnostic/<name>/` (`http://<lab address>/diagnostic/interferometer/`),
   `interf_web` on `127.0.0.1:8080`, the code's default (`INTERF_WEB_HOST`, `INTERF_WEB_PORT`). The proxy's site file
-  and its drop-in are `.example` copies in `deploy/nginx/`; install steps are in the site file's header. The proxy
+  is `deploy/nginx/diagnostic.nginx.example` (the listen address a placeholder; install steps in its header), and its
+  systemd drop-in `deploy/nginx/nginx.site.conf`, installed as committed. `test_nginx_site` pins the headers, the
+  `proxy_pass` and the listen rule below; `test_unit_accounts` pins the drop-in's `IPAddressDeny`. The proxy
   passes the viewer's address in `X-Forwarded-For`, which `interf_web` reads from 127.0.0.1 only (`server_settings`),
   so the per-address limits count each viewer, not the proxy. nginx listens on the lab network's address only, never
   `0.0.0.0` (`enp2s0` is the scope network), and `interf_web` on loopback only, so nginx is the one way in. Both are

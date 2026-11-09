@@ -127,14 +127,16 @@ class DecidedValuesTests(unittest.TestCase):
 
 	def test_unit_accounts(self):
 		"""D10: acquisition alone as lapd (the NERSC key), reaching the link socket through the diag-ioc group; the
-		others as diag-ioc and off the scope network, which only acquisition talks to."""
+		others, and nginx, off the scope network, which only acquisition talks to."""
 		def unit(name):
 			return (REPO / "deploy" / "systemd" / f"{name}.service").read_text(encoding="utf-8").splitlines()
 
+		deny_scopes = "IPAddressDeny=10.106.34.0/24"
 		for name in ("diag-ioc@", "interf-store", "interf-web"):
 			lines = unit(name)
-			for line in ("User=diag-ioc", "Group=diag-ioc", "IPAddressDeny=10.106.34.0/24"):
+			for line in ("User=diag-ioc", "Group=diag-ioc", deny_scopes):
 				self.assertIn(line, lines, name)
+		self.assertIn(deny_scopes, (REPO / "deploy" / "nginx" / "nginx.site.conf").read_text(encoding="utf-8").splitlines())
 		self.assertIn("RuntimeDirectoryMode=0750", unit("diag-ioc@"))
 		acquire = unit("interf-acquire")
 		for line in ("User=lapd", "Group=lapd", "SupplementaryGroups=diag-ioc"):
@@ -144,6 +146,22 @@ class DecidedValuesTests(unittest.TestCase):
 			lines = unit(name)
 			self.assertIn("Environment=EPICS_PVA_ADDR_LIST=127.0.0.1", lines, name)
 			self.assertIn("Environment=EPICS_PVA_AUTO_ADDR_LIST=NO", lines, name)
+
+	def test_nginx_site(self):
+		"""D18: nginx is the one way in from the lab network and passes on the viewer's address."""
+		text = (REPO / "deploy" / "nginx" / "diagnostic.nginx.example").read_text(encoding="utf-8")
+		lines = [line.split("#", 1)[0].strip() for line in text.splitlines()]
+		# Anything else there and the per-address limits would quietly count every viewer as the proxy.
+		self.assertIn("proxy_set_header X-Forwarded-For $remote_addr;", lines)
+		# The trailing slash strips /diagnostic/interferometer before interf_web sees the path.
+		self.assertIn("proxy_pass http://127.0.0.1:8080/;", lines)
+		self.assertIn("proxy_set_header Upgrade $http_upgrade;", lines)
+		self.assertIn("proxy_set_header Connection $connection_upgrade;", lines)
+		listens = [line[len("listen"):].strip().rstrip(";") for line in lines if line.startswith("listen ")]
+		self.assertTrue(listens)
+		for target in listens:  # "<lab address>:80"; never every interface: the scope network must not reach it
+			address = target.rsplit(":", 1)[0] if ":" in target else ""
+			self.assertNotIn(address, ("", "0.0.0.0", "*", "[::]"), target)
 
 	def test_web_unit_sandbox(self):
 		unit = (REPO / "deploy" / "systemd" / "interf-web.service").read_text(encoding="utf-8").splitlines()

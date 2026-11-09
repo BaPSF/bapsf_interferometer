@@ -1,13 +1,13 @@
 # /etc/nginx/sites-available/diagnostic (enabled by a symlink in sites-enabled); the host keeps the real file, with its
 # lab address in place of <lab address>. The host's diagnostic pages under http://<lab address>/diagnostic/<name>/.
 # Each page's own server listens on 127.0.0.1 only; this proxy is the one way in from the lab network (D18).
-# Install as root (tried with Debian 13's nginx 1.26):
+# Install as root from /opt/bapsf_interferometer (tried with Debian 13's nginx 1.26):
 #   systemctl mask nginx                  # before apt, so Debian's default site never starts on 0.0.0.0:80
 #   apt install nginx && dpkg -l nginx    # the state must read ii
 #   rm /etc/nginx/sites-enabled/default
 #   install -m 0644 <the host's copy of this file> /etc/nginx/sites-available/diagnostic
 #   ln -s /etc/nginx/sites-available/diagnostic /etc/nginx/sites-enabled/diagnostic
-#   install -D -m 0644 <the host's drop-in> /etc/systemd/system/nginx.service.d/site.conf   # nginx.site.conf.example
+#   install -D -m 0644 deploy/nginx/nginx.site.conf /etc/systemd/system/nginx.service.d/site.conf
 #   nginx -t
 #   # interf_web must serve 127.0.0.1:8080, its default: no INTERF_WEB_HOST elsewhere in a drop-in or web.env
 #   systemctl unmask nginx && systemctl daemon-reload && systemctl restart interf-web && systemctl enable --now nginx
