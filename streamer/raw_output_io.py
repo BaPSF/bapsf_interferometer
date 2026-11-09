@@ -84,8 +84,11 @@ class IO(ABC):
 
             private_key = cls._load_required_private_key(settings)
             config = ServerConfig(settings.destination)
+            from .retry_backoff import ConsumerLaunchBackoff
+            launch_backoff = ConsumerLaunchBackoff(config.retry_delay_seconds)
             return lambda: RestartingSingleSocketIO(
-                settings, private_key, config=config, timing_log=timing_log
+                settings, private_key, config=config, timing_log=timing_log,
+                launch_backoff=launch_backoff,
             )
 
         if destination.exists():

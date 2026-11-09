@@ -1,4 +1,6 @@
 import json
+import io
+import socket
 import unittest
 from types import SimpleNamespace
 from unittest import mock
@@ -6,8 +8,10 @@ from unittest import mock
 import nacl.public
 
 from streamer.connection_security import encrypt_connection_info
-from streamer.remote_consumer_io import RestartingSingleSocketIO, SSHConsumerLauncher
+from streamer.remote_consumer_io import RestartingSingleSocketIO, SSHConsumerLauncher, SSHStreamSocket
+from streamer.single_socket_io import SingleSocketIO
 from streamer.ntfy_notifications import NtfyNotifier, MAX_NOTIFICATION_BYTES
+from streamer.retry_backoff import ConsumerLaunchBackoff
 
 
 class LaunchDiagnosticsTests(unittest.TestCase):
@@ -64,6 +68,37 @@ class LaunchDiagnosticsTests(unittest.TestCase):
             self.make_output()
         self.alert.notify.assert_not_called()
         self.info.notify.assert_called_once()
+
+    def test_launch_backoff_caps_and_resets_only_on_success(self):
+        self.config.retry_delay_seconds = 15
+        failure = OSError("server unavailable")
+        with mock.patch("streamer.retry_backoff.time.monotonic", return_value=100), \
+                mock.patch("streamer.remote_consumer_io.threading.Event") as event, \
+                mock.patch.object(RestartingSingleSocketIO, "_new_output",
+                                  side_effect=[failure] * 10 + [mock.Mock()]):
+            output = self.make_output()
+            self.assertEqual([call.args[0] for call in event.return_value.wait.call_args_list],
+                             [0, 15, 15, 30, 60, 120, 240, 480, 960, 960, 960])
+            event.return_value.wait.reset_mock()
+            with mock.patch.object(output, "_new_output", side_effect=[failure, mock.Mock()]):
+                output._connect_with_retries("connection_lost")
+            self.assertEqual([call.args[0] for call in event.return_value.wait.call_args_list],
+                             [0, 15])
+
+    def test_failed_launch_series_preserves_backoff(self):
+        self.config.retry_delay_seconds = 15
+        self.config.max_relaunch_attempts = 1
+        backoff = ConsumerLaunchBackoff(15)
+        with mock.patch("streamer.retry_backoff.time.monotonic", return_value=100), \
+                mock.patch("streamer.remote_consumer_io.threading.Event") as event, \
+                mock.patch.object(RestartingSingleSocketIO, "_new_output", side_effect=OSError("outage")):
+            for _ in range(4):
+                with self.assertRaises(OSError):
+                    RestartingSingleSocketIO(SimpleNamespace(), None, config=self.config,
+                        launcher=mock.Mock(), notifier=self.info, alert_notifier=self.alert,
+                        launch_backoff=backoff)
+            self.assertEqual([call.args[0] for call in event.return_value.wait.call_args_list],
+                             [0, 15, 15, 30])
 
     def test_each_new_producer_output_alerts_again(self):
         for _ in range(3):
@@ -146,6 +181,25 @@ class LaunchDiagnosticsTests(unittest.TestCase):
                 )):
             with self.assertRaisesRegex(OSError, r"Permission denied \(publickey\)"):
                 launcher.launch()
+
+
+class SSHAbortTests(unittest.TestCase):
+    def test_disconnected_ssh_socket_can_be_aborted_before_relaunch(self):
+        connection, peer = socket.socketpair()
+        self.addCleanup(peer.close)
+        self.addCleanup(connection.close)
+        process = mock.Mock()
+        errors = io.BytesIO()
+        tunnel = SSHStreamSocket(connection, process, errors)
+        output = SingleSocketIO.__new__(SingleSocketIO)
+        output._socket = tunnel
+        peer.close()
+        output.abort()
+        output.abort()
+        self.assertIsNone(output._socket)
+        self.assertEqual(connection.fileno(), -1)
+        self.assertTrue(errors.closed)
+        process.wait.assert_called_once_with(timeout=.2)
 
 
 class NotificationSizeTests(unittest.TestCase):
