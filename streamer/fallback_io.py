@@ -66,6 +66,10 @@ class FallbackIO(BufferedIO):
         if stopped:
             output.abort()
 
+    def _wait_for_certificate_check(self, seconds):
+        with self._condition:
+            return self._condition.wait_for(lambda: self._closed, timeout=seconds)
+
     def _recover(self):
         while True:
             with self._condition:
@@ -77,6 +81,7 @@ class FallbackIO(BufferedIO):
                     self._settings, self._key, config=self._config,
                     timing_log=self._timing_log, single_attempt=True,
                     socket_callback=self._socket_available, notifications=False,
+                    certificate_wait=self._wait_for_certificate_check,
                 )
                 estimate = remote._output.clock_estimate
                 self._launch_backoff.reset()

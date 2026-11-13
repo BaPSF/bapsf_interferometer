@@ -538,8 +538,6 @@ class SSHControlConnection:
 class RestartingSingleSocketIO(IO):
     """Reconnect a remote consumer and retry only the interrupted output."""
 
-    EXPIRED_KEY_RELAUNCH_ATTEMPTS = 1
-
     def __init__(
         self,
         settings,
@@ -553,6 +551,7 @@ class RestartingSingleSocketIO(IO):
         socket_callback=None,
         notifications=True,
         launch_backoff=None,
+        certificate_wait=None,
     ):
         self._single_attempt = single_attempt
         self._socket_callback = socket_callback
@@ -588,6 +587,7 @@ class RestartingSingleSocketIO(IO):
         self._closed = False
         self._aborted = False
         self._abort_event = threading.Event()
+        self._certificate_wait = certificate_wait or self._abort_event.wait
         try:
             self._connect_with_retries("launch")
         except Exception:
@@ -622,12 +622,12 @@ class RestartingSingleSocketIO(IO):
 
     def _connect_with_retries(self, reason):
         attempt = 0
-        expired_key_attempts = 0
         failure_notified = False
         while True:
             self._abort_event.wait(self._launch_backoff.remaining())
             if self._aborted:
                 raise RuntimeError("Remote consumer output was aborted")
+            self._wait_for_valid_ssh_certificate()
             attempt += 1
             try:
                 self._output = self._new_output()
@@ -677,58 +677,40 @@ class RestartingSingleSocketIO(IO):
                 maximum = self._config.max_relaunch_attempts
                 if maximum and attempt >= maximum:
                     raise
-                expired_certificate = self._expired_ssh_certificate()
-                if expired_certificate is None:
-                    expired_key_attempts = 0
-                else:
-                    expired_key_attempts += 1
-                    if (
-                        expired_key_attempts
-                        >= self.EXPIRED_KEY_RELAUNCH_ATTEMPTS
-                    ):
-                        self._wait_for_ssh_key_update(expired_certificate)
-                        attempt = 0
-                        expired_key_attempts = 0
-                        continue
 
-    def _expired_ssh_certificate(self):
+    def _wait_for_valid_ssh_certificate(self):
+        """Gate every launch, including fallback's single-attempt launches.
+
+        An existing SSH master may still accept channels after certificate
+        expiry; its success must not bypass this local validity check.
+        """
         certificate = getattr(self._config, "ssh_key_certificate", None)
         if not certificate:
-            return None
-        try:
-            validity = read_certificate_validity(certificate)
-        except ValueError:
-            return None
-        return validity if time.time() >= validity.valid_before else None
-
-    def _wait_for_ssh_key_update(self, expired_certificate):
-        certificate = self._config.ssh_key_certificate
-        interval = getattr(
-            self._config, "ssh_key_check_interval_seconds", 60.0
-        )
-        self._record(
-            "ssh_key.wait",
-            certificate=certificate,
-            expired_at=expired_certificate.valid_before,
-        )
+            return
+        interval = getattr(self._config, "ssh_key_check_interval_seconds", 60.0)
+        waiting = False
         while True:
+            if self._aborted:
+                raise RuntimeError("Remote consumer output was aborted")
             try:
-                replacement = read_certificate_validity(certificate)
-            except ValueError:
-                replacement = None
-            now = time.time()
-            if (
-                replacement is not None
-                and replacement != expired_certificate
-                and replacement.valid_after <= now < replacement.valid_before
-            ):
-                self._record(
-                    "ssh_key.updated",
-                    certificate=certificate,
-                    valid_before=replacement.valid_before,
-                )
+                validity = read_certificate_validity(certificate)
+                now = time.time()
+                valid = validity.valid_after <= now < validity.valid_before
+                details = dict(valid_after=validity.valid_after,
+                               expired_at=validity.valid_before)
+            except ValueError as exc:
+                valid = False
+                details = dict(error=str(exc))
+            if valid:
+                if waiting:
+                    self._record("ssh_key.updated", certificate=certificate,
+                                 valid_before=validity.valid_before)
                 return
-            time.sleep(interval)
+            if not waiting:
+                self._record("ssh_key.wait", certificate=certificate, **details)
+                waiting = True
+            if self._certificate_wait(interval):
+                raise RuntimeError("Remote consumer output was aborted")
 
     def write_data(self, data):
         if self._closed:

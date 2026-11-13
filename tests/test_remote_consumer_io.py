@@ -38,6 +38,57 @@ class LaunchDiagnosticsTests(unittest.TestCase):
         self.addCleanup(output.close)
         return output
 
+    def test_invalid_certificate_blocks_before_even_a_single_attempt(self):
+        from streamer.ssh_key_monitor import CertificateValidity
+        self.config.ssh_key_certificate = "cert.pub"
+        for validity in (CertificateValidity(0, 99), CertificateValidity(101, 200),
+                         ValueError("missing or unreadable certificate")):
+            with self.subTest(validity=validity), \
+                    mock.patch("streamer.remote_consumer_io.time.time", return_value=100), \
+                    mock.patch("streamer.remote_consumer_io.read_certificate_validity",
+                               side_effect=[validity, CertificateValidity(0, 200)]), \
+                    mock.patch.object(RestartingSingleSocketIO, "_new_output",
+                                      return_value=mock.Mock()) as launch:
+                def wait(seconds):
+                    launch.assert_not_called()
+                    return False
+                output = RestartingSingleSocketIO(
+                    SimpleNamespace(), None, config=self.config, launcher=mock.Mock(),
+                    single_attempt=True, notifications=False, certificate_wait=wait)
+                output.close()
+                launch.assert_called_once()
+
+    def test_certificate_expiring_between_retries_blocks_next_launch(self):
+        from streamer.ssh_key_monitor import CertificateValidity
+        self.config.ssh_key_certificate = "cert.pub"
+        with mock.patch("streamer.remote_consumer_io.time.time", return_value=100), \
+                mock.patch("streamer.remote_consumer_io.read_certificate_validity",
+                           side_effect=[CertificateValidity(0, 200), CertificateValidity(0, 99),
+                                        CertificateValidity(0, 300)]), \
+                mock.patch.object(RestartingSingleSocketIO, "_new_output",
+                                  side_effect=[OSError("outage"), mock.Mock()]) as launch:
+            def wait(seconds):
+                self.assertEqual(launch.call_count, 1)
+                return False
+            output = RestartingSingleSocketIO(
+                SimpleNamespace(), None, config=self.config, launcher=mock.Mock(),
+                notifications=False, certificate_wait=wait)
+            output.close()
+            self.assertEqual(launch.call_count, 2)
+
+    def test_certificate_wait_can_be_cancelled_without_launching(self):
+        from streamer.ssh_key_monitor import CertificateValidity
+        self.config.ssh_key_certificate = "cert.pub"
+        with mock.patch("streamer.remote_consumer_io.time.time", return_value=100), \
+                mock.patch("streamer.remote_consumer_io.read_certificate_validity",
+                           return_value=CertificateValidity(0, 99)), \
+                mock.patch.object(RestartingSingleSocketIO, "_new_output") as launch:
+            with self.assertRaisesRegex(RuntimeError, "aborted"):
+                RestartingSingleSocketIO(
+                    SimpleNamespace(), None, config=self.config, launcher=mock.Mock(),
+                    notifications=False, certificate_wait=lambda seconds: True)
+            launch.assert_not_called()
+
     def test_initial_failures_log_each_error_but_alert_only_once_then_report_success(self):
         failures = [OSError("Permission denied (publickey)."), EOFError("Connection closed")]
         with mock.patch.object(RestartingSingleSocketIO, "_new_output", side_effect=[*failures, mock.Mock()]):

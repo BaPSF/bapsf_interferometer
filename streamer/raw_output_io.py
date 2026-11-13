@@ -36,8 +36,9 @@ class IO(ABC):
                 from .fallback_io import FallbackIO
                 return FallbackIO(settings, config, cls._load_required_private_key(settings),
                                   timing_log=timing_log, prepare=prepare)
+        close_event = threading.Event()
         return BufferedIO(
-            cls._output_opener(settings, timing_log),
+            cls._output_opener(settings, timing_log, certificate_wait=close_event.wait),
             buffer_seconds=getattr(settings, "buffer_seconds", 600.0),
             output_interval_seconds=getattr(
                 settings, "output_interval_seconds", 3.0
@@ -46,10 +47,11 @@ class IO(ABC):
             retry_delay_seconds=getattr(settings, "retry_delay_seconds", 3.0),
             prepare=prepare,
             key_monitor_config=config,
+            close_event=close_event,
         )
 
     @classmethod
-    def _output_opener(cls, settings, timing_log):
+    def _output_opener(cls, settings, timing_log, certificate_wait=None):
         """Return a function that opens a new output for ``settings``.
 
         The mode follows the destination, never the key, and is fixed here
@@ -90,7 +92,7 @@ class IO(ABC):
             launch_backoff = ConsumerLaunchBackoff(config.retry_delay_seconds)
             return lambda: RestartingSingleSocketIO(
                 settings, private_key, config=config, timing_log=timing_log,
-                launch_backoff=launch_backoff,
+                launch_backoff=launch_backoff, certificate_wait=certificate_wait,
             )
 
         if destination.exists():
@@ -241,6 +243,7 @@ class BufferedIO(IO):
         retry_delay_seconds=3.0,
         prepare=None,
         key_monitor_config=None,
+        close_event=None,
     ):
         if not math.isfinite(buffer_seconds) or buffer_seconds <= 0:
             raise ValueError("Buffer duration must be greater than zero")
@@ -249,6 +252,7 @@ class BufferedIO(IO):
         if not math.isfinite(retry_delay_seconds) or retry_delay_seconds < 0:
             raise ValueError("Retry delay must not be negative")
 
+        self._close_event = close_event or threading.Event()
         self._open_output = open_output
         self._output = None
         self._prepare = prepare
@@ -552,6 +556,7 @@ class BufferedIO(IO):
         with self._condition:
             drained = not self._worker.is_alive()
             self._closed = True
+            self._close_event.set()
             self._condition.notify_all()
             self._unsent_steps = len(self._buffer) + (self._pending is not None)
             output = self._output

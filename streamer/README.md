@@ -485,9 +485,12 @@ The success notification requires the producer to decrypt the connection
 information and connect and authenticate to the consumer; starting the remote
 process alone does not send it. A new producer process resets alert suppression.
 
-When an expired configured certificate prevents recovery, the producer pauses
-launch attempts after the first failure and watches for a different, currently
-valid certificate. It resumes recovery after that replacement appears.
+Before every consumer launch or relaunch, including local-fallback recovery,
+the producer checks the configured certificate locally. Expired, not-yet-valid,
+missing, or unreadable certificates pause launches until a currently valid
+certificate is available. This also applies when an existing SSH master could
+still open channels. Established streams continue; local fallback keeps saving
+during the wait, and shutdown interrupts it.
 
 Notification failures never interrupt output. Main-process failures are
 recorded as `notification.failed` timing events. The certificate monitor stops
@@ -716,8 +719,10 @@ connection. Notifications are captured by a local HTTP receiver.
 
 The test checks that four failed relaunches, local fallback, and recovery preserve
 the monitor PID and send each expiry threshold once. Replacing the certificate
-must reset the warnings; real expiry must notify once; output shutdown must stop
-the monitor. It retains source hashes, configurations, notifications, and a JSON
+must reset the warnings; real expiry must notify once. After expiry, actual
+consumer launch counts must stay unchanged during fallback recovery, ordinary
+initial starts, and ordinary reconnects. Renewal must resume writes in both modes;
+shutdown must interrupt a certificate wait and stop the monitor. It retains source hashes, configurations, notifications, and a JSON
 report in a unique local directory, plus isolated consumer output on Ubuntu.
 Port 8597 must be free (`--port` overrides it). Shared keys and topics are untouched.
 

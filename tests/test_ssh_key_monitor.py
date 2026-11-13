@@ -1,4 +1,5 @@
 import threading
+import time
 import unittest
 from types import SimpleNamespace
 from unittest import mock
@@ -36,7 +37,9 @@ class KeyMonitorLifecycleTests(unittest.TestCase):
             host='test-server', retry_delay_seconds=0,
             ssh_key_certificate='cert.pub', ntfy_topic_alert='test-topic',
         )
-        with mock.patch('streamer.ssh_key_monitor.SSHKeyMonitorProcess') as monitor, \
+        with mock.patch('streamer.remote_consumer_io.read_certificate_validity',
+                        return_value=CertificateValidity(0, time.time() + 3600)), \
+                mock.patch('streamer.ssh_key_monitor.SSHKeyMonitorProcess') as monitor, \
                 mock.patch.object(RestartingSingleSocketIO, '_new_output',
                                   side_effect=OSError('outage')):
             for _ in range(3):
@@ -46,6 +49,34 @@ class KeyMonitorLifecycleTests(unittest.TestCase):
                         single_attempt=True, notifications=False,
                     )
             monitor.assert_not_called()
+
+    def test_buffer_shutdown_cancels_certificate_wait_during_initial_open(self):
+        config = SimpleNamespace(
+            host='test-server', local_fallback_directory=None, retry_delay_seconds=0,
+            ssh_key_certificate='cert.pub', ssh_key_check_interval_seconds=60,
+            compression_config=None, ssh_command=['ssh'], socket_transport='direct',
+        )
+        settings = SimpleNamespace(destination='server.conf', retry_delay_seconds=0)
+        checked = threading.Event()
+        def read(path):
+            checked.set()
+            return CertificateValidity(0, 1)
+        with mock.patch('streamer.remote_consumer_io.ServerConfig', return_value=config), \
+                mock.patch.object(IO, '_load_required_private_key', return_value=None), \
+                mock.patch('streamer.remote_consumer_io.SSHControlConnection'), \
+                mock.patch('streamer.remote_consumer_io.NtfyNotifier.from_config', return_value=None), \
+                mock.patch('streamer.ssh_key_monitor.SSHKeyMonitorProcess'), \
+                mock.patch('streamer.remote_consumer_io.read_certificate_validity', side_effect=read), \
+                mock.patch.object(RestartingSingleSocketIO, '_new_output') as launch:
+            output = IO.create(settings)
+            try:
+                output.write({'shot_index': 1})
+                self.assertTrue(checked.wait(2))
+            finally:
+                output.close(.01)
+            output._worker.join(1)
+            self.assertFalse(output._worker.is_alive())
+            launch.assert_not_called()
 
     def test_repeated_checks_warn_once_and_replacement_resets_schedule(self):
         notifier = mock.Mock()

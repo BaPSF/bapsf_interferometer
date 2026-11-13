@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Check certificate-monitor lifetime through real Ubuntu consumer retries.
+"""Check certificate monitoring and launch gating through real Ubuntu consumers.
 
 Requires an existing SSH ControlMaster connection (--control-path). All commands
 reuse it; ProxyCommand=false prevents opening a replacement connection. Temporary
@@ -96,9 +96,11 @@ os.execvp('ssh', ['ssh', '-S', {str(args.control_path.resolve())!r},
     key = nacl.public.PrivateKey.generate()
     (run / 'private_key').write_bytes(bytes(key))
     (run / 'private_key').chmod(0o600)
-    wrapper_code = f'''import signal, sys
+    wrapper_code = f'''import signal, sys, time
 from pathlib import Path
 sys.path.insert(0, {source!r})
+with Path({(remote_root + '/launches')!r}).open('a') as stream:
+    stream.write(str(time.time()) + '\\n')
 if Path({gate!r}).exists():
     raise SystemExit('Controlled key-monitor outage')
 def interrupt(*args):
@@ -129,7 +131,7 @@ with tarfile.open(fileobj=sys.stdin.buffer, mode='r|') as tar:
 
     def sign(seconds, serial):
         subprocess.run(['ssh-keygen', '-q', '-s', str(run / 'ca'), '-I', 'monitor-test',
-                        '-n', 'pnorbert', '-z', str(serial), '-V', f'-1m:+{seconds}s',
+                        '-n', 'pnorbert', '-z', str(serial), '-V', f'-1m:{seconds:+d}s',
                         str(run / 'identity.pub')], check=True)
         validity = read_certificate_validity(run / 'identity-cert.pub')
         print(json.dumps(dict(phase='certificate signed', serial=serial,
@@ -173,6 +175,7 @@ with tarfile.open(fileobj=sys.stdin.buffer, mode='r|') as tar:
         cfg.write(stream)
     log = TimingLog(run / 'producer.jsonl')
     output = None
+    plain = None
     report = dict(passed=False, local_directory=str(run), remote_directory=remote_root,
                   source_sha256=hashes, phases=phases, ssh_connection=connection,
                   authentication='existing SSH master; certificate used for monitoring')
@@ -198,6 +201,24 @@ with tarfile.open(fileobj=sys.stdin.buffer, mode='r|') as tar:
 
     def frame(shot):
         output.write({'shot_index': np.array(shot), 'test_values': np.arange(16) + shot}, step=shot)
+
+    def launch_count():
+        return int(remote("from pathlib import Path; import sys; print(len(Path(sys.argv[1]).read_text().splitlines()))",
+                          remote_root + '/launches'))
+
+    def disconnect(config):
+        remote('''import os, pathlib, signal, sys
+pid = int(pathlib.Path(sys.argv[1]).read_text())
+assert os.fsencode(sys.argv[2]) in pathlib.Path(f'/proc/{pid}/cmdline').read_bytes().split(b'\\0')
+os.kill(pid, signal.SIGUSR1)
+''', config.pid_file, wrapper)
+        time.sleep(.3)
+
+    def assert_paused(baseline, description):
+        time.sleep(5)  # More than two key-check and normal retry intervals.
+        assert launch_count() == baseline, description
+        phases.append(dict(phase=description, at=time.time(), launches=baseline))
+        print(json.dumps(phases[-1]), flush=True)
 
     try:
         sign(120, 1)
@@ -237,14 +258,67 @@ os.kill(pid, signal.SIGUSR1)
         assert process.poll() is None
         assert output.dropped_steps == 0
         assert remote("import os; print(os.environ['SSH_CONNECTION'])").strip() == connection
+        # Existing SSH authentication remains usable. Even so, expiry must
+        # prevent any consumer launch while fallback continues writing locally.
+        baseline = launch_count()
+        disconnect(output._config)
+        for shot in range(12, 22):
+            frame(shot)
+        wait(lambda: any(r['event'] == 'ssh_key.wait' for r in events()),
+             'fallback recovery waiting for expired certificate')
+        wait(lambda: output._local_written >= 20, 'fallback writes during certificate wait')
+        assert_paused(baseline, 'zero fallback launches with expired certificate')
+        sign(60, 3)
+        wait(lambda: output._remote is not None, 'fallback recovery after certificate renewal')
+        frame(22)
+        wait(lambda: output._remote_written == 3, 'fallback remote writes after renewal')
         output.close(5)
         assert process.poll() is not None, 'Monitor survived output shutdown'
+        # Repeat without local fallback, including expiry during recovery.
+        section.pop('local_fallback_directory')
+        plain_config = run / 'plain.conf'
+        with plain_config.open('w') as stream:
+            cfg.write(stream)
+        settings.destination = str(plain_config)
+        sign(-1, 4)
+        baseline = launch_count()
+        waits = sum(r['event'] == 'ssh_key.wait' for r in events())
+        plain = IO.create(settings, timing_log=log)
+        plain.write({'shot_index': np.array(100), 'test_values': np.arange(16)}, step=100)
+        wait(lambda: sum(r['event'] == 'ssh_key.wait' for r in events()) > waits,
+             'ordinary initial start waiting for expired certificate')
+        assert_paused(baseline, 'zero ordinary initial launches with expired certificate')
+        sign(60, 5)
+        wait(lambda: plain.written_steps == 1, 'ordinary initial start after renewal')
+        plain_remote = plain._output
+        sign(-1, 6)
+        baseline = launch_count()
+        waits = sum(r['event'] == 'ssh_key.wait' for r in events())
+        disconnect(plain_remote._config)
+        plain.write({'shot_index': np.array(101), 'test_values': np.arange(16)}, step=101)
+        wait(lambda: sum(r['event'] == 'ssh_key.wait' for r in events()) > waits,
+             'ordinary reconnect waiting for expired certificate')
+        assert_paused(baseline, 'zero ordinary reconnect launches with expired certificate')
+        sign(60, 7)
+        wait(lambda: plain.written_steps == 2, 'ordinary reconnect writes after renewal')
+        sign(-1, 8)
+        waits = sum(r['event'] == 'ssh_key.wait' for r in events())
+        disconnect(plain_remote._config)
+        plain.write({'shot_index': np.array(102), 'test_values': np.arange(16)}, step=102)
+        wait(lambda: sum(r['event'] == 'ssh_key.wait' for r in events()) > waits,
+             'ordinary reconnect waiting before shutdown')
+        plain.close(.1)
+        wait(lambda: not plain._worker.is_alive(), 'ordinary shutdown interrupts certificate wait')
+        assert remote("import os; print(os.environ['SSH_CONNECTION'])").strip() == connection
         report.update(passed=True, notification_counts=dict(titles()),
                       failed_launches=sum(r['event'] == 'consumer.launch_retry' for r in events()),
                       local_written=output._local_written, remote_written=output._remote_written,
                       dropped=output.dropped_steps, replacement_expires_at=replacement.valid_before,
-                      monitor_stopped=True)
+                      monitor_stopped=True, expired_launch_gating=True,
+                      ordinary_written=plain.written_steps)
     finally:
+        if plain is not None:
+            plain.close(.1)
         if output is not None:
             output.close(1)
             remote('''import os, pathlib, signal, sys
