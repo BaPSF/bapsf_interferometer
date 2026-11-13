@@ -47,6 +47,7 @@ class FallbackTests(unittest.TestCase):
         self.local.write_data.side_effect = lambda d: self.local_frames.append(int(d['shot_index']))
         mock.patch('streamer.fallback_io.RotatingConsumerOutput', return_value=self.local).start()
         mock.patch('streamer.fallback_io.NtfyNotifier.from_config', return_value=self.notifier).start()
+        self.key_monitor = mock.patch('streamer.ssh_key_monitor.SSHKeyMonitorProcess').start()
         self.factory = mock.patch('streamer.fallback_io.RestartingSingleSocketIO', side_effect=self.connect).start()
 
     def connect(self, *args, **kwargs):
@@ -120,6 +121,26 @@ class FallbackTests(unittest.TestCase):
         self.ready.set()
         wait_until(lambda: 'Raw data server restarted' in titles())
         self.assertEqual(titles().count('Raw data server restarted'), 1)
+
+    def test_key_monitor_survives_failed_launches_and_reconnections(self):
+        output = self.output()
+        wait_until(lambda: self.factory.call_count >= 3)
+        self.key_monitor.assert_called_once_with(self.config)
+        monitor = self.key_monitor.return_value
+        monitor.close.assert_not_called()
+        self.ready.set()
+        wait_until(lambda: output._remote is not None)
+        self.ready.clear()
+        attempts = self.factory.call_count
+        output._remote.write_data.side_effect = OSError('connection lost')
+        self.enqueue(output, 0, 1)
+        wait_until(lambda: self.factory.call_count >= attempts + 3)
+        self.key_monitor.assert_called_once_with(self.config)
+        monitor.close.assert_not_called()
+        self.assertTrue(all(c.kwargs['notifications'] is False
+                            for c in self.factory.call_args_list))
+        output.close(.1)
+        monitor.close.assert_called_once()
 
     def test_boundary_fifo_and_remote_recovery_transitions(self):
         output = self.output()

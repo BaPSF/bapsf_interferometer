@@ -43,7 +43,8 @@ class FallbackIO(BufferedIO):
             config, timing_log=timing_log, topic_attribute="ntfy_topic_alert")
         super().__init__(lambda: None, getattr(settings, "buffer_seconds", 600.0),
                          getattr(settings, "output_interval_seconds", 3.0), timing_log=timing_log,
-                         retry_delay_seconds=config.retry_delay_seconds, prepare=prepare)
+                         retry_delay_seconds=config.retry_delay_seconds, prepare=prepare,
+                         key_monitor_config=config)
         self._notifier = notifier
         self._recovery = threading.Thread(target=self._recover, daemon=True,
                                           name="raw-output-recovery")

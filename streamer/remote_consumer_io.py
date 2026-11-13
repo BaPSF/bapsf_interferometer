@@ -3,11 +3,9 @@
 import configparser
 import json
 import math
-import os
 import shlex
 import socket
 import subprocess
-import sys
 import tempfile
 import threading
 import time
@@ -537,50 +535,6 @@ class SSHControlConnection:
             self._directory.cleanup()
 
 
-class SSHKeyMonitorProcess:
-    """Run the SSH certificate expiry monitor independently of the producer."""
-
-    def __init__(self, config):
-        self._process = None
-        certificate = getattr(config, "ssh_key_certificate", None)
-        topic = getattr(config, "ntfy_topic_alert", None)
-        if not certificate or not topic:
-            return
-        monitor_script = Path(__file__).with_name("ssh_key_monitor.py")
-        self._process = subprocess.Popen(
-            [
-                sys.executable,
-                str(monitor_script),
-                "--certificate",
-                certificate,
-                "--topic",
-                topic,
-                "--server-url",
-                config.ntfy_server_url,
-                "--token-env",
-                config.ntfy_token_env,
-                "--timeout-seconds",
-                str(config.ntfy_timeout_seconds),
-                "--interval-seconds",
-                str(config.ssh_key_check_interval_seconds),
-                "--parent-pid",
-                str(os.getpid()),
-            ],
-            stdin=subprocess.DEVNULL,
-            close_fds=True,
-        )
-
-    def close(self):
-        if self._process is None or self._process.poll() is not None:
-            return
-        self._process.terminate()
-        try:
-            self._process.wait(timeout=5.0)
-        except subprocess.TimeoutExpired:
-            self._process.kill()
-            self._process.wait()
-
-
 class RestartingSingleSocketIO(IO):
     """Reconnect a remote consumer and retry only the interrupted output."""
 
@@ -619,7 +573,6 @@ class RestartingSingleSocketIO(IO):
             timing_log=timing_log,
             topic_attribute="ntfy_topic_alert",
         )) if notifications else None
-        self._key_monitor = None
         self._ssh_control = None
         ssh_command = getattr(self._config, "ssh_command", None)
         if launcher is None:
@@ -636,11 +589,8 @@ class RestartingSingleSocketIO(IO):
         self._aborted = False
         self._abort_event = threading.Event()
         try:
-            self._key_monitor = SSHKeyMonitorProcess(self._config)
             self._connect_with_retries("launch")
         except Exception:
-            if self._key_monitor is not None:
-                self._key_monitor.close()
             if self._ssh_control is not None:
                 self._ssh_control.close()
             if self._notifier is not None:
@@ -829,7 +779,7 @@ class RestartingSingleSocketIO(IO):
         """Drop the socket without a protocol shutdown and stop relaunching.
 
         Called from another thread by a closing BufferedIO; close() still
-        releases the SSH connection, key monitor and notifiers.
+        releases the SSH connection and notifiers.
         """
         self._aborted = True
         self._abort_event.set()
@@ -845,16 +795,12 @@ class RestartingSingleSocketIO(IO):
             self._discard_output()
         finally:
             try:
-                if self._key_monitor is not None:
-                    self._key_monitor.close()
+                if self._ssh_control is not None:
+                    self._ssh_control.close()
             finally:
                 try:
-                    if self._ssh_control is not None:
-                        self._ssh_control.close()
+                    if self._notifier is not None:
+                        self._notifier.close()
                 finally:
-                    try:
-                        if self._notifier is not None:
-                            self._notifier.close()
-                    finally:
-                        if self._alert_notifier is not None:
-                            self._alert_notifier.close()
+                    if self._alert_notifier is not None:
+                        self._alert_notifier.close()

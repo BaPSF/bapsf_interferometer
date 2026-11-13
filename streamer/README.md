@@ -472,7 +472,10 @@ When `ssh_key_certificate` and `ntfy_topic_alert` are set, a separate local
 monitor reads the OpenSSH certificate with `ssh-keygen -L`. It warns 6, 3, 2,
 and 1 hour before expiration and reports expired, missing, invalid, or not-yet-
 valid certificates. It re-reads the file on every check, so replacing a
-certificate resets the warning schedule without restarting acquisition. The
+certificate resets the warning schedule without restarting acquisition.
+The buffered output owns one monitor throughout connection failures, SSH
+relaunches, and local fallback. Connection attempts do not restart the monitor
+or reset its warning history; closing the output stops it. The
 first failed initial start or remote restart in each launch series also goes
 to the alert topic, including the error. Further failures in that series are
 logged without repeating the alert; a successful start or restart goes to
@@ -693,6 +696,30 @@ waits, and confirmation that the consumer wrote all three test frames.
 `producer.jsonl` and `consumer.jsonl` retain the detailed timing evidence.
 The output prints the report location; `--run-directory` overrides the local
 destination and `--config` selects another SSH server configuration.
+
+### Ubuntu certificate-monitor integration test
+
+Using the project's Python environment, start one SSH master and run:
+
+```sh
+ssh -MN -o ControlPath=/tmp/interf-key-test-control ubuntupc
+# In another terminal:
+python scripts/test-ubuntupc-key-monitor.py --control-path /tmp/interf-key-test-control
+ssh -S /tmp/interf-key-test-control -O exit ubuntupc
+```
+
+The test derives its settings from `ubuntupc_timed_control_test.conf`, generates
+temporary OpenSSH certificates, and checks them every two seconds. All launches
+and socket forwarding reuse the existing SSH connection; fallback authentication
+is disabled. Certificates exercise monitoring, not authentication of that existing
+connection. Notifications are captured by a local HTTP receiver.
+
+The test checks that four failed relaunches, local fallback, and recovery preserve
+the monitor PID and send each expiry threshold once. Replacing the certificate
+must reset the warnings; real expiry must notify once; output shutdown must stop
+the monitor. It retains source hashes, configurations, notifications, and a JSON
+report in a unique local directory, plus isolated consumer output on Ubuntu.
+Port 8597 must be free (`--port` overrides it). Shared keys and topics are untouched.
 
 ### Ubuntu fallback integration test
 

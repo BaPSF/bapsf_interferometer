@@ -27,6 +27,7 @@ class IO(ABC):
         queued object to the variables written.
         """
         from .remote_consumer_io import ServerConfig
+        config = None
         destination = Path(settings.destination)
         if destination.suffix.lower() == ".conf" or ServerConfig.is_server_config(destination):
             config = ServerConfig(destination)
@@ -44,6 +45,7 @@ class IO(ABC):
             timing_log=timing_log,
             retry_delay_seconds=getattr(settings, "retry_delay_seconds", 3.0),
             prepare=prepare,
+            key_monitor_config=config,
         )
 
     @classmethod
@@ -238,6 +240,7 @@ class BufferedIO(IO):
         clock=time.monotonic,
         retry_delay_seconds=3.0,
         prepare=None,
+        key_monitor_config=None,
     ):
         if not math.isfinite(buffer_seconds) or buffer_seconds <= 0:
             raise ValueError("Buffer duration must be greater than zero")
@@ -283,7 +286,16 @@ class BufferedIO(IO):
             name="raw-output-writer",
             daemon=True,
         )
-        self._worker.start()
+        self._key_monitor = None
+        if key_monitor_config is not None:
+            from .ssh_key_monitor import SSHKeyMonitorProcess
+            self._key_monitor = SSHKeyMonitorProcess(key_monitor_config)
+        try:
+            self._worker.start()
+        except Exception:
+            if self._key_monitor is not None:
+                self._key_monitor.close()
+            raise
 
     @property
     def capacity(self):
@@ -550,4 +562,6 @@ class BufferedIO(IO):
             }
         if not drained and output is not None:
             self._quietly("abort", output.abort)
+        if self._key_monitor is not None:
+            self._quietly("ssh_key_monitor.close", self._key_monitor.close)
         self._record("io.close", drained=drained, **counts)
