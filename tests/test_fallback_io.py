@@ -16,6 +16,7 @@ from streamer.fallback_io import FallbackIO
 from streamer.single_socket_io import SingleSocketIO
 from streamer import socket_protocol as protocol
 from streamer.remote_consumer_io import ServerConfig
+from streamer.retry_backoff import ConsumerLaunchBackoff
 
 
 def wait_until(predicate, timeout=3):
@@ -46,6 +47,7 @@ class FallbackTests(unittest.TestCase):
         self.local.write_data.side_effect = lambda d: self.local_frames.append(int(d['shot_index']))
         mock.patch('streamer.fallback_io.RotatingConsumerOutput', return_value=self.local).start()
         mock.patch('streamer.fallback_io.NtfyNotifier.from_config', return_value=self.notifier).start()
+        self.key_monitor = mock.patch('streamer.ssh_key_monitor.SSHKeyMonitorProcess').start()
         self.factory = mock.patch('streamer.fallback_io.RestartingSingleSocketIO', side_effect=self.connect).start()
 
     def connect(self, *args, **kwargs):
@@ -75,6 +77,33 @@ class FallbackTests(unittest.TestCase):
         self.assertEqual([c.args[0] for c in self.notifier.notify.call_args_list],
                          ['Raw data server started'])
 
+    def test_server_backoff_caps_and_resets_without_changing_local_retry(self):
+        backoff = ConsumerLaunchBackoff(15)
+        delays = []
+
+        self.ready.set()
+        self.factory.side_effect = [OSError('outage')] * 10 + [self.connect()]
+        with mock.patch('streamer.fallback_io.ConsumerLaunchBackoff', return_value=backoff), \
+                mock.patch.object(backoff, 'remaining') as remaining:
+            # Keep the real clock calculation available to the wait observer.
+            real_remaining = ConsumerLaunchBackoff.remaining
+            def observe_wait():
+                delays.append(round(real_remaining(backoff)))
+                return .001  # Exercise recovery without waiting through a real outage.
+            remaining.side_effect = observe_wait
+            output = self.output()
+            wait_until(lambda: output._remote is not None)
+            self.assertEqual(delays, [15, 15, 30, 60, 120, 240, 480, 960, 960, 960])
+            self.assertEqual(output._retry_delay_seconds, .02)
+            self.assertEqual(real_remaining(backoff), 0)
+            self.ready.clear()
+            self.factory.side_effect = OSError('still unavailable')
+            output._remote.write_data.side_effect = OSError('disconnected')
+            self.enqueue(output, 0, 1)
+            wait_until(lambda: len(delays) >= 12)
+            self.assertEqual(delays[10:12], [15, 15])
+            output.close(.1)
+
     def test_failed_launch_alerts_once_until_success_and_rearms_after_disconnect(self):
         output = self.output()
         wait_until(lambda: self.factory.call_count >= 3)
@@ -92,6 +121,26 @@ class FallbackTests(unittest.TestCase):
         self.ready.set()
         wait_until(lambda: 'Raw data server restarted' in titles())
         self.assertEqual(titles().count('Raw data server restarted'), 1)
+
+    def test_key_monitor_survives_failed_launches_and_reconnections(self):
+        output = self.output()
+        wait_until(lambda: self.factory.call_count >= 3)
+        self.key_monitor.assert_called_once_with(self.config)
+        monitor = self.key_monitor.return_value
+        monitor.close.assert_not_called()
+        self.ready.set()
+        wait_until(lambda: output._remote is not None)
+        self.ready.clear()
+        attempts = self.factory.call_count
+        output._remote.write_data.side_effect = OSError('connection lost')
+        self.enqueue(output, 0, 1)
+        wait_until(lambda: self.factory.call_count >= attempts + 3)
+        self.key_monitor.assert_called_once_with(self.config)
+        monitor.close.assert_not_called()
+        self.assertTrue(all(c.kwargs['notifications'] is False
+                            for c in self.factory.call_args_list))
+        output.close(.1)
+        monitor.close.assert_called_once()
 
     def test_boundary_fifo_and_remote_recovery_transitions(self):
         output = self.output()

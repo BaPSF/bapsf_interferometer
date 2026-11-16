@@ -3,12 +3,11 @@
 import configparser
 import json
 import math
-import os
 import shlex
 import socket
 import subprocess
-import sys
 import tempfile
+import threading
 import time
 from datetime import datetime
 from pathlib import Path
@@ -17,6 +16,7 @@ from types import SimpleNamespace
 from .connection_security import decrypt_connection_info
 from .data_operations import load_data_operation
 from .raw_output_io import IO
+from .retry_backoff import ConsumerLaunchBackoff
 from .ntfy_notifications import NtfyNotifier, error_summary
 from .single_socket_io import SingleSocketIO
 from .ssh_key_monitor import read_certificate_validity
@@ -397,6 +397,9 @@ class SSHStreamSocket:
     def settimeout(self, timeout):
         self._connection.settimeout(timeout)
 
+    def shutdown(self, how):
+        self._connection.shutdown(how)
+
     def _raise_tunnel_error(self, cause=None):
         returncode = self._process.poll()
         if returncode is None or returncode == 0:
@@ -532,54 +535,8 @@ class SSHControlConnection:
             self._directory.cleanup()
 
 
-class SSHKeyMonitorProcess:
-    """Run the SSH certificate expiry monitor independently of the producer."""
-
-    def __init__(self, config):
-        self._process = None
-        certificate = getattr(config, "ssh_key_certificate", None)
-        topic = getattr(config, "ntfy_topic_alert", None)
-        if not certificate or not topic:
-            return
-        monitor_script = Path(__file__).with_name("ssh_key_monitor.py")
-        self._process = subprocess.Popen(
-            [
-                sys.executable,
-                str(monitor_script),
-                "--certificate",
-                certificate,
-                "--topic",
-                topic,
-                "--server-url",
-                config.ntfy_server_url,
-                "--token-env",
-                config.ntfy_token_env,
-                "--timeout-seconds",
-                str(config.ntfy_timeout_seconds),
-                "--interval-seconds",
-                str(config.ssh_key_check_interval_seconds),
-                "--parent-pid",
-                str(os.getpid()),
-            ],
-            stdin=subprocess.DEVNULL,
-            close_fds=True,
-        )
-
-    def close(self):
-        if self._process is None or self._process.poll() is not None:
-            return
-        self._process.terminate()
-        try:
-            self._process.wait(timeout=5.0)
-        except subprocess.TimeoutExpired:
-            self._process.kill()
-            self._process.wait()
-
-
 class RestartingSingleSocketIO(IO):
     """Reconnect a remote consumer and retry only the interrupted output."""
-
-    EXPIRED_KEY_RELAUNCH_ATTEMPTS = 1
 
     def __init__(
         self,
@@ -593,12 +550,17 @@ class RestartingSingleSocketIO(IO):
         single_attempt=False,
         socket_callback=None,
         notifications=True,
+        launch_backoff=None,
+        certificate_wait=None,
     ):
         self._single_attempt = single_attempt
         self._socket_callback = socket_callback
         self._timing_log = timing_log
         self._private_key = private_key
         self._config = config or ServerConfig(settings.destination)
+        self._launch_backoff = launch_backoff or ConsumerLaunchBackoff(
+            self._config.retry_delay_seconds
+        )
         self._operation = load_data_operation(
             getattr(self._config, "compression_config", None)
         )
@@ -610,7 +572,6 @@ class RestartingSingleSocketIO(IO):
             timing_log=timing_log,
             topic_attribute="ntfy_topic_alert",
         )) if notifications else None
-        self._key_monitor = None
         self._ssh_control = None
         ssh_command = getattr(self._config, "ssh_command", None)
         if launcher is None:
@@ -625,12 +586,11 @@ class RestartingSingleSocketIO(IO):
         self._output = None
         self._closed = False
         self._aborted = False
+        self._abort_event = threading.Event()
+        self._certificate_wait = certificate_wait or self._abort_event.wait
         try:
-            self._key_monitor = SSHKeyMonitorProcess(self._config)
             self._connect_with_retries("launch")
         except Exception:
-            if self._key_monitor is not None:
-                self._key_monitor.close()
             if self._ssh_control is not None:
                 self._ssh_control.close()
             if self._notifier is not None:
@@ -662,14 +622,16 @@ class RestartingSingleSocketIO(IO):
 
     def _connect_with_retries(self, reason):
         attempt = 0
-        expired_key_attempts = 0
         failure_notified = False
         while True:
+            self._abort_event.wait(self._launch_backoff.remaining())
             if self._aborted:
                 raise RuntimeError("Remote consumer output was aborted")
+            self._wait_for_valid_ssh_certificate()
             attempt += 1
             try:
                 self._output = self._new_output()
+                self._launch_backoff.reset()
                 self._record(
                     "consumer.launch",
                     reason=reason,
@@ -688,6 +650,7 @@ class RestartingSingleSocketIO(IO):
                     )
                 return
             except (OSError, EOFError, RuntimeError, ValueError) as exc:
+                self._launch_backoff.failed()
                 self._record(
                     "consumer.launch_retry",
                     reason=reason,
@@ -714,60 +677,40 @@ class RestartingSingleSocketIO(IO):
                 maximum = self._config.max_relaunch_attempts
                 if maximum and attempt >= maximum:
                     raise
-                expired_certificate = self._expired_ssh_certificate()
-                if expired_certificate is None:
-                    expired_key_attempts = 0
-                else:
-                    expired_key_attempts += 1
-                    if (
-                        expired_key_attempts
-                        >= self.EXPIRED_KEY_RELAUNCH_ATTEMPTS
-                    ):
-                        self._wait_for_ssh_key_update(expired_certificate)
-                        attempt = 0
-                        expired_key_attempts = 0
-                        continue
-                if self._config.retry_delay_seconds:
-                    time.sleep(self._config.retry_delay_seconds)
 
-    def _expired_ssh_certificate(self):
+    def _wait_for_valid_ssh_certificate(self):
+        """Gate every launch, including fallback's single-attempt launches.
+
+        An existing SSH master may still accept channels after certificate
+        expiry; its success must not bypass this local validity check.
+        """
         certificate = getattr(self._config, "ssh_key_certificate", None)
         if not certificate:
-            return None
-        try:
-            validity = read_certificate_validity(certificate)
-        except ValueError:
-            return None
-        return validity if time.time() >= validity.valid_before else None
-
-    def _wait_for_ssh_key_update(self, expired_certificate):
-        certificate = self._config.ssh_key_certificate
-        interval = getattr(
-            self._config, "ssh_key_check_interval_seconds", 60.0
-        )
-        self._record(
-            "ssh_key.wait",
-            certificate=certificate,
-            expired_at=expired_certificate.valid_before,
-        )
+            return
+        interval = getattr(self._config, "ssh_key_check_interval_seconds", 60.0)
+        waiting = False
         while True:
+            if self._aborted:
+                raise RuntimeError("Remote consumer output was aborted")
             try:
-                replacement = read_certificate_validity(certificate)
-            except ValueError:
-                replacement = None
-            now = time.time()
-            if (
-                replacement is not None
-                and replacement != expired_certificate
-                and replacement.valid_after <= now < replacement.valid_before
-            ):
-                self._record(
-                    "ssh_key.updated",
-                    certificate=certificate,
-                    valid_before=replacement.valid_before,
-                )
+                validity = read_certificate_validity(certificate)
+                now = time.time()
+                valid = validity.valid_after <= now < validity.valid_before
+                details = dict(valid_after=validity.valid_after,
+                               expired_at=validity.valid_before)
+            except ValueError as exc:
+                valid = False
+                details = dict(error=str(exc))
+            if valid:
+                if waiting:
+                    self._record("ssh_key.updated", certificate=certificate,
+                                 valid_before=validity.valid_before)
                 return
-            time.sleep(interval)
+            if not waiting:
+                self._record("ssh_key.wait", certificate=certificate, **details)
+                waiting = True
+            if self._certificate_wait(interval):
+                raise RuntimeError("Remote consumer output was aborted")
 
     def write_data(self, data):
         if self._closed:
@@ -818,9 +761,10 @@ class RestartingSingleSocketIO(IO):
         """Drop the socket without a protocol shutdown and stop relaunching.
 
         Called from another thread by a closing BufferedIO; close() still
-        releases the SSH connection, key monitor and notifiers.
+        releases the SSH connection and notifiers.
         """
         self._aborted = True
+        self._abort_event.set()
         output = self._output
         if output is not None:
             output.abort()
@@ -833,16 +777,12 @@ class RestartingSingleSocketIO(IO):
             self._discard_output()
         finally:
             try:
-                if self._key_monitor is not None:
-                    self._key_monitor.close()
+                if self._ssh_control is not None:
+                    self._ssh_control.close()
             finally:
                 try:
-                    if self._ssh_control is not None:
-                        self._ssh_control.close()
+                    if self._notifier is not None:
+                        self._notifier.close()
                 finally:
-                    try:
-                        if self._notifier is not None:
-                            self._notifier.close()
-                    finally:
-                        if self._alert_notifier is not None:
-                            self._alert_notifier.close()
+                    if self._alert_notifier is not None:
+                        self._alert_notifier.close()

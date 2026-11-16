@@ -74,6 +74,50 @@ def read_certificate_validity(path, runner=subprocess.run):
     return validity
 
 
+class SSHKeyMonitorProcess:
+    """Run one certificate monitor for the lifetime of the buffered output."""
+
+    def __init__(self, config):
+        self._process = None
+        certificate = getattr(config, "ssh_key_certificate", None)
+        topic = getattr(config, "ntfy_topic_alert", None)
+        if not certificate or not topic:
+            return
+        monitor_script = Path(__file__).resolve()
+        self._process = subprocess.Popen(
+            [
+                sys.executable,
+                str(monitor_script),
+                "--certificate",
+                certificate,
+                "--topic",
+                topic,
+                "--server-url",
+                config.ntfy_server_url,
+                "--token-env",
+                config.ntfy_token_env,
+                "--timeout-seconds",
+                str(config.ntfy_timeout_seconds),
+                "--interval-seconds",
+                str(config.ssh_key_check_interval_seconds),
+                "--parent-pid",
+                str(os.getpid()),
+            ],
+            stdin=subprocess.DEVNULL,
+            close_fds=True,
+        )
+
+    def close(self):
+        if self._process is None or self._process.poll() is not None:
+            return
+        self._process.terminate()
+        try:
+            self._process.wait(timeout=5.0)
+        except subprocess.TimeoutExpired:
+            self._process.kill()
+            self._process.wait()
+
+
 class SSHKeyExpiryChecker:
     """Perform one check at a time while retaining per-certificate alert state."""
 
